@@ -1,0 +1,45 @@
+# Workspace limits for SO-ARM100/101
+# All values are in meters (position) or radians (orientation)
+
+# Cartesian position bounds (relative to robot base)
+position:
+  x:
+    min: -0.3
+    max: 0.3
+  y:
+    min: -0.3
+    max: 0.3
+  z:
+    min: 0.05  # Prevent ground collision
+    max: 0.4
+
+# Orientation bounds (Euler angles)
+orientation:
+  roll:
+    min: -3.14159  # -pi
+    max: 3.14159   # pi
+  pitch:
+    min: -1.57     # -pi/2
+    max: 1.57      # pi/2
+  yaw:
+    min: -3.14159  # -pi
+    max: 3.14159   # pi
+
+# Gripper limits
+gripper:
+  min: 0.0  # Fully open
+  max: 1.0  # Fully closed
+
+# Velocity limits (for rate limiting)
+velocity:
+  linear_max: 0.2   # m/s
+  angular_max: 1.0  # rad/s
+
+# Home position (joint angles in radians)
+home_position:
+  shoulder_pan: 0.0
+  shoulder_lift: 0.0
+  elbow: 0.0
+  wrist_pitch: 0.0
+  wrist_roll: 0.0
+  gripper: 0.5
