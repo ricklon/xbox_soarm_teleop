@@ -13,7 +13,9 @@ Built as an extension to the [HuggingFace LeRobot](https://github.com/huggingfac
 - Home position button (A)
 - Workspace bounds enforcement
 - **3D simulation** with meshcat visualization
-- **MuJoCo simulation** with physics (optional)
+- **MuJoCo simulation** with physics
+- **Real robot control** via LeRobot
+- **Digital twin mode** - simultaneous simulation and real robot
 
 ## Control Mapping
 
@@ -81,21 +83,34 @@ uv run python examples/simulate_mujoco.py --no-controller
 
 ### 4. Run with Real Robot
 
+Connect your SO-ARM101 via USB, then:
+
 ```bash
-uv run python examples/teleoperate.py
+# Auto-detect port
+uv run python examples/teleoperate_real.py
+
+# Or specify port manually
+uv run python examples/teleoperate_real.py --port /dev/ttyUSB0
 ```
 
-(Robot integration pending - currently runs in simulation mode)
+### 5. Digital Twin Mode (Real Robot + Simulation)
+
+Run both the real robot and MuJoCo simulation simultaneously. The simulation shows a real-time preview of robot movements.
+
+```bash
+uv run python examples/teleoperate_dual.py --port /dev/ttyUSB0
+```
 
 ## Examples
 
 | Script | Description |
 |--------|-------------|
-| `examples/teleoperate.py` | Basic teleoperation (terminal output) |
-| `examples/teleoperate.py --sim` | Simulation mode (no robot) |
+| `examples/teleoperate.py --sim` | Test controller (terminal output only) |
 | `examples/simulate.py` | 3D visualization with meshcat |
-| `examples/simulate.py --no-controller` | Demo mode (automatic movement) |
-| `examples/simulate_mujoco.py` | MuJoCo physics simulation |
+| `examples/simulate_mujoco.py` | MuJoCo simulation |
+| `examples/diagnose_robot.py` | Pre-flight motor diagnostics |
+| `examples/teleoperate_real.py` | Control real robot |
+| `examples/teleoperate_dual.py` | Digital twin (real + simulation) |
 
 ## Testing
 
@@ -133,9 +148,11 @@ xbox_soarm_teleop/
 │   ├── processors/xbox_to_ee.py # EE delta mapping
 │   └── config/                  # Configuration
 ├── examples/
-│   ├── teleoperate.py           # Basic teleoperation
+│   ├── teleoperate.py           # Basic teleoperation (terminal)
 │   ├── simulate.py              # Meshcat 3D visualization
-│   └── simulate_mujoco.py       # MuJoCo physics simulation
+│   ├── simulate_mujoco.py       # MuJoCo physics simulation
+│   ├── teleoperate_real.py      # Real robot control
+│   └── teleoperate_dual.py      # Digital twin mode
 ├── assets/                      # URDF and mesh files
 └── tests/                       # Unit tests
 ```
@@ -170,6 +187,54 @@ Open http://127.0.0.1:7000/static/ manually in your browser.
 # Install OpenGL dependencies (Linux)
 sudo apt install libgl1-mesa-glx libosmesa6
 ```
+
+### Real robot not detected
+
+```bash
+# List available serial ports
+ls /dev/ttyUSB* /dev/ttyACM*
+
+# Set permissions (temporary)
+sudo chmod 666 /dev/ttyUSB0
+
+# Or add user to dialout group (permanent, requires logout)
+sudo usermod -aG dialout $USER
+```
+
+### Robot calibration
+
+First time connecting, LeRobot will run calibration:
+1. Move arm to middle of range when prompted
+2. Move each joint through full range when prompted
+3. Calibration is saved and reused on subsequent connections
+
+### Pre-flight motor diagnostics
+
+Before teleoperation, run diagnostics to check motor health:
+
+```bash
+# Full diagnostics (requires ricklon/lerobot fork)
+uv run python examples/diagnose_robot.py --port /dev/ttyUSB0
+
+# Simple motor test (works with standard lerobot)
+uv run python examples/diagnose_robot.py --port /dev/ttyUSB0 --simple
+```
+
+Or use lerobot's built-in calibration with diagnostics:
+```bash
+lerobot-calibrate --robot.type=so101_follower --robot.port=/dev/ttyUSB0 --diagnose
+```
+
+### Common calibration issues
+
+**Zero position difference:** Motor position not changing
+- Check USB cable connection
+- Verify motor ID matches configuration
+- Ensure motor isn't mechanically stuck
+
+**Small position range:** Motor moved but range is tiny
+- Move motor through its COMPLETE range during calibration
+- For gripper: fully open AND fully closed
 
 ## License
 
