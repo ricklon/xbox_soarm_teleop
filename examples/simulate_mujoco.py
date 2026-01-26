@@ -12,10 +12,10 @@ Options:
 
 Controls (Xbox):
     - Hold LB (left bumper) to enable arm movement
-    - Left stick X: Left/right (Y axis)
+    - Left stick X: Move left/right (Y axis)
     - Left stick Y: Up/down (Z axis)
     - Right stick Y: Forward/back (X axis)
-    - Right stick X: Wrist roll rotation
+    - Right stick X: Wrist roll rotation (direct, not IK)
     - Right trigger: Gripper (released=open, pulled=closed)
     - A button: Return to home position
     - Ctrl+C or close window: Exit
@@ -133,7 +133,13 @@ class MuJoCoSimulator:
         mujoco.mj_forward(self.model, self.data)
 
 
-def run_with_controller(sim: MuJoCoSimulator):
+def run_with_controller(
+    sim: MuJoCoSimulator,
+    deadzone: float = 0.15,
+    linear_scale: float | None = None,
+    debug_ik: bool = False,
+    debug_ik_every: int = 10,
+):
     """Run with Xbox controller and MuJoCo viewer."""
     from lerobot.model.kinematics import RobotKinematics
 
@@ -141,19 +147,30 @@ def run_with_controller(sim: MuJoCoSimulator):
     from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta
     from xbox_soarm_teleop.teleoperators.xbox import XboxController
 
-    # Initialize kinematics for IK
+    # IK joint names - include base, exclude wrist_roll (controlled directly)
+    ik_joint_names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
+
+    # Initialize kinematics for IK (4 joints, not 5)
     kinematics = RobotKinematics(
         urdf_path=str(URDF_PATH),
         target_frame_name="gripper_frame_link",
-        joint_names=JOINT_NAMES[:-1],  # Exclude gripper
+        joint_names=ik_joint_names,
     )
 
-    config = XboxConfig()
+    config = XboxConfig(deadzone=deadzone)
+    if linear_scale is not None:
+        config.linear_scale = linear_scale
     controller = XboxController(config)
     mapper = MapXboxToEEDelta(
         linear_scale=config.linear_scale,
         angular_scale=config.angular_scale,
     )
+
+    print(f"Controller deadzone: {config.deadzone}", flush=True)
+    print(f"Linear scale: {config.linear_scale} m/s", flush=True)
+
+    # Joint velocity limits for IK joints (4 joints, no wrist_roll)
+    ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])  # deg/s
 
     if not controller.connect():
         print("ERROR: Failed to connect to Xbox controller")
@@ -164,17 +181,25 @@ def run_with_controller(sim: MuJoCoSimulator):
     print("Xbox controller connected", flush=True)
     print("\nControls:", flush=True)
     print("  Hold LB + move sticks to control arm", flush=True)
+    print("  Left stick X: Move left/right (Y axis)", flush=True)
+    print("  Left stick Y: Move up/down", flush=True)
+    print("  Right stick Y: Move forward/back", flush=True)
+    print("  Right stick X: Wrist roll (direct)", flush=True)
     print("  Right trigger for gripper", flush=True)
     print("  A button to go home", flush=True)
     print("  Close window to exit\n", flush=True)
 
-    # Current EE pose and joint positions
-    joint_pos_deg = np.zeros(5)
-    ee_pose = kinematics.forward_kinematics(joint_pos_deg)
+    # IK joint positions (4 joints: base, shoulder_lift, elbow_flex, wrist_flex)
+    ik_joint_pos_deg = np.zeros(4)
+    wrist_roll_deg = 0.0
+
+    # Get initial EE pose (with base at 0)
+    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
     gripper_pos = 0.0  # Current gripper position (smoothed)
     gripper_rate = config.gripper_rate  # Position change per second
 
     running = True
+    loop_counter = 0
 
     def signal_handler(sig, frame):
         nonlocal running
@@ -191,8 +216,9 @@ def run_with_controller(sim: MuJoCoSimulator):
 
             if state.a_button_pressed:
                 print("\nGoing home...", flush=True)
-                joint_pos_deg = np.zeros(5)
-                ee_pose = kinematics.forward_kinematics(joint_pos_deg)
+                ik_joint_pos_deg = np.zeros(4)
+                wrist_roll_deg = 0.0
+                ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
                 sim.go_home()
                 viewer.sync()
                 continue
@@ -208,48 +234,75 @@ def run_with_controller(sim: MuJoCoSimulator):
                 gripper_pos = gripper_target
 
             if not ee_delta.is_zero_motion():
-                # Update target EE pose
+                # Update target EE pose (X/Y/Z)
                 target_pos = ee_pose[:3, 3].copy()
-                target_pos[0] += ee_delta.dx * LOOP_PERIOD
-                target_pos[1] += ee_delta.dy * LOOP_PERIOD
-                target_pos[2] += ee_delta.dz * LOOP_PERIOD
+                target_pos[0] += ee_delta.dx * LOOP_PERIOD  # Forward/back in arm plane
+                target_pos[1] += ee_delta.dy * LOOP_PERIOD  # Left/right
+                target_pos[2] += ee_delta.dz * LOOP_PERIOD  # Up/down
 
-                # Workspace limits
-                target_pos[0] = np.clip(target_pos[0], -0.1, 0.5)
-                target_pos[1] = np.clip(target_pos[1], -0.3, 0.3)
+                # Workspace limits (X is reach, Z is height)
+                target_pos[0] = np.clip(target_pos[0], 0.05, 0.5)  # Min reach to avoid singularity
                 target_pos[2] = np.clip(target_pos[2], 0.05, 0.45)
 
                 target_pose = ee_pose.copy()
                 target_pose[:3, 3] = target_pos
 
-                # Solve IK for position only
+                # Solve IK for 4 joints (position only)
                 new_joints = kinematics.inverse_kinematics(
-                    joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=0.0
+                    ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=0.0
                 )
-                joint_pos_deg = new_joints[:5]
+                ik_result = new_joints[:4]
 
-                # Apply wrist roll directly (index 4 = wrist_roll)
+                # Apply joint velocity limiting to smooth IK output
+                max_delta = ik_joint_vel_limits * LOOP_PERIOD
+                joint_delta = ik_result - ik_joint_pos_deg
+                joint_delta = np.clip(joint_delta, -max_delta, max_delta)
+                ik_joint_pos_deg = ik_joint_pos_deg + joint_delta
+
+                # Apply wrist roll directly (not part of IK)
                 if abs(ee_delta.droll) > 0.001:
                     roll_delta_deg = np.rad2deg(ee_delta.droll * LOOP_PERIOD)
-                    joint_pos_deg[4] += roll_delta_deg
-                    joint_pos_deg[4] = np.clip(joint_pos_deg[4], -180.0, 180.0)
+                    wrist_roll_deg += roll_delta_deg
+                    wrist_roll_deg = np.clip(wrist_roll_deg, -180.0, 180.0)
 
-                ee_pose = kinematics.forward_kinematics(joint_pos_deg)
+                ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+
+                if debug_ik and (loop_counter % max(debug_ik_every, 1) == 0):
+                    pos_error = np.linalg.norm(target_pose[:3, 3] - ee_pose[:3, 3])
+                    print(
+                        f"\nIK: target=[{target_pos[0]:.3f}, {target_pos[1]:.3f}, "
+                        f"{target_pos[2]:.3f}] actual=[{ee_pose[0, 3]:.3f}, "
+                        f"{ee_pose[1, 3]:.3f}, {ee_pose[2, 3]:.3f}] "
+                        f"err={pos_error * 1000.0:.1f}mm",
+                        flush=True,
+                    )
+
+            # Combine base + IK joints for full 5-joint position
+            # Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll
+            full_joint_pos_deg = np.array([
+                ik_joint_pos_deg[0],  # shoulder_pan
+                ik_joint_pos_deg[1],  # shoulder_lift
+                ik_joint_pos_deg[2],  # elbow_flex
+                ik_joint_pos_deg[3],  # wrist_flex
+                wrist_roll_deg,  # wrist_roll
+            ])
 
             # Update simulation
-            sim.set_joint_targets(joint_pos_deg)
+            sim.set_joint_targets(full_joint_pos_deg)
             sim.set_gripper(gripper_pos)
             sim.step()
             viewer.sync()
 
-            # Status
+            # Status - show base angle
             pos = sim.get_ee_position()
             print(
-                f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | Gripper: {gripper_pos:.2f}   ",
+                f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
+                f"Base: {ik_joint_pos_deg[0]:+6.1f}° | Gripper: {gripper_pos:.2f}   ",
                 end="\r",
                 flush=True,
             )
 
+            loop_counter += 1
             elapsed = time.monotonic() - loop_start
             if elapsed < LOOP_PERIOD:
                 time.sleep(LOOP_PERIOD - elapsed)
@@ -265,14 +318,15 @@ def run_demo_mode(sim: MuJoCoSimulator):
     kinematics = RobotKinematics(
         urdf_path=str(URDF_PATH),
         target_frame_name="gripper_frame_link",
-        joint_names=JOINT_NAMES[:-1],
+        joint_names=["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"],
     )
 
     print("\nDemo mode - automatic movement", flush=True)
     print("Close window to exit\n", flush=True)
 
-    joint_pos_deg = np.zeros(5)
-    ee_pose = kinematics.forward_kinematics(joint_pos_deg)
+    wrist_roll_deg = 0.0
+    ik_joint_pos_deg = np.zeros(4)
+    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
     t = 0.0
 
     running = True
@@ -307,21 +361,29 @@ def run_demo_mode(sim: MuJoCoSimulator):
             target_pose = ee_pose.copy()
             target_pose[:3, 3] = target_pos
 
-            # Solve IK for position only
+            # Solve IK for position only (4 joints)
             new_joints = kinematics.inverse_kinematics(
-                joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=0.0
+                ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=0.0
             )
-            joint_pos_deg = new_joints[:5]
+            ik_joint_pos_deg = new_joints[:4]
 
             # Apply wrist roll directly
             if abs(droll) > 0.001:
                 roll_delta_deg = np.rad2deg(droll * LOOP_PERIOD)
-                joint_pos_deg[4] += roll_delta_deg
-                joint_pos_deg[4] = np.clip(joint_pos_deg[4], -180.0, 180.0)
+                wrist_roll_deg += roll_delta_deg
+                wrist_roll_deg = np.clip(wrist_roll_deg, -180.0, 180.0)
 
-            ee_pose = kinematics.forward_kinematics(joint_pos_deg)
+            ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
 
-            sim.set_joint_targets(joint_pos_deg)
+            full_joint_pos_deg = np.array([
+                ik_joint_pos_deg[0],
+                ik_joint_pos_deg[1],
+                ik_joint_pos_deg[2],
+                ik_joint_pos_deg[3],
+                wrist_roll_deg,
+            ])
+
+            sim.set_joint_targets(full_joint_pos_deg)
             sim.set_gripper(gripper)
             sim.step()
             viewer.sync()
@@ -345,6 +407,29 @@ def run_demo_mode(sim: MuJoCoSimulator):
 def main():
     parser = argparse.ArgumentParser(description="MuJoCo SO-ARM101 simulation")
     parser.add_argument("--no-controller", action="store_true", help="Run demo mode")
+    parser.add_argument(
+        "--deadzone",
+        type=float,
+        default=0.15,
+        help="Controller deadzone (0.0-1.0). Default: 0.15",
+    )
+    parser.add_argument(
+        "--linear-scale",
+        type=float,
+        default=None,
+        help="Linear velocity scale (m/s). Default from config.",
+    )
+    parser.add_argument(
+        "--debug-ik",
+        action="store_true",
+        help="Print IK target/achieved error periodically.",
+    )
+    parser.add_argument(
+        "--debug-ik-every",
+        type=int,
+        default=10,
+        help="Print IK debug every N control loops. Default: 10.",
+    )
     args = parser.parse_args()
 
     if not URDF_PATH.exists():
@@ -358,7 +443,13 @@ def main():
     if args.no_controller:
         run_demo_mode(sim)
     else:
-        run_with_controller(sim)
+        run_with_controller(
+            sim,
+            deadzone=args.deadzone,
+            linear_scale=args.linear_scale,
+            debug_ik=args.debug_ik,
+            debug_ik_every=args.debug_ik_every,
+        )
 
 
 if __name__ == "__main__":

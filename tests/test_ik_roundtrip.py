@@ -11,8 +11,8 @@ placo = pytest.importorskip("placo")
 # Path to SO101 URDF (with absolute mesh paths)
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
 
-# Joint names for SO101 (excluding gripper for IK)
-JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
+# Joint names for SO101 (excluding wrist_roll and gripper for IK)
+JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
 
 # End effector frame name
 EE_FRAME = "gripper_frame_link"
@@ -36,13 +36,13 @@ def kinematics():
 @pytest.fixture
 def home_joints():
     """Home position joint angles in degrees."""
-    return np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+    return np.array([0.0, 0.0, 0.0, 0.0])
 
 
 @pytest.fixture
 def test_joints():
     """Test joint configuration in degrees (non-singular)."""
-    return np.array([10.0, 30.0, -45.0, 20.0, 15.0])
+    return np.array([10.0, 30.0, -45.0, 20.0])
 
 
 class TestIKRoundtrip:

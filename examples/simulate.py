@@ -14,9 +14,10 @@ Options:
 
 Controls (Xbox):
     - Hold LB (left bumper) to enable arm movement
-    - Left stick: X/Y movement in horizontal plane
-    - Right stick Y: Z movement (up/down)
-    - Right stick X: Wrist roll rotation
+    - Left stick X: Rotate base (turret)
+    - Left stick Y: Up/down (Z axis)
+    - Right stick Y: Forward/back (X axis)
+    - Right stick X: Wrist roll rotation (direct, not IK)
     - Right trigger: Gripper position
     - A button: Return to home position
     - Ctrl+C: Exit
@@ -54,7 +55,14 @@ WORKSPACE_LIMITS = {
 
 
 class ArmSimulator:
-    """Simulated SO-ARM101 with meshcat visualization."""
+    """Simulated SO-ARM101 with meshcat visualization.
+
+    Uses direct base control (not IK) for smooth turret-style rotation.
+    IK is used for the base and 3 arm joints (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex).
+    """
+
+    # IK joint names (including base, excluding wrist_roll)
+    IK_JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
 
     def __init__(self, urdf_path: str):
         """Initialize the simulator.
@@ -74,28 +82,33 @@ class ArmSimulator:
         )
         self.data = self.model.createData()
 
-        # Get joint indices
+        # Get joint indices for all joints (for visualization)
         self.joint_ids = [self.model.getJointId(name) for name in JOINT_NAMES]
 
         # Get end effector frame ID
         self.ee_frame_id = self.model.getFrameId(EE_FRAME)
 
-        # Initialize joint positions (degrees for consistency with LeRobot)
-        self.joint_pos_deg = np.zeros(len(JOINT_NAMES))
+        # IK joint positions (4 joints) in degrees
+        self.ik_joint_pos_deg = np.zeros(len(self.IK_JOINT_NAMES))
+        self.wrist_roll_deg = 0.0
 
         # Gripper position (0-1)
         self.gripper_pos = 0.0
 
-        # Current EE pose (4x4 transform)
+        # Current EE pose (4x4 transform) - in arm plane
         self.ee_pose = None
-        self._update_ee_pose()
 
-        # Create IK solver (reused for all IK calls)
+        # Create IK solver for 4 joints (excluding wrist_roll)
         self.kinematics = RobotKinematics(
             urdf_path=urdf_path,
             target_frame_name=EE_FRAME,
-            joint_names=JOINT_NAMES,
+            joint_names=self.IK_JOINT_NAMES,
         )
+
+        self._update_ee_pose()
+
+        # Joint velocity limits for IK joints (4 joints)
+        self.ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])
 
         # Create visualizer
         self.viz = MeshcatVisualizer(self.model, self.collision_model, self.visual_model)
@@ -104,24 +117,28 @@ class ArmSimulator:
         self.port = 7000  # Default meshcat port
 
     def _update_ee_pose(self) -> None:
-        """Update end effector pose from current joint positions."""
-        import pinocchio as pin
+        """Update end effector pose from IK joint positions."""
+        self.ee_pose = self.kinematics.forward_kinematics(self.ik_joint_pos_deg)
 
-        q = self._joints_to_q()
-        pin.forwardKinematics(self.model, self.data, q)
-        pin.updateFramePlacements(self.model, self.data)
-        self.ee_pose = self.data.oMf[self.ee_frame_id].homogeneous
+    def _get_full_joint_pos_deg(self) -> np.ndarray:
+        """Get full 5-joint position (base + IK joints) in degrees."""
+        return np.array([
+            self.ik_joint_pos_deg[0],  # shoulder_pan
+            self.ik_joint_pos_deg[1],  # shoulder_lift
+            self.ik_joint_pos_deg[2],  # elbow_flex
+            self.ik_joint_pos_deg[3],  # wrist_flex
+            self.wrist_roll_deg,  # wrist_roll
+        ])
 
     def _joints_to_q(self) -> np.ndarray:
-        """Convert joint positions to pinocchio q vector."""
+        """Convert joint positions to pinocchio q vector for visualization."""
         q = np.zeros(self.model.nq)
-        joint_pos_rad = np.deg2rad(self.joint_pos_deg)
+        full_joint_pos_deg = self._get_full_joint_pos_deg()
+        joint_pos_rad = np.deg2rad(full_joint_pos_deg)
         for i, jid in enumerate(self.joint_ids):
             idx = self.model.joints[jid].idx_q
             q[idx] = joint_pos_rad[i]
         # Set gripper: map 0-1 to joint limits (open=1.74, closed=-0.17)
-        # gripper_pos=0 (not pulled) -> open (1.74)
-        # gripper_pos=1 (fully pulled) -> closed (-0.17)
         gripper_jid = self.model.getJointId("gripper")
         gripper_idx = self.model.joints[gripper_jid].idx_q
         gripper_open = 1.74533  # Upper limit (open)
@@ -130,53 +147,56 @@ class ArmSimulator:
         return q
 
     def get_ee_position(self) -> np.ndarray:
-        """Get current end effector position."""
+        """Get current end effector position in arm plane."""
         return self.ee_pose[:3, 3].copy()
 
-    def apply_ee_delta(self, dx: float, dy: float, dz: float, droll: float, dt: float) -> bool:
-        """Apply end effector delta and solve IK.
+    def apply_delta(self, dx: float, dy: float, dz: float, droll: float, dt: float) -> bool:
+        """Apply movement delta with IK for base and arm.
 
         Args:
-            dx: X velocity (m/s)
-            dy: Y velocity (m/s)
-            dz: Z velocity (m/s)
-            droll: Roll velocity (rad/s)
+            dx: X velocity (m/s) - forward/back
+            dy: Y velocity (m/s) - left/right
+            dz: Z velocity (m/s) - up/down
+            droll: Wrist roll velocity (rad/s)
             dt: Time step (seconds)
 
         Returns:
-            True if IK succeeded, False otherwise.
+            True if successful.
         """
-        # Compute target position
+        # Update target EE pose (X/Y/Z)
         target_pos = self.get_ee_position()
-        target_pos[0] += dx * dt
-        target_pos[1] += dy * dt
-        target_pos[2] += dz * dt
+        target_pos[0] += dx * dt  # Forward/back
+        target_pos[1] += dy * dt  # Left/right
+        target_pos[2] += dz * dt  # Up/down
 
-        # Apply workspace limits
-        target_pos[0] = np.clip(target_pos[0], *WORKSPACE_LIMITS["x"])
+        # Workspace limits
+        target_pos[0] = np.clip(target_pos[0], 0.05, 0.5)  # Min reach to avoid singularity
         target_pos[1] = np.clip(target_pos[1], *WORKSPACE_LIMITS["y"])
         target_pos[2] = np.clip(target_pos[2], *WORKSPACE_LIMITS["z"])
 
-        # Create target pose (position only, IK handles arm joints)
         target_pose = self.ee_pose.copy()
         target_pose[:3, 3] = target_pos
 
-        # Solve IK for position (arm joints only, excluding wrist_roll)
+        # Solve IK for 4 joints (position only)
         new_joints = self.kinematics.inverse_kinematics(
-            self.joint_pos_deg,
+            self.ik_joint_pos_deg,
             target_pose,
             position_weight=1.0,
-            orientation_weight=0.0,  # Ignore orientation, we control roll directly
+            orientation_weight=0.0,
         )
+        ik_result = new_joints[:4]
 
-        self.joint_pos_deg = new_joints[: len(JOINT_NAMES)]
+        # Apply joint velocity limiting to smooth IK output
+        max_delta = self.ik_joint_vel_limits * dt
+        joint_delta = ik_result - self.ik_joint_pos_deg
+        joint_delta = np.clip(joint_delta, -max_delta, max_delta)
+        self.ik_joint_pos_deg = self.ik_joint_pos_deg + joint_delta
 
-        # Apply wrist roll directly (index 4 = wrist_roll)
+        # Apply wrist roll directly (not part of IK)
         if abs(droll) > 0.001:
             roll_delta_deg = np.rad2deg(droll * dt)
-            self.joint_pos_deg[4] += roll_delta_deg
-            # Clamp wrist roll to reasonable limits
-            self.joint_pos_deg[4] = np.clip(self.joint_pos_deg[4], -180.0, 180.0)
+            self.wrist_roll_deg += roll_delta_deg
+            self.wrist_roll_deg = np.clip(self.wrist_roll_deg, -180.0, 180.0)
 
         self._update_ee_pose()
         return True
@@ -187,7 +207,8 @@ class ArmSimulator:
 
     def go_home(self) -> None:
         """Move to home position."""
-        self.joint_pos_deg = np.zeros(len(JOINT_NAMES))
+        self.ik_joint_pos_deg = np.zeros(len(self.IK_JOINT_NAMES))
+        self.wrist_roll_deg = 0.0
         self.gripper_pos = 0.0
         self._update_ee_pose()
 
@@ -197,19 +218,26 @@ class ArmSimulator:
         self.viz.display(q)
 
 
-def run_with_controller(sim: ArmSimulator):
+def run_with_controller(
+    sim: ArmSimulator, deadzone: float = 0.15, linear_scale: float | None = None
+):
     """Run simulation with Xbox controller input."""
     from xbox_soarm_teleop.config.xbox_config import XboxConfig
     from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta
     from xbox_soarm_teleop.teleoperators.xbox import XboxController
 
-    config = XboxConfig()
+    config = XboxConfig(deadzone=deadzone)
+    if linear_scale is not None:
+        config.linear_scale = linear_scale
     controller = XboxController(config)
     mapper = MapXboxToEEDelta(
         linear_scale=config.linear_scale,
         angular_scale=config.angular_scale,
     )
     gripper_rate = config.gripper_rate  # Position change per second
+
+    print(f"Controller deadzone: {config.deadzone}", flush=True)
+    print(f"Linear scale: {config.linear_scale} m/s", flush=True)
 
     if not controller.connect():
         print("ERROR: Failed to connect to Xbox controller")
@@ -221,9 +249,15 @@ def run_with_controller(sim: ArmSimulator):
     print("Xbox controller connected", flush=True)
     print("\nSimulation started!", flush=True)
     print(f"  Open http://127.0.0.1:{sim.port}/static/ in your browser", flush=True)
-    print("  Hold LB (left bumper) to enable arm movement", flush=True)
-    print("  Press A to return to home position", flush=True)
-    print("  Press Ctrl+C to exit\n", flush=True)
+    print("\nControls:", flush=True)
+    print("  Hold LB + move sticks to control arm", flush=True)
+    print("  Left stick X: Move left/right (Y axis)", flush=True)
+    print("  Left stick Y: Move up/down", flush=True)
+    print("  Right stick Y: Move forward/back", flush=True)
+    print("  Right stick X: Wrist roll", flush=True)
+    print("  Right trigger: Gripper", flush=True)
+    print("  A button: Return to home", flush=True)
+    print("  Ctrl+C: Exit\n", flush=True)
 
     running = True
 
@@ -258,7 +292,7 @@ def run_with_controller(sim: ArmSimulator):
                 sim.set_gripper(gripper_target)
 
             if not ee_delta.is_zero_motion():
-                sim.apply_ee_delta(
+                sim.apply_delta(
                     ee_delta.dx,
                     ee_delta.dy,
                     ee_delta.dz,
@@ -271,8 +305,8 @@ def run_with_controller(sim: ArmSimulator):
             pos = sim.get_ee_position()
             print(
                 f"EE: x={pos[0]:.3f} y={pos[1]:.3f} z={pos[2]:.3f} | "
-                f"Gripper: {sim.gripper_pos:.2f} | "
-                f"Joints: {np.round(sim.joint_pos_deg, 1)}   ",
+                f"Base: {sim.ik_joint_pos_deg[0]:+6.1f}° | "
+                f"Gripper: {sim.gripper_pos:.2f}   ",
                 end="\r",
                 flush=True,
             )
@@ -310,21 +344,21 @@ def run_demo_mode(sim: ArmSimulator):
         while running:
             loop_start = time.monotonic()
 
-            # Demo pattern: circular motion
-            dx = 0.05 * np.sin(t * 0.5)
-            dy = 0.05 * np.cos(t * 0.5)
+            # Demo pattern: XYZ motion + wrist roll
+            dx = 0.03 * np.sin(t * 0.5)
+            dy = 0.03 * np.cos(t * 0.5)
             dz = 0.02 * np.sin(t * 0.3)
             droll = 0.2 * np.sin(t * 0.4)
 
-            sim.apply_ee_delta(dx, dy, dz, droll, LOOP_PERIOD)
+            sim.apply_delta(dx, dy, dz, droll, LOOP_PERIOD)
             sim.set_gripper(0.5 + 0.5 * np.sin(t * 0.2))
             sim.update_visualization()
 
             pos = sim.get_ee_position()
             print(
                 f"EE: x={pos[0]:.3f} y={pos[1]:.3f} z={pos[2]:.3f} | "
-                f"Gripper: {sim.gripper_pos:.2f} | "
-                f"Joints: {np.round(sim.joint_pos_deg, 1)}   ",
+                f"Base: {sim.ik_joint_pos_deg[0]:+6.1f}° | "
+                f"Gripper: {sim.gripper_pos:.2f}   ",
                 end="\r",
                 flush=True,
             )
@@ -350,6 +384,18 @@ def main():
         action="store_true",
         help="Run in demo mode without Xbox controller",
     )
+    parser.add_argument(
+        "--deadzone",
+        type=float,
+        default=0.15,
+        help="Controller deadzone (0.0-1.0). Default: 0.15",
+    )
+    parser.add_argument(
+        "--linear-scale",
+        type=float,
+        default=None,
+        help="Linear velocity scale (m/s). Default from config.",
+    )
     args = parser.parse_args()
 
     # Check URDF exists
@@ -368,7 +414,7 @@ def main():
     if args.no_controller:
         run_demo_mode(sim)
     else:
-        run_with_controller(sim)
+        run_with_controller(sim, deadzone=args.deadzone, linear_scale=args.linear_scale)
 
 
 if __name__ == "__main__":

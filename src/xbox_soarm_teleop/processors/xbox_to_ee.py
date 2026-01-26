@@ -7,13 +7,13 @@ from xbox_soarm_teleop.teleoperators.xbox import XboxState
 
 @dataclass
 class EEDelta:
-    """End effector delta command in Cartesian space.
+    """End effector delta command.
 
     Attributes:
-        dx: Linear velocity in X direction (m/s).
-        dy: Linear velocity in Y direction (m/s).
-        dz: Linear velocity in Z direction (m/s).
-        droll: Angular velocity around roll axis (rad/s).
+        dx: Linear velocity in X direction (m/s) - forward/back in arm plane.
+        dy: Linear velocity in Y direction (m/s) - left/right.
+        dz: Linear velocity in Z direction (m/s) - up/down.
+        droll: Angular velocity around roll axis (rad/s) - wrist roll.
         gripper: Gripper position (0=open, 1=closed).
     """
 
@@ -29,14 +29,19 @@ class EEDelta:
 
     def is_zero_motion(self) -> bool:
         """Check if all motion commands are zero."""
-        return self.dx == 0.0 and self.dy == 0.0 and self.dz == 0.0 and self.droll == 0.0
+        return (
+            self.dx == 0.0
+            and self.dy == 0.0
+            and self.dz == 0.0
+            and self.droll == 0.0
+        )
 
 
 class MapXboxToEEDelta:
     """Maps Xbox controller state to end effector velocity commands.
 
     This processor transforms normalized controller inputs into
-    Cartesian velocity commands for the end effector.
+    velocity commands for the end effector and base rotation.
 
     The deadman switch (left bumper) must be held for any motion
     to occur. The gripper is position-controlled and always active.
@@ -50,9 +55,11 @@ class MapXboxToEEDelta:
         self,
         linear_scale: float = 0.1,
         angular_scale: float = 0.5,
+        wrist_roll_threshold: float = 0.25,  # Extra threshold for wrist roll to prevent drift
     ):
         self.linear_scale = linear_scale
         self.angular_scale = angular_scale
+        self.wrist_roll_threshold = wrist_roll_threshold
 
     def __call__(self, state: XboxState) -> EEDelta:
         """Map controller state to end effector delta.
@@ -70,11 +77,16 @@ class MapXboxToEEDelta:
         if not state.left_bumper:
             return EEDelta(gripper=gripper)
 
+        # Apply extra threshold for wrist roll to prevent drift when using right stick Y
+        wrist_roll_input = state.right_stick_x
+        if abs(wrist_roll_input) < self.wrist_roll_threshold:
+            wrist_roll_input = 0.0
+
         return EEDelta(
-            dx=-state.right_stick_y * self.linear_scale,  # Forward/back (right stick Y, negated)
-            dy=-state.left_stick_x * self.linear_scale,  # Left/right (left stick X, negated)
-            dz=-state.left_stick_y * self.linear_scale,  # Up/down (left stick Y, negated)
-            droll=state.right_stick_x * self.angular_scale,  # Roll (right stick X)
+            dx=-state.right_stick_y * self.linear_scale,  # Forward/back (right stick Y)
+            dy=-state.left_stick_x * self.linear_scale,  # Left/right (left stick X)
+            dz=-state.left_stick_y * self.linear_scale,  # Up/down (left stick Y)
+            droll=wrist_roll_input * self.angular_scale,  # Wrist roll (right stick X)
             gripper=gripper,
         )
 

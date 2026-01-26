@@ -10,10 +10,10 @@ Usage:
 
 Controls:
     - Hold LB (left bumper) to enable arm movement
-    - Left stick X: Left/right (Y axis)
+    - Left stick X: Move left/right (Y axis)
     - Left stick Y: Up/down (Z axis)
     - Right stick Y: Forward/back (X axis)
-    - Right stick X: Wrist roll rotation
+    - Right stick X: Wrist roll rotation (direct, not IK)
     - Right trigger: Gripper (released=open, pulled=closed)
     - A button: Return to home position
     - Close window or Ctrl+C: Exit
@@ -38,6 +38,12 @@ JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wri
 # Control loop rate
 CONTROL_RATE = 30  # Hz
 LOOP_PERIOD = 1.0 / CONTROL_RATE
+GRIPPER_DEFAULT = 0.0  # 0=open, 1=closed
+
+
+def gripper_to_robot(gripper_pos: float) -> float:
+    """Map gripper position (0=open, 1=closed) to robot command."""
+    return (1.0 - gripper_pos) * 100.0
 
 
 def find_serial_port() -> str | None:
@@ -127,7 +133,7 @@ def run_dual_mode(port: str):
     kinematics = RobotKinematics(
         urdf_path=str(URDF_PATH),
         target_frame_name="gripper_frame_link",
-        joint_names=JOINT_NAMES[:-1],
+        joint_names=["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"],
     )
 
     # Initialize MuJoCo simulation
@@ -171,9 +177,14 @@ def run_dual_mode(port: str):
     print("  Close window or Ctrl+C to exit\n", flush=True)
 
     # Current state
-    joint_pos_deg = np.zeros(5)
-    ee_pose = kinematics.forward_kinematics(joint_pos_deg)
-    gripper_pos = 0.0
+    wrist_roll_deg = 0.0
+    ik_joint_pos_deg = np.zeros(4)
+    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+    gripper_pos = GRIPPER_DEFAULT
+
+    # Ensure sim + robot start with the same gripper state
+    sim.set_joint_positions(np.zeros(5), gripper_pos)
+    robot.send_action({"gripper.pos": gripper_to_robot(gripper_pos)})
 
     running = True
 
@@ -194,17 +205,19 @@ def run_dual_mode(port: str):
 
                 if state.a_button_pressed:
                     print("\nGoing home...", flush=True)
-                    joint_pos_deg = np.zeros(5)
-                    ee_pose = kinematics.forward_kinematics(joint_pos_deg)
-                    gripper_pos = 0.0
+                    wrist_roll_deg = 0.0
+                    ik_joint_pos_deg = np.zeros(4)
+                    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+                    gripper_pos = GRIPPER_DEFAULT
 
                     # Update simulation
                     sim.go_home()
+                    sim.set_joint_positions(np.zeros(5), gripper_pos)
                     viewer.sync()
 
                     # Send to real robot
                     action = {f"{name}.pos": 0.0 for name in JOINT_NAMES[:-1]}
-                    action["gripper.pos"] = 0.0
+                    action["gripper.pos"] = gripper_to_robot(GRIPPER_DEFAULT)
                     robot.send_action(action)
                     continue
 
@@ -220,7 +233,7 @@ def run_dual_mode(port: str):
                     gripper_pos = gripper_target
 
                 if not ee_delta.is_zero_motion():
-                    # Update target EE pose
+                    # Update target EE pose (X/Y/Z)
                     target_pos = ee_pose[:3, 3].copy()
                     target_pos[0] += ee_delta.dx * LOOP_PERIOD
                     target_pos[1] += ee_delta.dy * LOOP_PERIOD
@@ -236,27 +249,35 @@ def run_dual_mode(port: str):
 
                     # Solve IK
                     new_joints = kinematics.inverse_kinematics(
-                        joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=0.0
+                        ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=0.0
                     )
-                    joint_pos_deg = new_joints[:5]
+                    ik_joint_pos_deg = new_joints[:4]
 
                     # Apply wrist roll directly
                     if abs(ee_delta.droll) > 0.001:
                         roll_delta_deg = np.rad2deg(ee_delta.droll * LOOP_PERIOD)
-                        joint_pos_deg[4] += roll_delta_deg
-                        joint_pos_deg[4] = np.clip(joint_pos_deg[4], -180.0, 180.0)
+                        wrist_roll_deg += roll_delta_deg
+                        wrist_roll_deg = np.clip(wrist_roll_deg, -180.0, 180.0)
 
-                    ee_pose = kinematics.forward_kinematics(joint_pos_deg)
+                    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+
+                full_joint_pos_deg = np.array([
+                    ik_joint_pos_deg[0],
+                    ik_joint_pos_deg[1],
+                    ik_joint_pos_deg[2],
+                    ik_joint_pos_deg[3],
+                    wrist_roll_deg,
+                ])
 
                 # Update simulation (digital twin)
-                sim.set_joint_positions(joint_pos_deg, gripper_pos)
+                sim.set_joint_positions(full_joint_pos_deg, gripper_pos)
                 viewer.sync()
 
                 # Send to real robot
                 action = {}
                 for i, name in enumerate(JOINT_NAMES[:-1]):
-                    action[f"{name}.pos"] = deg_to_normalized(joint_pos_deg[i], name)
-                action["gripper.pos"] = gripper_pos * 100.0
+                    action[f"{name}.pos"] = deg_to_normalized(full_joint_pos_deg[i], name)
+                action["gripper.pos"] = gripper_to_robot(gripper_pos)
                 robot.send_action(action)
 
                 # Status
