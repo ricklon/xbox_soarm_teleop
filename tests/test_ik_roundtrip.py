@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES
+
 # Skip all tests in this module if placo not available
 placo = pytest.importorskip("placo")
 
@@ -12,7 +14,7 @@ placo = pytest.importorskip("placo")
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
 
 # Joint names for SO101 (excluding wrist_roll and gripper for IK)
-JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
+JOINT_NAMES = IK_JOINT_NAMES
 
 # End effector frame name
 EE_FRAME = "gripper_frame_link"

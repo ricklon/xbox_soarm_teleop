@@ -35,11 +35,12 @@ from pathlib import Path
 
 import numpy as np
 
+from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES, JOINT_NAMES
+
 # Path to URDF with absolute mesh paths
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
 
 # Joint configuration
-JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
 EE_FRAME = "gripper_frame_link"
 
 # Control loop rate
@@ -60,9 +61,6 @@ class ArmSimulator:
     Uses direct base control (not IK) for smooth turret-style rotation.
     IK is used for the base and 3 arm joints (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex).
     """
-
-    # IK joint names (including base, excluding wrist_roll)
-    IK_JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
 
     def __init__(self, urdf_path: str):
         """Initialize the simulator.
@@ -89,7 +87,7 @@ class ArmSimulator:
         self.ee_frame_id = self.model.getFrameId(EE_FRAME)
 
         # IK joint positions (4 joints) in degrees
-        self.ik_joint_pos_deg = np.zeros(len(self.IK_JOINT_NAMES))
+        self.ik_joint_pos_deg = np.zeros(len(IK_JOINT_NAMES))
         self.wrist_roll_deg = 0.0
 
         # Gripper position (0-1)
@@ -102,7 +100,7 @@ class ArmSimulator:
         self.kinematics = RobotKinematics(
             urdf_path=urdf_path,
             target_frame_name=EE_FRAME,
-            joint_names=self.IK_JOINT_NAMES,
+            joint_names=IK_JOINT_NAMES,
         )
 
         self._update_ee_pose()
@@ -207,7 +205,7 @@ class ArmSimulator:
 
     def go_home(self) -> None:
         """Move to home position."""
-        self.ik_joint_pos_deg = np.zeros(len(self.IK_JOINT_NAMES))
+        self.ik_joint_pos_deg = np.zeros(len(IK_JOINT_NAMES))
         self.wrist_roll_deg = 0.0
         self.gripper_pos = 0.0
         self._update_ee_pose()

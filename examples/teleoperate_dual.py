@@ -29,11 +29,13 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
+from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES, JOINT_NAMES_WITH_GRIPPER
+
 # Path to URDF
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
 
 # Joint names (order matters - matches URDF and robot)
-JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+JOINT_NAMES = JOINT_NAMES_WITH_GRIPPER
 
 # Control loop rate
 CONTROL_RATE = 30  # Hz
@@ -133,7 +135,7 @@ def run_dual_mode(port: str):
     kinematics = RobotKinematics(
         urdf_path=str(URDF_PATH),
         target_frame_name="gripper_frame_link",
-        joint_names=["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"],
+        joint_names=IK_JOINT_NAMES,
     )
 
     # Initialize MuJoCo simulation

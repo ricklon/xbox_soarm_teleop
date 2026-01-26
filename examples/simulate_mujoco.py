@@ -35,11 +35,13 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
+from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES, JOINT_NAMES_WITH_GRIPPER
+
 # Path to URDF
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
 
 # Joint names (order matters - matches URDF joint order)
-JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+JOINT_NAMES = JOINT_NAMES_WITH_GRIPPER
 
 # Control loop rate
 CONTROL_RATE = 50  # Hz
@@ -148,7 +150,7 @@ def run_with_controller(
     from xbox_soarm_teleop.teleoperators.xbox import XboxController
 
     # IK joint names - include base, exclude wrist_roll (controlled directly)
-    ik_joint_names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
+    ik_joint_names = IK_JOINT_NAMES
 
     # Initialize kinematics for IK (4 joints, not 5)
     kinematics = RobotKinematics(
@@ -318,7 +320,7 @@ def run_demo_mode(sim: MuJoCoSimulator):
     kinematics = RobotKinematics(
         urdf_path=str(URDF_PATH),
         target_frame_name="gripper_frame_link",
-        joint_names=["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"],
+        joint_names=IK_JOINT_NAMES,
     )
 
     print("\nDemo mode - automatic movement", flush=True)

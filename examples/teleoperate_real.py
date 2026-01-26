@@ -28,11 +28,13 @@ from pathlib import Path
 
 import numpy as np
 
+from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES, JOINT_NAMES_WITH_GRIPPER
+
 # Path to URDF
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
 
 # Joint names (order matters - matches URDF and robot)
-JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+JOINT_NAMES = JOINT_NAMES_WITH_GRIPPER
 
 # Control loop rate
 CONTROL_RATE = 30  # Hz
@@ -112,7 +114,7 @@ def run_teleoperation(
         print("Calibration cache cleared.", flush=True)
 
     # IK joint names - include base, exclude wrist_roll (controlled directly)
-    ik_joint_names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"]
+    ik_joint_names = IK_JOINT_NAMES
 
     # Initialize kinematics for IK (4 joints, not 5)
     print("Loading kinematics model...", flush=True)
