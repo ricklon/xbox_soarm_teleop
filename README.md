@@ -225,6 +225,31 @@ Or use lerobot's built-in calibration with diagnostics:
 lerobot-calibrate --robot.type=so101_follower --robot.port=/dev/ttyUSB0 --diagnose
 ```
 
+### Firmware version mismatch
+
+If you see this error:
+```
+Error: Some Motors use different firmware versions:
+{1: '3.9', 2: '3.9', 3: '3.10', 4: '3.9', 5: '3.9', 6: '3.9'}
+```
+
+All motors must have the same firmware. Update using Feetech's Windows software:
+
+1. Download FD software from https://www.feetechrc.com/software
+2. **Windows:** Run FD.exe directly
+3. **Linux (Wine):**
+   ```bash
+   # Set up serial port for Wine
+   mkdir -p ~/.wine/dosdevices
+   ln -sf /dev/ttyACM0 ~/.wine/dosdevices/com3
+
+   # Run Feetech software
+   wine FD.exe
+   ```
+4. Connect one motor at a time, scan, and update firmware
+
+**Warning:** Do not disconnect power/USB during firmware update - it can brick the motor.
+
 ### Common calibration issues
 
 **Zero position difference:** Motor position not changing

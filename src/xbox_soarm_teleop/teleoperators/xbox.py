@@ -1,5 +1,6 @@
 """Xbox controller teleoperator for SO-ARM teleoperation."""
 
+import math
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -128,23 +129,32 @@ class XboxController:
         with self._raw_state_lock:
             raw_copy = self._raw_state.copy()
 
-        # Normalize and apply deadzone
-        self._state.left_stick_x = self._normalize_stick(
+        # Normalize stick values (without deadzone - applied radially below)
+        left_x = self._normalize_stick_raw(
             raw_copy.get(self.config.left_stick_x_axis, 0),
             invert=self.config.invert_x,
         )
-        self._state.left_stick_y = self._normalize_stick(
+        left_y = self._normalize_stick_raw(
             raw_copy.get(self.config.left_stick_y_axis, 0),
             invert=self.config.invert_y,
         )
-        self._state.right_stick_x = self._normalize_stick(
+        right_x = self._normalize_stick_raw(
             raw_copy.get(self.config.right_stick_x_axis, 0),
             invert=self.config.invert_roll,
         )
-        self._state.right_stick_y = self._normalize_stick(
+        right_y = self._normalize_stick_raw(
             raw_copy.get(self.config.right_stick_y_axis, 0),
             invert=self.config.invert_z,
         )
+
+        # Apply radial deadzone to each stick (treats both axes together)
+        self._state.left_stick_x, self._state.left_stick_y = self._apply_radial_deadzone(
+            left_x, left_y
+        )
+        self._state.right_stick_x, self._state.right_stick_y = self._apply_radial_deadzone(
+            right_x, right_y
+        )
+
         self._state.right_trigger = self._normalize_trigger(
             raw_copy.get(self.config.right_trigger_axis, 0)
         )
@@ -179,15 +189,15 @@ class XboxController:
                 # Ignore other errors, keep trying
                 pass
 
-    def _normalize_stick(self, value: int, invert: bool = False) -> float:
-        """Normalize stick value to [-1, 1] with deadzone.
+    def _normalize_stick_raw(self, value: int, invert: bool = False) -> float:
+        """Normalize stick value to [-1, 1] without deadzone.
 
         Args:
             value: Raw stick value.
             invert: Whether to invert the axis.
 
         Returns:
-            Normalized value in [-1, 1] with deadzone applied.
+            Normalized value in [-1, 1].
         """
         min_val, max_val = self.config.stick_range
         center = (min_val + max_val) / 2
@@ -200,8 +210,38 @@ class XboxController:
         if invert:
             normalized = -normalized
 
-        # Apply deadzone
-        return self._apply_deadzone(normalized)
+        # Clamp to [-1, 1]
+        return max(-1.0, min(1.0, normalized))
+
+    def _apply_radial_deadzone(self, x: float, y: float) -> tuple[float, float]:
+        """Apply radial (circular) deadzone to a stick's X/Y values.
+
+        This treats both axes together, so diagonal movements and slight
+        off-axis drift are properly filtered.
+
+        Args:
+            x: Normalized X axis value in [-1, 1].
+            y: Normalized Y axis value in [-1, 1].
+
+        Returns:
+            Tuple of (x, y) with radial deadzone applied.
+        """
+        magnitude = math.sqrt(x * x + y * y)
+
+        if magnitude < self.config.deadzone:
+            return 0.0, 0.0
+
+        # Rescale to maintain full range outside deadzone
+        # Map [deadzone, 1] -> [0, 1]
+        scale = (magnitude - self.config.deadzone) / (1.0 - self.config.deadzone)
+
+        # Normalize direction and apply scaled magnitude
+        # Clamp scale to avoid exceeding 1.0 at corners
+        scale = min(scale, 1.0)
+        new_x = (x / magnitude) * scale
+        new_y = (y / magnitude) * scale
+
+        return new_x, new_y
 
     def _normalize_trigger(self, value: int) -> float:
         """Normalize trigger value to [0, 1].
@@ -216,20 +256,3 @@ class XboxController:
         if max_val == min_val:
             return 0.0
         return max(0.0, min(1.0, (value - min_val) / (max_val - min_val)))
-
-    def _apply_deadzone(self, value: float) -> float:
-        """Apply deadzone to a normalized value.
-
-        Args:
-            value: Normalized value in [-1, 1].
-
-        Returns:
-            Value with deadzone applied, rescaled to maintain full range.
-        """
-        if abs(value) < self.config.deadzone:
-            return 0.0
-
-        # Rescale to maintain full range outside deadzone
-        sign = 1.0 if value > 0 else -1.0
-        rescaled = (abs(value) - self.config.deadzone) / (1.0 - self.config.deadzone)
-        return sign * min(1.0, rescaled)
