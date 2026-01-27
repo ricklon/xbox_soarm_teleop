@@ -9,6 +9,7 @@ Usage:
     uv run python examples/teleoperate_real.py --recalibrate  # Fresh calibration
     uv run python examples/teleoperate_real.py --no-calibrate # Skip calibration
     uv run python examples/teleoperate_real.py --motion-routine
+    uv run python examples/teleoperate_real.py --motion-routine --routine-pattern square-xyz
 
 Controls:
     - Hold LB (left bumper) to enable arm movement
@@ -88,6 +89,10 @@ def run_teleoperation(
     motion_routine: bool = False,
     routine_duration: float = 15.0,
     routine_scale: float = 1.0,
+    routine_pattern: str = "lissajous",
+    routine_plane: str = "xy",
+    routine_square_size: float = 0.06,
+    routine_square_speed: float = 0.03,
 ):
     """Run teleoperation with real robot.
 
@@ -102,6 +107,10 @@ def run_teleoperation(
         motion_routine: If True, run an automatic motion routine (no controller).
         routine_duration: Duration in seconds for motion routine.
         routine_scale: Scale for routine motion amplitudes.
+        routine_pattern: Motion routine pattern (lissajous, square, square-xyz).
+        routine_plane: Plane for square routine (xy, xz, yz).
+        routine_square_size: Square side length in meters.
+        routine_square_speed: Max tracking speed for square (m/s).
     """
     import shutil
 
@@ -186,7 +195,11 @@ def run_teleoperation(
     print("Robot connected!", flush=True)
     if motion_routine:
         print("\nMotion routine:", flush=True)
-        print(f"  Duration: {routine_duration:.1f}s | Scale: {routine_scale:.2f}", flush=True)
+        print(
+            f"  Duration: {routine_duration:.1f}s | Scale: {routine_scale:.2f} | "
+            f"Pattern: {routine_pattern}",
+            flush=True,
+        )
         print("  Ctrl+C: Stop\n", flush=True)
     else:
         print("\nControls:", flush=True)
@@ -223,6 +236,28 @@ def run_teleoperation(
     # Get initial EE pose
     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
     gripper_pos = 0.0  # 0-1 range
+    routine_center = ee_pose[:3, 3].copy()
+
+    def square_offset(u: float, size: float) -> tuple[float, float]:
+        half = size / 2.0
+        s = (u % 1.0) * 4.0
+        seg = int(s)
+        f = s - seg
+        if seg == 0:
+            return (-half + f * size, -half)
+        if seg == 1:
+            return (half, -half + f * size)
+        if seg == 2:
+            return (half - f * size, half)
+        return (-half, half - f * size)
+
+    def plane_offset(plane: str, u: float, size: float) -> np.ndarray:
+        a, b = square_offset(u, size)
+        if plane == "xy":
+            return np.array([a, b, 0.0])
+        if plane == "xz":
+            return np.array([a, 0.0, b])
+        return np.array([0.0, a, b])
 
     running = True
     loop_counter = 0
@@ -244,9 +279,32 @@ def run_teleoperation(
                 t = time.monotonic() - routine_start
                 if t >= routine_duration:
                     break
-                dx = routine_scale * 0.03 * np.sin(t * 0.5)
-                dy = routine_scale * 0.03 * np.cos(t * 0.5)
-                dz = routine_scale * 0.02 * np.sin(t * 0.3)
+                if routine_pattern == "lissajous":
+                    dx = routine_scale * 0.03 * np.sin(t * 0.5)
+                    dy = routine_scale * 0.03 * np.cos(t * 0.5)
+                    dz = routine_scale * 0.02 * np.sin(t * 0.3)
+                else:
+                    size = routine_square_size * routine_scale
+                    if routine_pattern == "square-xyz":
+                        segment = max(routine_duration / 3.0, 0.1)
+                        plane_idx = int(t / segment)
+                        plane = ["xy", "xz", "yz"][min(plane_idx, 2)]
+                        u = (t % segment) / segment
+                    else:
+                        plane = routine_plane
+                        u = (t / max(routine_duration, 0.1)) % 1.0
+                    desired = routine_center + plane_offset(plane, u, size)
+                    delta = desired - ee_pose[:3, 3]
+                    dist = float(np.linalg.norm(delta))
+                    if dist < 1e-6:
+                        dx = dy = dz = 0.0
+                    else:
+                        vel = delta / LOOP_PERIOD
+                        speed = float(np.linalg.norm(vel))
+                        max_speed = max(routine_square_speed, 0.001)
+                        if speed > max_speed:
+                            vel = vel * (max_speed / speed)
+                        dx, dy, dz = vel
                 droll = routine_scale * 0.10 * np.sin(t * 0.4)
                 gripper = 0.5 + 0.2 * np.sin(t * 0.2)
                 gripper = float(np.clip(gripper, 0.0, 1.0))
@@ -447,6 +505,38 @@ def main():
         default=1.0,
         help="Scale factor for routine motion amplitudes. Default: 1.0.",
     )
+    parser.add_argument(
+        "--routine-pattern",
+        type=str,
+        default="lissajous",
+        choices=["lissajous", "square", "square-xyz"],
+        help="Motion routine pattern. Default: lissajous.",
+    )
+    parser.add_argument(
+        "--routine-plane",
+        type=str,
+        default="xy",
+        choices=["xy", "xz", "yz"],
+        help="Plane for square routine. Default: xy.",
+    )
+    parser.add_argument(
+        "--routine-square-size",
+        type=float,
+        default=0.06,
+        help="Square side length in meters. Default: 0.06.",
+    )
+    parser.add_argument(
+        "--routine-square-speed",
+        type=float,
+        default=0.03,
+        help="Max tracking speed for square routine (m/s). Default: 0.03.",
+    )
+    parser.add_argument(
+        "--routine-square-period",
+        type=float,
+        default=None,
+        help="Seconds per square trace (overrides square speed if set).",
+    )
     args = parser.parse_args()
 
     if args.recalibrate and args.no_calibrate:
@@ -466,6 +556,13 @@ def main():
             sys.exit(1)
         print(f"Auto-detected port: {port}")
 
+    if args.routine_square_period is not None:
+        if args.routine_square_period <= 0:
+            print("ERROR: --routine-square-period must be > 0.")
+            sys.exit(1)
+        perimeter = 4.0 * max(args.routine_square_size, 0.001)
+        args.routine_square_speed = perimeter / args.routine_square_period
+
     run_teleoperation(
         port,
         recalibrate=args.recalibrate,
@@ -477,6 +574,10 @@ def main():
         motion_routine=args.motion_routine,
         routine_duration=args.routine_duration,
         routine_scale=args.routine_scale,
+        routine_pattern=args.routine_pattern,
+        routine_plane=args.routine_plane,
+        routine_square_size=args.routine_square_size,
+        routine_square_speed=args.routine_square_speed,
     )
 
 

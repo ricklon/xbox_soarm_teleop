@@ -27,10 +27,12 @@ Controls (Demo mode, --no-controller):
 
 import argparse
 import csv
+import json
 import signal
 import sys
 import time
 from pathlib import Path
+from xml.etree import ElementTree
 
 import mujoco
 import mujoco.viewer
@@ -428,6 +430,15 @@ def run_with_controller(
 
 def run_demo_mode(
     sim: MuJoCoSimulator,
+    routine_pattern: str = "lissajous",
+    routine_plane: str = "xy",
+    routine_square_size: float = 0.06,
+    routine_square_speed: float = 0.03,
+    routine_duration: float = 0.0,
+    routine_scale: float = 1.0,
+    routine_trace: bool = False,
+    routine_trace_max: int = 300,
+    routine_trace_step_mm: float = 2.0,
     ik_log_path: str | None = None,
     ik_max_err_mm: float = 30.0,
     ik_mean_err_mm: float = 10.0,
@@ -451,6 +462,83 @@ def run_demo_mode(
     last_ee_pose = ee_pose.copy()
     ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])
     t = 0.0
+    center_pos = ee_pose[:3, 3].copy()
+    trace_points: list[np.ndarray] = []
+    trace_min_step_m = max(routine_trace_step_mm / 1000.0, 0.0005)
+
+    def square_offset(u: float, size: float) -> tuple[float, float]:
+        half = size / 2.0
+        s = (u % 1.0) * 4.0
+        seg = int(s)
+        f = s - seg
+        if seg == 0:
+            return (-half + f * size, -half)
+        if seg == 1:
+            return (half, -half + f * size)
+        if seg == 2:
+            return (half - f * size, half)
+        return (-half, half - f * size)
+
+    def plane_offset(plane: str, u: float, size: float) -> np.ndarray:
+        a, b = square_offset(u, size)
+        if plane == "xy":
+            return np.array([a, b, 0.0])
+        if plane == "xz":
+            return np.array([a, 0.0, b])
+        return np.array([0.0, a, b])
+
+    def demo_target_offset(t_s: float) -> np.ndarray:
+        if routine_pattern == "lissajous":
+            return routine_scale * np.array([
+                0.03 * np.sin(t_s * 0.5),
+                0.03 * np.cos(t_s * 0.5),
+                0.02 * np.sin(t_s * 0.3),
+            ])
+        size = routine_square_size * routine_scale
+        if routine_pattern == "square-xyz":
+            period = max((4.0 * size) / max(routine_square_speed, 0.001), 0.1)
+            phase = t_s / period
+            plane_idx = int(phase) % 3
+            u = phase - int(phase)
+            plane = ["xy", "xz", "yz"][plane_idx]
+            return plane_offset(plane, u, size)
+        period = max((4.0 * size) / max(routine_square_speed, 0.001), 0.1)
+        u = (t_s / period) % 1.0
+        return plane_offset(routine_plane, u, size)
+
+    def draw_trace(viewer: mujoco.viewer.Handle, points: list[np.ndarray]) -> None:
+        if not routine_trace:
+            return
+        rgba = (0.1, 0.9, 0.1, 1.0)
+        radius = 0.003
+        if hasattr(viewer, "add_marker"):
+            for p in points:
+                viewer.add_marker(
+                    pos=p,
+                    size=[radius, radius, radius],
+                    rgba=rgba,
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                )
+            return
+        if not hasattr(viewer, "user_scn"):
+            return
+        scene = viewer.user_scn
+        scene.ngeom = 0
+        max_geoms = int(getattr(scene, "maxgeom", 0))
+        mat = np.eye(3).flatten()
+        for p in points:
+            if scene.ngeom >= max_geoms:
+                break
+            geom = scene.geoms[scene.ngeom]
+            mujoco.mjv_initGeom(
+                geom,
+                mujoco.mjtGeom.mjGEOM_SPHERE,
+                np.array([radius, radius, radius]),
+                p,
+                mat,
+                np.array(rgba),
+            )
+            scene.ngeom += 1
 
     running = True
     error_count = 0
@@ -487,18 +575,14 @@ def run_demo_mode(
         while viewer.is_running() and running:
             loop_start = time.monotonic()
 
-            # Demo pattern
-            dx = 0.03 * np.sin(t * 0.5)
-            dy = 0.03 * np.cos(t * 0.5)
-            dz = 0.02 * np.sin(t * 0.3)
+            if routine_duration > 0.0 and t >= routine_duration:
+                break
+
+            # Routine pattern
+            offset = demo_target_offset(t)
+            target_pos = center_pos + offset
             droll = 0.1 * np.sin(t * 0.4)
             gripper = 0.5 + 0.5 * np.sin(t * 0.2)
-
-            # Update EE
-            target_pos = ee_pose[:3, 3].copy()
-            target_pos[0] += dx * LOOP_PERIOD
-            target_pos[1] += dy * LOOP_PERIOD
-            target_pos[2] += dz * LOOP_PERIOD
 
             target_pos[0] = np.clip(target_pos[0], -0.1, 0.5)
             target_pos[1] = np.clip(target_pos[1], -0.3, 0.3)
@@ -540,9 +624,18 @@ def run_demo_mode(
             sim.set_joint_targets(full_joint_pos_deg)
             sim.set_gripper(gripper)
             sim.step()
+            pos = sim.get_ee_position()
+            if routine_trace:
+                if not trace_points:
+                    trace_points.append(pos.copy())
+                else:
+                    if np.linalg.norm(pos - trace_points[-1]) >= trace_min_step_m:
+                        trace_points.append(pos.copy())
+                if len(trace_points) > routine_trace_max:
+                    trace_points = trace_points[-routine_trace_max :]
+                draw_trace(viewer, trace_points)
             viewer.sync()
 
-            pos = sim.get_ee_position()
             pos_err = float(np.linalg.norm(last_ee_pose[:3, 3] - last_target_pose[:3, 3]))
             error_count += 1
             error_sum += pos_err
@@ -595,9 +688,155 @@ def run_demo_mode(
     return 0
 
 
+def parse_joint_limits(urdf_path: Path, joint_names: list[str]) -> dict[str, tuple[float, float]]:
+    """Return URDF joint limits in radians."""
+    limits: dict[str, tuple[float, float]] = {}
+    root = ElementTree.parse(urdf_path).getroot()
+    for joint in root.findall("joint"):
+        name = joint.get("name")
+        if name not in joint_names:
+            continue
+        limit = joint.find("limit")
+        if limit is None:
+            continue
+        lower = limit.get("lower")
+        upper = limit.get("upper")
+        if lower is None or upper is None:
+            continue
+        limits[name] = (float(lower), float(upper))
+    return limits
+
+
+def limits_rad_to_deg(limits: dict[str, tuple[float, float]]) -> dict[str, tuple[float, float]]:
+    return {name: (np.rad2deg(low), np.rad2deg(high)) for name, (low, high) in limits.items()}
+
+
+def load_calibration_fractions(calibration_path: Path, joint_names: list[str]) -> dict[str, float]:
+    if not calibration_path.exists():
+        raise FileNotFoundError(calibration_path)
+    data = json.loads(calibration_path.read_text())
+    fractions: dict[str, float] = {}
+    full = 4095.0
+    for name in joint_names:
+        if name not in data:
+            continue
+        entry = data[name]
+        width = float(entry["range_max"]) - float(entry["range_min"])
+        fractions[name] = max(min(width / full, 1.0), 0.05)
+    return fractions
+
+
+def find_default_calibration() -> Path | None:
+    base = Path.home() / ".cache/huggingface/lerobot/calibration/robots"
+    if not base.exists():
+        return None
+    candidates = list(base.rglob("*.json"))
+    return candidates[0] if candidates else None
+
+
+def apply_calibration_to_limits(
+    limits: dict[str, tuple[float, float]],
+    fractions: dict[str, float],
+) -> dict[str, tuple[float, float]]:
+    effective: dict[str, tuple[float, float]] = {}
+    for name, (lower, upper) in limits.items():
+        frac = fractions.get(name, 1.0)
+        center = 0.5 * (lower + upper)
+        span = (upper - lower) * frac
+        effective[name] = (center - 0.5 * span, center + 0.5 * span)
+    return effective
+
+
+def square_points(plane: str, size: float, samples_per_side: int) -> list[np.ndarray]:
+    half = size / 2.0
+    samples = max(samples_per_side, 2)
+    t = np.linspace(0.0, 1.0, samples, endpoint=False)
+    points: list[np.ndarray] = []
+    for u in t:
+        s = u * 4.0
+        seg = int(s)
+        f = s - seg
+        if seg == 0:
+            a, b = -half + f * size, -half
+        elif seg == 1:
+            a, b = half, -half + f * size
+        elif seg == 2:
+            a, b = half - f * size, half
+        else:
+            a, b = -half, half - f * size
+        if plane == "xy":
+            points.append(np.array([a, b, 0.0]))
+        elif plane == "xz":
+            points.append(np.array([a, 0.0, b]))
+        else:
+            points.append(np.array([0.0, a, b]))
+    return points
+
+
+def estimate_max_square_size(
+    kinematics,
+    joint_limits: dict[str, tuple[float, float]],
+    center_pos: np.ndarray,
+    plane: str,
+    max_size: float,
+    samples_per_side: int,
+    max_err_mm: float,
+    iterations: int,
+    verbose: bool,
+) -> float:
+    lower_bound = 0.0
+    upper_bound = max_size
+    max_err_m = max_err_mm / 1000.0
+    joint_names = IK_JOINT_NAMES
+
+    def square_ok(size: float) -> bool:
+        points = square_points(plane, size, samples_per_side)
+        guess = np.zeros(len(joint_names))
+        for offset in points:
+            target_pose = kinematics.forward_kinematics(guess)
+            target_pose[:3, 3] = center_pos + offset
+            try:
+                solved = kinematics.inverse_kinematics(
+                    guess, target_pose, position_weight=1.0, orientation_weight=0.0
+                )
+            except Exception:
+                return False
+            solved = np.array(solved[: len(joint_names)])
+            if np.any(~np.isfinite(solved)):
+                return False
+            for idx, name in enumerate(joint_names):
+                if name in joint_limits:
+                    low, high = joint_limits[name]
+                    if solved[idx] < low or solved[idx] > high:
+                        return False
+            fk_pose = kinematics.forward_kinematics(solved)
+            err = np.linalg.norm(fk_pose[:3, 3] - (center_pos + offset))
+            if err > max_err_m:
+                return False
+            guess = solved
+        return True
+
+    for i in range(iterations):
+        mid = 0.5 * (lower_bound + upper_bound)
+        ok = square_ok(mid)
+        if verbose:
+            status = "ok" if ok else "fail"
+            print(f"  iter {i+1:02d}: size={mid:.4f}m -> {status}", flush=True)
+        if ok:
+            lower_bound = mid
+        else:
+            upper_bound = mid
+    return lower_bound
+
+
 def main():
     parser = argparse.ArgumentParser(description="MuJoCo SO-ARM101 simulation")
     parser.add_argument("--no-controller", action="store_true", help="Run demo mode")
+    parser.add_argument(
+        "--motion-routine",
+        action="store_true",
+        help="Run automatic motion routine (alias for --no-controller).",
+    )
     parser.add_argument(
         "--deadzone",
         type=float,
@@ -639,19 +878,191 @@ def main():
         default=10.0,
         help="Fail if mean position error exceeds this (mm). Default: 10.",
     )
+    parser.add_argument(
+        "--routine-pattern",
+        "--demo-pattern",
+        type=str,
+        default="lissajous",
+        choices=["lissajous", "square", "square-xyz"],
+        help="Routine pattern when --no-controller. Default: lissajous.",
+    )
+    parser.add_argument(
+        "--routine-plane",
+        "--demo-square-plane",
+        type=str,
+        default="xy",
+        choices=["xy", "xz", "yz"],
+        help="Plane for square routine. Default: xy.",
+    )
+    parser.add_argument(
+        "--routine-square-size",
+        "--demo-square-size",
+        type=float,
+        default=0.06,
+        help="Square side length in meters. Default: 0.06.",
+    )
+    parser.add_argument(
+        "--routine-square-speed",
+        type=float,
+        default=0.03,
+        help="Max square edge speed (m/s). Default: 0.03.",
+    )
+    parser.add_argument(
+        "--routine-square-period",
+        "--demo-square-period",
+        type=float,
+        default=None,
+        help="Seconds per square trace (overrides square speed if set).",
+    )
+    parser.add_argument(
+        "--routine-duration",
+        type=float,
+        default=0.0,
+        help="Auto-stop after this many seconds (0 = run until close). Default: 0.",
+    )
+    parser.add_argument(
+        "--routine-scale",
+        type=float,
+        default=1.0,
+        help="Scale factor for routine motion. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--routine-trace",
+        "--demo-trace",
+        action="store_true",
+        help="Draw a virtual pen trace of the end effector.",
+    )
+    parser.add_argument(
+        "--routine-trace-max",
+        "--demo-trace-max",
+        type=int,
+        default=300,
+        help="Max trace points to draw. Default: 300.",
+    )
+    parser.add_argument(
+        "--routine-trace-step-mm",
+        "--demo-trace-step-mm",
+        type=float,
+        default=2.0,
+        help="Minimum distance between trace points (mm). Default: 2.0.",
+    )
+    parser.add_argument(
+        "--estimate-max-square",
+        action="store_true",
+        help="Estimate max square size per plane (kinematics-only) and exit.",
+    )
+    parser.add_argument(
+        "--estimate-max-square-plane",
+        type=str,
+        default="all",
+        choices=["xy", "xz", "yz", "all"],
+        help="Plane to estimate (xy/xz/yz/all). Default: all.",
+    )
+    parser.add_argument(
+        "--estimate-max-square-max",
+        type=float,
+        default=0.18,
+        help="Upper bound for square size search (m). Default: 0.18.",
+    )
+    parser.add_argument(
+        "--estimate-max-square-samples",
+        type=int,
+        default=24,
+        help="Samples per square side for feasibility check. Default: 24.",
+    )
+    parser.add_argument(
+        "--estimate-max-square-iterations",
+        type=int,
+        default=10,
+        help="Binary search iterations. Default: 10.",
+    )
+    parser.add_argument(
+        "--estimate-max-square-err-mm",
+        type=float,
+        default=8.0,
+        help="Max FK error allowed per point (mm). Default: 8.0.",
+    )
+    parser.add_argument(
+        "--estimate-use-calibration",
+        action="store_true",
+        help="Shrink URDF joint limits based on calibration range (conservative).",
+    )
+    parser.add_argument(
+        "--estimate-calibration-path",
+        type=str,
+        default=None,
+        help="Path to calibration JSON. Default: auto-detect.",
+    )
     args = parser.parse_args()
 
     if not URDF_PATH.exists():
         print(f"ERROR: URDF not found at {URDF_PATH}")
         sys.exit(1)
 
+    if args.estimate_max_square:
+        from lerobot.model.kinematics import RobotKinematics
+
+        kinematics = RobotKinematics(
+            urdf_path=str(URDF_PATH),
+            target_frame_name="gripper_frame_link",
+            joint_names=IK_JOINT_NAMES,
+        )
+        limits = limits_rad_to_deg(parse_joint_limits(URDF_PATH, IK_JOINT_NAMES))
+        if args.estimate_use_calibration:
+            cal_path = Path(args.estimate_calibration_path) if args.estimate_calibration_path else find_default_calibration()
+            if cal_path is None:
+                print("ERROR: No calibration JSON found.")
+                sys.exit(2)
+            fractions = load_calibration_fractions(cal_path, IK_JOINT_NAMES)
+            limits = apply_calibration_to_limits(limits, fractions)
+            print(f"Using calibration limits: {cal_path}", flush=True)
+
+        center = kinematics.forward_kinematics(np.zeros(len(IK_JOINT_NAMES)))[:3, 3].copy()
+        planes = ["xy", "xz", "yz"] if args.estimate_max_square_plane == "all" else [args.estimate_max_square_plane]
+        print("Max square estimate (kinematics-only)")
+        print(f"  max_size search: {args.estimate_max_square_max:.3f} m")
+        print(f"  samples/side: {args.estimate_max_square_samples}")
+        print(f"  max_err: {args.estimate_max_square_err_mm:.1f} mm")
+        for plane in planes:
+            size = estimate_max_square_size(
+                kinematics=kinematics,
+                joint_limits=limits,
+                center_pos=center,
+                plane=plane,
+                max_size=args.estimate_max_square_max,
+                samples_per_side=args.estimate_max_square_samples,
+                max_err_mm=args.estimate_max_square_err_mm,
+                iterations=args.estimate_max_square_iterations,
+                verbose=False,
+            )
+            print(f"  {plane}: {size:.3f} m")
+        return
+
     print("Loading MuJoCo model...", flush=True)
     sim = MuJoCoSimulator(str(URDF_PATH))
     print("Model loaded!", flush=True)
 
-    if args.no_controller:
+    if args.routine_square_period is not None:
+        if args.routine_square_period <= 0:
+            print("ERROR: --routine-square-period must be > 0.")
+            sys.exit(1)
+        perimeter = 4.0 * max(args.routine_square_size, 0.001)
+        args.routine_square_speed = perimeter / args.routine_square_period
+
+    no_controller = args.no_controller or args.motion_routine
+
+    if no_controller:
         exit_code = run_demo_mode(
             sim,
+            routine_pattern=args.routine_pattern,
+            routine_plane=args.routine_plane,
+            routine_square_size=args.routine_square_size,
+            routine_square_speed=args.routine_square_speed,
+            routine_duration=args.routine_duration,
+            routine_scale=args.routine_scale,
+            routine_trace=args.routine_trace,
+            routine_trace_max=args.routine_trace_max,
+            routine_trace_step_mm=args.routine_trace_step_mm,
             ik_log_path=args.ik_log,
             ik_max_err_mm=args.ik_max_err_mm,
             ik_mean_err_mm=args.ik_mean_err_mm,
