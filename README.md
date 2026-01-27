@@ -78,9 +78,16 @@ uv run python examples/simulate_mujoco.py
 
 A window will open with the robot. Close window or Ctrl+C to exit.
 
-**Demo mode**:
+**Routine mode (no controller)**:
 ```bash
-uv run python examples/simulate_mujoco.py --no-controller
+uv run python examples/simulate_mujoco.py --motion-routine
+```
+
+**Routine square trace + pen trail (MuJoCo)**:
+```bash
+uv run python examples/simulate_mujoco.py --motion-routine \
+  --routine-pattern square --routine-plane xy \
+  --routine-square-size 0.06 --routine-trace
 ```
 
 **IK error logging + thresholds (demo mode)**:
@@ -98,6 +105,9 @@ uv run python examples/teleoperate_real.py
 
 # Or specify port manually
 uv run python examples/teleoperate_real.py --port /dev/ttyUSB0
+
+# Routine mode (no controller)
+uv run python examples/teleoperate_real.py --motion-routine --routine-pattern square --routine-plane xy
 ```
 
 ### 5. Digital Twin Mode (Real Robot + Simulation)
@@ -106,6 +116,9 @@ Run both the real robot and MuJoCo simulation simultaneously. The simulation sho
 
 ```bash
 uv run python examples/teleoperate_dual.py --port /dev/ttyUSB0
+
+# Routine mode (no controller)
+uv run python examples/teleoperate_dual.py --port /dev/ttyUSB0 --motion-routine --routine-pattern square-xyz
 ```
 
 ## Examples
