@@ -335,9 +335,13 @@ def run_dual_mode(
                             if speed > max_speed:
                                 vel = vel * (max_speed / speed)
                             dx, dy, dz = vel
-                    droll = routine_scale * 0.10 * np.sin(t * 0.4)
-                    gripper_target = 0.5 + 0.2 * np.sin(t * 0.2)
-                    gripper_target = float(np.clip(gripper_target, 0.0, 1.0))
+                    if routine_pattern == "lissajous":
+                        droll = routine_scale * 0.10 * np.sin(t * 0.4)
+                        gripper_target = 0.5 + 0.2 * np.sin(t * 0.2)
+                        gripper_target = float(np.clip(gripper_target, 0.0, 1.0))
+                    else:
+                        droll = 0.0
+                        gripper_target = gripper_pos
                 else:
                     state = controller.read()
 

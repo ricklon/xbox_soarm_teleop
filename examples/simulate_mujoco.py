@@ -581,8 +581,12 @@ def run_demo_mode(
             # Routine pattern
             offset = demo_target_offset(t)
             target_pos = center_pos + offset
-            droll = 0.1 * np.sin(t * 0.4)
-            gripper = 0.5 + 0.5 * np.sin(t * 0.2)
+            if routine_pattern == "lissajous":
+                droll = 0.1 * np.sin(t * 0.4)
+                gripper = 0.5 + 0.5 * np.sin(t * 0.2)
+            else:
+                droll = 0.0
+                gripper = 0.0
 
             target_pos[0] = np.clip(target_pos[0], -0.1, 0.5)
             target_pos[1] = np.clip(target_pos[1], -0.3, 0.3)

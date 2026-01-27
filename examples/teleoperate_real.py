@@ -305,9 +305,13 @@ def run_teleoperation(
                         if speed > max_speed:
                             vel = vel * (max_speed / speed)
                         dx, dy, dz = vel
-                droll = routine_scale * 0.10 * np.sin(t * 0.4)
-                gripper = 0.5 + 0.2 * np.sin(t * 0.2)
-                gripper = float(np.clip(gripper, 0.0, 1.0))
+                if routine_pattern == "lissajous":
+                    droll = routine_scale * 0.10 * np.sin(t * 0.4)
+                    gripper = 0.5 + 0.2 * np.sin(t * 0.2)
+                    gripper = float(np.clip(gripper, 0.0, 1.0))
+                else:
+                    droll = 0.0
+                    gripper = gripper_pos
                 ee_delta = EEDelta(dx=dx, dy=dy, dz=dz, droll=droll, gripper=gripper)
             else:
                 state = controller.read()
