@@ -50,53 +50,59 @@ class TestXboxController:
         controller = XboxController(xbox_config)
         assert controller.config is xbox_config
 
-    def test_deadzone_filters_small_values(self, xbox_controller: XboxController):
-        """Deadzone should filter values below threshold."""
-        assert xbox_controller._apply_deadzone(0.05) == 0.0
-        assert xbox_controller._apply_deadzone(-0.05) == 0.0
-        assert xbox_controller._apply_deadzone(0.09) == 0.0
+    def test_radial_deadzone_filters_small_values(self, xbox_controller: XboxController):
+        """Radial deadzone should filter values below threshold."""
+        # Small deflection in any direction
+        x, y = xbox_controller._apply_radial_deadzone(0.05, 0.05)
+        assert x == 0.0
+        assert y == 0.0
 
-    def test_deadzone_passes_large_values(self, xbox_controller: XboxController):
-        """Deadzone should pass and rescale values above threshold."""
-        # Value just above deadzone (0.1)
-        result = xbox_controller._apply_deadzone(0.15)
-        assert result > 0.0
-        # Should be rescaled: (0.15 - 0.1) / (1.0 - 0.1) = 0.0555...
-        assert abs(result - 0.0555) < 0.01
+        # Even diagonal small values should be filtered
+        x, y = xbox_controller._apply_radial_deadzone(0.07, 0.07)
+        assert x == 0.0
+        assert y == 0.0
 
-    def test_deadzone_preserves_sign(self, xbox_controller: XboxController):
-        """Deadzone should preserve sign of input."""
-        positive = xbox_controller._apply_deadzone(0.5)
-        negative = xbox_controller._apply_deadzone(-0.5)
-        assert positive > 0
-        assert negative < 0
-        assert abs(positive) == abs(negative)
+    def test_radial_deadzone_passes_large_values(self, xbox_controller: XboxController):
+        """Radial deadzone should pass and rescale values above threshold."""
+        # Value clearly above deadzone (0.1)
+        x, y = xbox_controller._apply_radial_deadzone(0.5, 0.0)
+        assert x > 0.0
+        # Rescaled: (0.5 - 0.1) / (1.0 - 0.1) = 0.444...
+        assert abs(x - 0.444) < 0.01
+        assert y == 0.0
 
-    def test_deadzone_full_range(self, xbox_controller: XboxController):
-        """Full stick deflection should return +/- 1.0."""
-        assert xbox_controller._apply_deadzone(1.0) == 1.0
-        assert xbox_controller._apply_deadzone(-1.0) == -1.0
+    def test_radial_deadzone_preserves_direction(self, xbox_controller: XboxController):
+        """Radial deadzone should preserve direction of input."""
+        x_pos, y_pos = xbox_controller._apply_radial_deadzone(0.5, 0.5)
+        x_neg, y_neg = xbox_controller._apply_radial_deadzone(-0.5, -0.5)
+        assert x_pos > 0 and y_pos > 0
+        assert x_neg < 0 and y_neg < 0
 
-    def test_normalize_stick_center(self, xbox_controller: XboxController):
-        """Center position should normalize to 0."""
+    def test_radial_deadzone_full_range(self, xbox_controller: XboxController):
+        """Full stick deflection should return magnitude ~1.0."""
+        x, y = xbox_controller._apply_radial_deadzone(1.0, 0.0)
+        assert abs(x - 1.0) < 0.01
+        assert y == 0.0
+
+    def test_normalize_stick_raw_center(self, xbox_controller: XboxController):
+        """Center position should normalize to ~0."""
         # Center of default range (-32768, 32767) is approximately 0
-        result = xbox_controller._normalize_stick(0)
+        result = xbox_controller._normalize_stick_raw(0)
         assert abs(result) < 0.01  # Should be very close to 0
 
-    def test_normalize_stick_extremes(self, xbox_controller: XboxController):
+    def test_normalize_stick_raw_extremes(self, xbox_controller: XboxController):
         """Extreme positions should normalize to +/- 1."""
         min_val, max_val = xbox_controller.config.stick_range
-        result_max = xbox_controller._normalize_stick(max_val)
-        result_min = xbox_controller._normalize_stick(min_val)
-        # After deadzone, full deflection should still be ~1.0
-        assert result_max > 0.9
-        assert result_min < -0.9
+        result_max = xbox_controller._normalize_stick_raw(max_val)
+        result_min = xbox_controller._normalize_stick_raw(min_val)
+        assert result_max > 0.99
+        assert result_min < -0.99
 
-    def test_normalize_stick_invert(self, xbox_controller: XboxController):
+    def test_normalize_stick_raw_invert(self, xbox_controller: XboxController):
         """Inversion should flip the sign."""
         value = 16000  # Positive deflection
-        normal = xbox_controller._normalize_stick(value, invert=False)
-        inverted = xbox_controller._normalize_stick(value, invert=True)
+        normal = xbox_controller._normalize_stick_raw(value, invert=False)
+        inverted = xbox_controller._normalize_stick_raw(value, invert=True)
         assert normal > 0
         assert inverted < 0
 
@@ -127,13 +133,15 @@ class TestEEDelta:
         assert delta.dy == 0.0
         assert delta.dz == 0.0
         assert delta.droll == 0.0
+        assert delta.dpitch == 0.0
+        assert delta.dyaw == 0.0
         assert delta.gripper == 0.0
 
     def test_as_array(self):
         """as_array should return correct list."""
-        delta = EEDelta(dx=0.1, dy=0.2, dz=0.3, droll=0.4, gripper=0.5)
+        delta = EEDelta(dx=0.1, dy=0.2, dz=0.3, droll=0.4, dpitch=0.5, dyaw=0.6, gripper=0.7)
         arr = delta.as_array()
-        assert arr == [0.1, 0.2, 0.3, 0.4, 0.5]
+        assert arr == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 
     def test_is_zero_motion(self):
         """is_zero_motion should detect zero velocity."""

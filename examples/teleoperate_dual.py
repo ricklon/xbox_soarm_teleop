@@ -148,6 +148,9 @@ def run_dual_mode(port: str):
     mapper = MapXboxToEEDelta(
         linear_scale=config.linear_scale,
         angular_scale=config.angular_scale,
+        orientation_scale=config.orientation_scale,
+        invert_pitch=config.invert_pitch,
+        invert_yaw=config.invert_yaw,
     )
     gripper_rate = config.gripper_rate
 
@@ -174,6 +177,8 @@ def run_dual_mode(port: str):
     print("Simulation window shows real-time preview of robot movements", flush=True)
     print("\nControls:", flush=True)
     print("  Hold LB + move sticks to control arm", flush=True)
+    print("  D-pad up/down: Pitch (tilt gripper)", flush=True)
+    print("  D-pad left/right: Yaw (rotate heading)", flush=True)
     print("  Right trigger for gripper", flush=True)
     print("  A button to go home", flush=True)
     print("  Close window or Ctrl+C to exit\n", flush=True)
@@ -183,6 +188,21 @@ def run_dual_mode(port: str):
     ik_joint_pos_deg = np.zeros(4)
     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
     gripper_pos = GRIPPER_DEFAULT
+
+    # Target orientation (euler angles in radians)
+    target_pitch = 0.0
+    target_yaw = 0.0
+
+    def euler_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+        """Convert euler angles (ZYX convention) to rotation matrix."""
+        cr, sr = np.cos(roll), np.sin(roll)
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        cy, sy = np.cos(yaw), np.sin(yaw)
+        return np.array([
+            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr],
+        ])
 
     # Ensure sim + robot start with the same gripper state
     sim.set_joint_positions(np.zeros(5), gripper_pos)
@@ -209,6 +229,8 @@ def run_dual_mode(port: str):
                     print("\nGoing home...", flush=True)
                     wrist_roll_deg = 0.0
                     ik_joint_pos_deg = np.zeros(4)
+                    target_pitch = 0.0
+                    target_yaw = 0.0
                     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
                     gripper_pos = GRIPPER_DEFAULT
 
@@ -246,12 +268,30 @@ def run_dual_mode(port: str):
                     target_pos[1] = np.clip(target_pos[1], -0.3, 0.3)
                     target_pos[2] = np.clip(target_pos[2], 0.05, 0.45)
 
+                    # Update target orientation
+                    if abs(ee_delta.dpitch) > 0.001:
+                        target_pitch += ee_delta.dpitch * LOOP_PERIOD
+                        target_pitch = np.clip(target_pitch, -np.pi / 2, np.pi / 2)
+
+                    if abs(ee_delta.dyaw) > 0.001:
+                        target_yaw += ee_delta.dyaw * LOOP_PERIOD
+                        target_yaw = np.clip(target_yaw, -np.pi, np.pi)
+
                     target_pose = ee_pose.copy()
                     target_pose[:3, 3] = target_pos
 
+                    # Build target orientation if pitch/yaw are set
+                    has_orientation_target = abs(target_pitch) > 0.01 or abs(target_yaw) > 0.01
+                    if has_orientation_target:
+                        target_rotation = euler_to_rotation_matrix(0.0, target_pitch, target_yaw)
+                        target_pose[:3, :3] = target_rotation
+                        orientation_weight = 0.1  # Low weight - strongly prioritize position
+                    else:
+                        orientation_weight = 0.0
+
                     # Solve IK
                     new_joints = kinematics.inverse_kinematics(
-                        ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=0.0
+                        ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=orientation_weight
                     )
                     ik_joint_pos_deg = new_joints[:4]
 
@@ -284,8 +324,11 @@ def run_dual_mode(port: str):
 
                 # Status
                 pos = sim.get_ee_position()
+                pitch_deg = np.rad2deg(target_pitch)
+                yaw_deg = np.rad2deg(target_yaw)
                 print(
-                    f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | Gripper: {gripper_pos:.2f}   ",
+                    f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
+                    f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {gripper_pos:.2f}   ",
                     end="\r",
                     flush=True,
                 )

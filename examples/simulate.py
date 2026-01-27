@@ -93,6 +93,12 @@ class ArmSimulator:
         # Gripper position (0-1)
         self.gripper_pos = 0.0
 
+        # Target orientation (euler angles in radians)
+        # Pitch: rotation around local Y axis (tilt gripper up/down)
+        # Yaw: rotation around world Z axis (rotate gripper heading)
+        self.target_pitch = 0.0
+        self.target_yaw = 0.0
+
         # Current EE pose (4x4 transform) - in arm plane
         self.ee_pose = None
 
@@ -148,7 +154,39 @@ class ArmSimulator:
         """Get current end effector position in arm plane."""
         return self.ee_pose[:3, 3].copy()
 
-    def apply_delta(self, dx: float, dy: float, dz: float, droll: float, dt: float) -> bool:
+    def _euler_to_rotation_matrix(self, roll: float, pitch: float, yaw: float) -> np.ndarray:
+        """Convert euler angles (ZYX convention) to rotation matrix.
+
+        Args:
+            roll: Rotation around X axis (radians)
+            pitch: Rotation around Y axis (radians)
+            yaw: Rotation around Z axis (radians)
+
+        Returns:
+            3x3 rotation matrix
+        """
+        cr, sr = np.cos(roll), np.sin(roll)
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        cy, sy = np.cos(yaw), np.sin(yaw)
+
+        # ZYX euler angles to rotation matrix
+        R = np.array([
+            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr],
+        ])
+        return R
+
+    def apply_delta(
+        self,
+        dx: float,
+        dy: float,
+        dz: float,
+        droll: float,
+        dt: float,
+        dpitch: float = 0.0,
+        dyaw: float = 0.0,
+    ) -> bool:
         """Apply movement delta with IK for base and arm.
 
         Args:
@@ -157,6 +195,8 @@ class ArmSimulator:
             dz: Z velocity (m/s) - up/down
             droll: Wrist roll velocity (rad/s)
             dt: Time step (seconds)
+            dpitch: Pitch velocity (rad/s) - tilt gripper up/down
+            dyaw: Yaw velocity (rad/s) - rotate gripper heading
 
         Returns:
             True if successful.
@@ -172,15 +212,35 @@ class ArmSimulator:
         target_pos[1] = np.clip(target_pos[1], *WORKSPACE_LIMITS["y"])
         target_pos[2] = np.clip(target_pos[2], *WORKSPACE_LIMITS["z"])
 
+        # Update target orientation
+        if abs(dpitch) > 0.001:
+            self.target_pitch += dpitch * dt
+            self.target_pitch = np.clip(self.target_pitch, -np.pi / 2, np.pi / 2)
+
+        if abs(dyaw) > 0.001:
+            self.target_yaw += dyaw * dt
+            self.target_yaw = np.clip(self.target_yaw, -np.pi, np.pi)
+
         target_pose = self.ee_pose.copy()
         target_pose[:3, 3] = target_pos
 
-        # Solve IK for 4 joints (position only)
+        # Build target orientation from euler angles
+        # Roll is controlled separately via wrist_roll (not part of IK)
+        # Use current roll from ee_pose for the IK target
+        has_orientation_target = abs(self.target_pitch) > 0.01 or abs(self.target_yaw) > 0.01
+        if has_orientation_target:
+            target_rotation = self._euler_to_rotation_matrix(0.0, self.target_pitch, self.target_yaw)
+            target_pose[:3, :3] = target_rotation
+            orientation_weight = 0.1  # Low weight - strongly prioritize position
+        else:
+            orientation_weight = 0.0
+
+        # Solve IK for 4 joints
         new_joints = self.kinematics.inverse_kinematics(
             self.ik_joint_pos_deg,
             target_pose,
             position_weight=1.0,
-            orientation_weight=0.0,
+            orientation_weight=orientation_weight,
         )
         ik_result = new_joints[:4]
 
@@ -208,6 +268,8 @@ class ArmSimulator:
         self.ik_joint_pos_deg = np.zeros(len(IK_JOINT_NAMES))
         self.wrist_roll_deg = 0.0
         self.gripper_pos = 0.0
+        self.target_pitch = 0.0
+        self.target_yaw = 0.0
         self._update_ee_pose()
 
     def update_visualization(self) -> None:
@@ -231,11 +293,15 @@ def run_with_controller(
     mapper = MapXboxToEEDelta(
         linear_scale=config.linear_scale,
         angular_scale=config.angular_scale,
+        orientation_scale=config.orientation_scale,
+        invert_pitch=config.invert_pitch,
+        invert_yaw=config.invert_yaw,
     )
     gripper_rate = config.gripper_rate  # Position change per second
 
     print(f"Controller deadzone: {config.deadzone}", flush=True)
     print(f"Linear scale: {config.linear_scale} m/s", flush=True)
+    print(f"Orientation scale: {config.orientation_scale} rad/s", flush=True)
 
     if not controller.connect():
         print("ERROR: Failed to connect to Xbox controller")
@@ -253,6 +319,8 @@ def run_with_controller(
     print("  Left stick Y: Move up/down", flush=True)
     print("  Right stick Y: Move forward/back", flush=True)
     print("  Right stick X: Wrist roll", flush=True)
+    print("  D-pad up/down: Pitch (tilt gripper)", flush=True)
+    print("  D-pad left/right: Yaw (rotate heading)", flush=True)
     print("  Right trigger: Gripper", flush=True)
     print("  A button: Return to home", flush=True)
     print("  Ctrl+C: Exit\n", flush=True)
@@ -296,15 +364,19 @@ def run_with_controller(
                     ee_delta.dz,
                     ee_delta.droll,
                     LOOP_PERIOD,
+                    dpitch=ee_delta.dpitch,
+                    dyaw=ee_delta.dyaw,
                 )
 
             sim.update_visualization()
 
             pos = sim.get_ee_position()
+            pitch_deg = np.rad2deg(sim.target_pitch)
+            yaw_deg = np.rad2deg(sim.target_yaw)
             print(
-                f"EE: x={pos[0]:.3f} y={pos[1]:.3f} z={pos[2]:.3f} | "
-                f"Base: {sim.ik_joint_pos_deg[0]:+6.1f}° | "
-                f"Gripper: {sim.gripper_pos:.2f}   ",
+                f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
+                f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | "
+                f"Grip: {sim.gripper_pos:.2f}   ",
                 end="\r",
                 flush=True,
             )
@@ -342,21 +414,25 @@ def run_demo_mode(sim: ArmSimulator):
         while running:
             loop_start = time.monotonic()
 
-            # Demo pattern: XYZ motion + wrist roll
+            # Demo pattern: XYZ motion + wrist roll + pitch/yaw
             dx = 0.03 * np.sin(t * 0.5)
             dy = 0.03 * np.cos(t * 0.5)
             dz = 0.02 * np.sin(t * 0.3)
             droll = 0.2 * np.sin(t * 0.4)
+            dpitch = 0.3 * np.sin(t * 0.25)
+            dyaw = 0.2 * np.sin(t * 0.15)
 
-            sim.apply_delta(dx, dy, dz, droll, LOOP_PERIOD)
+            sim.apply_delta(dx, dy, dz, droll, LOOP_PERIOD, dpitch=dpitch, dyaw=dyaw)
             sim.set_gripper(0.5 + 0.5 * np.sin(t * 0.2))
             sim.update_visualization()
 
             pos = sim.get_ee_position()
+            pitch_deg = np.rad2deg(sim.target_pitch)
+            yaw_deg = np.rad2deg(sim.target_yaw)
             print(
-                f"EE: x={pos[0]:.3f} y={pos[1]:.3f} z={pos[2]:.3f} | "
-                f"Base: {sim.ik_joint_pos_deg[0]:+6.1f}° | "
-                f"Gripper: {sim.gripper_pos:.2f}   ",
+                f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
+                f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | "
+                f"Grip: {sim.gripper_pos:.2f}   ",
                 end="\r",
                 flush=True,
             )

@@ -166,10 +166,14 @@ def run_with_controller(
     mapper = MapXboxToEEDelta(
         linear_scale=config.linear_scale,
         angular_scale=config.angular_scale,
+        orientation_scale=config.orientation_scale,
+        invert_pitch=config.invert_pitch,
+        invert_yaw=config.invert_yaw,
     )
 
     print(f"Controller deadzone: {config.deadzone}", flush=True)
     print(f"Linear scale: {config.linear_scale} m/s", flush=True)
+    print(f"Orientation scale: {config.orientation_scale} rad/s", flush=True)
 
     # Joint velocity limits for IK joints (4 joints, no wrist_roll)
     ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])  # deg/s
@@ -187,6 +191,8 @@ def run_with_controller(
     print("  Left stick Y: Move up/down", flush=True)
     print("  Right stick Y: Move forward/back", flush=True)
     print("  Right stick X: Wrist roll (direct)", flush=True)
+    print("  D-pad up/down: Pitch (tilt gripper)", flush=True)
+    print("  D-pad left/right: Yaw (rotate heading)", flush=True)
     print("  Right trigger for gripper", flush=True)
     print("  A button to go home", flush=True)
     print("  Close window to exit\n", flush=True)
@@ -194,6 +200,21 @@ def run_with_controller(
     # IK joint positions (4 joints: base, shoulder_lift, elbow_flex, wrist_flex)
     ik_joint_pos_deg = np.zeros(4)
     wrist_roll_deg = 0.0
+
+    # Target orientation (euler angles in radians)
+    target_pitch = 0.0
+    target_yaw = 0.0
+
+    def euler_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+        """Convert euler angles (ZYX convention) to rotation matrix."""
+        cr, sr = np.cos(roll), np.sin(roll)
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        cy, sy = np.cos(yaw), np.sin(yaw)
+        return np.array([
+            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr],
+        ])
 
     # Get initial EE pose (with base at 0)
     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
@@ -220,6 +241,8 @@ def run_with_controller(
                 print("\nGoing home...", flush=True)
                 ik_joint_pos_deg = np.zeros(4)
                 wrist_roll_deg = 0.0
+                target_pitch = 0.0
+                target_yaw = 0.0
                 ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
                 sim.go_home()
                 viewer.sync()
@@ -246,12 +269,30 @@ def run_with_controller(
                 target_pos[0] = np.clip(target_pos[0], 0.05, 0.5)  # Min reach to avoid singularity
                 target_pos[2] = np.clip(target_pos[2], 0.05, 0.45)
 
+                # Update target orientation
+                if abs(ee_delta.dpitch) > 0.001:
+                    target_pitch += ee_delta.dpitch * LOOP_PERIOD
+                    target_pitch = np.clip(target_pitch, -np.pi / 2, np.pi / 2)
+
+                if abs(ee_delta.dyaw) > 0.001:
+                    target_yaw += ee_delta.dyaw * LOOP_PERIOD
+                    target_yaw = np.clip(target_yaw, -np.pi, np.pi)
+
                 target_pose = ee_pose.copy()
                 target_pose[:3, 3] = target_pos
 
-                # Solve IK for 4 joints (position only)
+                # Build target orientation if pitch/yaw are set
+                has_orientation_target = abs(target_pitch) > 0.01 or abs(target_yaw) > 0.01
+                if has_orientation_target:
+                    target_rotation = euler_to_rotation_matrix(0.0, target_pitch, target_yaw)
+                    target_pose[:3, :3] = target_rotation
+                    orientation_weight = 0.1  # Low weight - strongly prioritize position
+                else:
+                    orientation_weight = 0.0
+
+                # Solve IK for 4 joints
                 new_joints = kinematics.inverse_kinematics(
-                    ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=0.0
+                    ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=orientation_weight
                 )
                 ik_result = new_joints[:4]
 
@@ -295,11 +336,13 @@ def run_with_controller(
             sim.step()
             viewer.sync()
 
-            # Status - show base angle
+            # Status - show position and orientation
             pos = sim.get_ee_position()
+            pitch_deg = np.rad2deg(target_pitch)
+            yaw_deg = np.rad2deg(target_yaw)
             print(
                 f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
-                f"Base: {ik_joint_pos_deg[0]:+6.1f}° | Gripper: {gripper_pos:.2f}   ",
+                f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {gripper_pos:.2f}   ",
                 end="\r",
                 flush=True,
             )

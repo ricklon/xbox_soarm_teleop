@@ -77,6 +77,8 @@ SO101Follower (Robot)
 | Left Stick | Horizontal plane movement (X/Y) |
 | Right Stick Y | Vertical movement (Z) |
 | Right Stick X | Wrist roll rotation |
+| D-pad Up/Down | Pitch (tilt gripper up/down) |
+| D-pad Left/Right | Yaw (rotate gripper heading) |
 | Right Trigger | Gripper position (0=open, 1=closed) |
 | Left Bumper | Deadman switch (hold to enable) |
 | A Button | Return to home position |

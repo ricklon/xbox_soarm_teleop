@@ -13,6 +13,7 @@ class XboxState:
     """Normalized state of Xbox controller inputs.
 
     All stick values are normalized to [-1, 1].
+    D-pad values are -1, 0, or 1.
     Trigger values are normalized to [0, 1].
     Button values are boolean.
     """
@@ -25,6 +26,10 @@ class XboxState:
     left_bumper: bool = False
     a_button: bool = False
     y_button: bool = False
+
+    # D-pad state (-1, 0, or 1)
+    dpad_x: float = 0.0  # -1 = left, 1 = right
+    dpad_y: float = 0.0  # -1 = up, 1 = down (raw HAT convention)
 
     # Edge detection for buttons (True only on press, not hold)
     a_button_pressed: bool = False
@@ -123,6 +128,8 @@ class XboxController:
             left_bumper=self._state.left_bumper,
             a_button=self._state.a_button,
             y_button=self._state.y_button,
+            dpad_x=self._state.dpad_x,
+            dpad_y=self._state.dpad_y,
         )
 
         # Get current raw state (thread-safe)
@@ -163,6 +170,10 @@ class XboxController:
         self._state.left_bumper = bool(raw_copy.get(self.config.deadman_button, 0))
         self._state.a_button = bool(raw_copy.get(self.config.home_button, 0))
         self._state.y_button = bool(raw_copy.get(self.config.frame_toggle_button, 0))
+
+        # D-pad (HAT switch) - values are -1, 0, or 1
+        self._state.dpad_x = float(raw_copy.get(self.config.dpad_x_axis, 0))
+        self._state.dpad_y = float(raw_copy.get(self.config.dpad_y_axis, 0))
 
         # Edge detection - True only on rising edge
         self._state.a_button_pressed = self._state.a_button and not self._prev_state.a_button

@@ -25,6 +25,8 @@ Built as an extension to the [HuggingFace LeRobot](https://github.com/huggingfac
 | Left Stick Y | Up/down movement (Z axis) |
 | Right Stick Y | Forward/back movement (X axis) |
 | Right Stick X | Wrist roll rotation |
+| D-pad Up/Down | Pitch (tilt gripper up/down) |
+| D-pad Left/Right | Yaw (rotate gripper heading) |
 | Right Trigger | Gripper (released=open, pulled=closed) |
 | Left Bumper | Deadman switch (hold to enable) |
 | A Button | Return to home position |
