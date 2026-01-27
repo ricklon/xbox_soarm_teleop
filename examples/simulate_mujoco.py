@@ -138,6 +138,155 @@ class MuJoCoSimulator:
         mujoco.mj_forward(self.model, self.data)
 
 
+def sample_workspace_points(
+    kinematics,
+    limits_deg: dict[str, tuple[float, float]],
+    samples: int = 2000,
+    seed: int | None = 0,
+) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    joint_ranges: list[tuple[float, float]] = []
+    for name in IK_JOINT_NAMES:
+        if name in limits_deg:
+            joint_ranges.append(limits_deg[name])
+        else:
+            joint_ranges.append((-180.0, 180.0))
+    points = []
+    for _ in range(max(samples, 1)):
+        joint_pos = np.array([rng.uniform(low, high) for low, high in joint_ranges])
+        ee_pose = kinematics.forward_kinematics(joint_pos)
+        points.append(ee_pose[:3, 3].copy())
+    return np.array(points)
+
+
+def workspace_bbox_from_points(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    mins = points.min(axis=0)
+    maxs = points.max(axis=0)
+    return mins, maxs
+
+
+def workspace_hull_edges(points: np.ndarray) -> list[tuple[int, int]] | None:
+    try:
+        from scipy.spatial import ConvexHull
+    except Exception:
+        print("WARNING: SciPy not installed; convex hull disabled.", flush=True)
+        return None
+    if points.shape[0] < 4:
+        return None
+    hull = ConvexHull(points)
+    edges: set[tuple[int, int]] = set()
+    for simplex in hull.simplices:
+        i0, i1, i2 = (int(s) for s in simplex)
+        for a, b in ((i0, i1), (i1, i2), (i0, i2)):
+            if a > b:
+                a, b = b, a
+            edges.add((a, b))
+    return list(edges)
+
+
+def draw_workspace(
+    viewer: mujoco.viewer.Handle,
+    points: np.ndarray | None,
+    bbox: tuple[np.ndarray, np.ndarray] | None,
+    hull_edges: list[tuple[int, int]] | None,
+    mode: str,
+    point_max: int = 1200,
+) -> bool:
+    use_markers = hasattr(viewer, "add_marker")
+    use_user_scn = hasattr(viewer, "user_scn")
+    if not use_markers and not use_user_scn:
+        return False
+
+    scene = viewer.user_scn if use_user_scn else None
+    max_geoms = int(getattr(scene, "maxgeom", 0)) if scene is not None else 0
+    if scene is not None:
+        scene.ngeom = 0
+        mat = np.eye(3).flatten()
+
+    def add_point(p: np.ndarray, radius: float, rgba: tuple[float, float, float, float]) -> None:
+        if use_markers:
+            viewer.add_marker(
+                pos=p,
+                size=[radius, radius, radius],
+                rgba=rgba,
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            )
+            return
+        if scene is None or scene.ngeom >= max_geoms:
+            return
+        geom = scene.geoms[scene.ngeom]
+        mujoco.mjv_initGeom(
+            geom,
+            mujoco.mjtGeom.mjGEOM_SPHERE,
+            np.array([radius, radius, radius]),
+            p,
+            mat,
+            np.array(rgba),
+        )
+        scene.ngeom += 1
+
+    mode = mode.lower()
+    if points is not None and mode in ("points", "both", "all"):
+        if len(points) > point_max:
+            rng = np.random.default_rng(0)
+            idx = rng.choice(len(points), size=point_max, replace=False)
+            sample = points[idx]
+        else:
+            sample = points
+        rgba = (0.1, 0.6, 0.9, 0.35)
+        radius = 0.003
+        for p in sample:
+            add_point(p, radius, rgba)
+
+    if bbox is not None and mode in ("bbox", "both", "all"):
+        mins, maxs = bbox
+        corners = np.array([
+            [mins[0], mins[1], mins[2]],
+            [maxs[0], mins[1], mins[2]],
+            [maxs[0], maxs[1], mins[2]],
+            [mins[0], maxs[1], mins[2]],
+            [mins[0], mins[1], maxs[2]],
+            [maxs[0], mins[1], maxs[2]],
+            [maxs[0], maxs[1], maxs[2]],
+            [mins[0], maxs[1], maxs[2]],
+        ])
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+        rgba = (0.9, 0.2, 0.2, 0.8)
+        radius = 0.004
+        spacing = 0.02
+        for a, b in edges:
+            p0 = corners[a]
+            p1 = corners[b]
+            length = float(np.linalg.norm(p1 - p0))
+            steps = max(int(length / spacing), 1)
+            for i in range(steps + 1):
+                t = i / steps
+                add_point(p0 + t * (p1 - p0), radius, rgba)
+
+    if points is not None and hull_edges is not None and mode in ("hull", "all"):
+        edges = hull_edges
+        if len(edges) > point_max:
+            rng = np.random.default_rng(1)
+            idx = rng.choice(len(edges), size=point_max, replace=False)
+            edges = [edges[i] for i in idx]
+        rgba = (0.2, 0.9, 0.2, 0.7)
+        radius = 0.0035
+        spacing = 0.03
+        for a, b in edges:
+            p0 = points[a]
+            p1 = points[b]
+            length = float(np.linalg.norm(p1 - p0))
+            steps = max(int(length / spacing), 1)
+            for i in range(steps + 1):
+                t = i / steps
+                add_point(p0 + t * (p1 - p0), radius, rgba)
+    return True
+
+
 def run_with_controller(
     sim: MuJoCoSimulator,
     deadzone: float = 0.15,
@@ -147,6 +296,14 @@ def run_with_controller(
     ik_log_path: str | None = None,
     ik_max_err_mm: float = 30.0,
     ik_mean_err_mm: float = 10.0,
+    routine_trace: bool = False,
+    routine_trace_max: int = 300,
+    routine_trace_step_mm: float = 2.0,
+    workspace_draw: bool = False,
+    workspace_mode: str = "bbox",
+    workspace_samples: int = 2000,
+    workspace_point_max: int = 1200,
+    workspace_seed: int | None = 0,
 ) -> int:
     """Run with Xbox controller and MuJoCo viewer."""
     from lerobot.model.kinematics import RobotKinematics
@@ -228,6 +385,8 @@ def run_with_controller(
     last_ee_pose = ee_pose.copy()
     gripper_pos = 0.0  # Current gripper position (smoothed)
     gripper_rate = config.gripper_rate  # Position change per second
+    trace_points: list[np.ndarray] = []
+    trace_min_step_m = max(routine_trace_step_mm / 1000.0, 0.0005)
 
     running = True
     loop_counter = 0
@@ -261,9 +420,76 @@ def run_with_controller(
 
     signal.signal(signal.SIGINT, signal_handler)
 
+    workspace_points = None
+    workspace_bbox = None
+    workspace_edges = None
+    if workspace_draw:
+        limits = parse_joint_limits(URDF_PATH, ik_joint_names)
+        limits_deg = limits_rad_to_deg(limits)
+        workspace_points = sample_workspace_points(
+            kinematics,
+            limits_deg,
+            samples=workspace_samples,
+            seed=workspace_seed,
+        )
+        workspace_bbox = workspace_bbox_from_points(workspace_points)
+        if workspace_mode in ("hull", "all"):
+            workspace_edges = workspace_hull_edges(workspace_points)
+
+    def draw_trace(viewer: mujoco.viewer.Handle, points: list[np.ndarray], reset_scene: bool = True) -> None:
+        if not routine_trace:
+            return
+        rgba = (0.1, 0.9, 0.1, 1.0)
+        radius = 0.003
+        if hasattr(viewer, "add_marker"):
+            for p in points:
+                viewer.add_marker(
+                    pos=p,
+                    size=[radius, radius, radius],
+                    rgba=rgba,
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                )
+            return
+        if not hasattr(viewer, "user_scn"):
+            return
+        scene = viewer.user_scn
+        if reset_scene:
+            scene.ngeom = 0
+        max_geoms = int(getattr(scene, "maxgeom", 0))
+        mat = np.eye(3).flatten()
+        for p in points:
+            if scene.ngeom >= max_geoms:
+                break
+            geom = scene.geoms[scene.ngeom]
+            mujoco.mjv_initGeom(
+                geom,
+                mujoco.mjtGeom.mjGEOM_SPHERE,
+                np.array([radius, radius, radius]),
+                p,
+                mat,
+                np.array(rgba),
+            )
+            scene.ngeom += 1
+
     # Launch viewer
     with mujoco.viewer.launch_passive(sim.model, sim.data) as viewer:
+        workspace_drawn = False
         while viewer.is_running() and running:
+            redraw_workspace = workspace_draw and (
+                not workspace_drawn
+                or (routine_trace and not hasattr(viewer, "add_marker") and hasattr(viewer, "user_scn"))
+            )
+            if redraw_workspace:
+                if not draw_workspace(
+                    viewer,
+                    workspace_points,
+                    workspace_bbox,
+                    workspace_edges,
+                    workspace_mode,
+                    workspace_point_max,
+                ):
+                    print("WARNING: Workspace drawing not supported in this viewer.", flush=True)
+                workspace_drawn = True
             loop_start = time.monotonic()
 
             state = controller.read()
@@ -369,10 +595,18 @@ def run_with_controller(
             sim.set_joint_targets(full_joint_pos_deg)
             sim.set_gripper(gripper_pos)
             sim.step()
+            pos = sim.get_ee_position()
+            if routine_trace:
+                if not trace_points:
+                    trace_points.append(pos.copy())
+                elif np.linalg.norm(pos - trace_points[-1]) >= trace_min_step_m:
+                    trace_points.append(pos.copy())
+                if len(trace_points) > routine_trace_max:
+                    trace_points = trace_points[-routine_trace_max :]
+                draw_trace(viewer, trace_points, reset_scene=not redraw_workspace)
             viewer.sync()
 
             # Status - show position and orientation
-            pos = sim.get_ee_position()
             pos_err = float(np.linalg.norm(last_ee_pose[:3, 3] - last_target_pose[:3, 3]))
             error_count += 1
             error_sum += pos_err
@@ -434,11 +668,19 @@ def run_demo_mode(
     routine_plane: str = "xy",
     routine_square_size: float = 0.06,
     routine_square_speed: float = 0.03,
+    routine_center_x: float = 0.0,
+    routine_center_y: float = 0.0,
+    routine_center_z: float = 0.0,
     routine_duration: float = 0.0,
     routine_scale: float = 1.0,
     routine_trace: bool = False,
     routine_trace_max: int = 300,
     routine_trace_step_mm: float = 2.0,
+    workspace_draw: bool = False,
+    workspace_mode: str = "bbox",
+    workspace_samples: int = 2000,
+    workspace_point_max: int = 1200,
+    workspace_seed: int | None = 0,
     ik_log_path: str | None = None,
     ik_max_err_mm: float = 30.0,
     ik_mean_err_mm: float = 10.0,
@@ -463,6 +705,7 @@ def run_demo_mode(
     ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])
     t = 0.0
     center_pos = ee_pose[:3, 3].copy()
+    center_pos += np.array([routine_center_x, routine_center_y, routine_center_z], dtype=float)
     trace_points: list[np.ndarray] = []
     trace_min_step_m = max(routine_trace_step_mm / 1000.0, 0.0005)
 
@@ -506,7 +749,7 @@ def run_demo_mode(
         u = (t_s / period) % 1.0
         return plane_offset(routine_plane, u, size)
 
-    def draw_trace(viewer: mujoco.viewer.Handle, points: list[np.ndarray]) -> None:
+    def draw_trace(viewer: mujoco.viewer.Handle, points: list[np.ndarray], reset_scene: bool = True) -> None:
         if not routine_trace:
             return
         rgba = (0.1, 0.9, 0.1, 1.0)
@@ -523,7 +766,8 @@ def run_demo_mode(
         if not hasattr(viewer, "user_scn"):
             return
         scene = viewer.user_scn
-        scene.ngeom = 0
+        if reset_scene:
+            scene.ngeom = 0
         max_geoms = int(getattr(scene, "maxgeom", 0))
         mat = np.eye(3).flatten()
         for p in points:
@@ -571,8 +815,40 @@ def run_demo_mode(
 
     signal.signal(signal.SIGINT, signal_handler)
 
+    workspace_points = None
+    workspace_bbox = None
+    workspace_edges = None
+    if workspace_draw:
+        limits = parse_joint_limits(URDF_PATH, IK_JOINT_NAMES)
+        limits_deg = limits_rad_to_deg(limits)
+        workspace_points = sample_workspace_points(
+            kinematics,
+            limits_deg,
+            samples=workspace_samples,
+            seed=workspace_seed,
+        )
+        workspace_bbox = workspace_bbox_from_points(workspace_points)
+        if workspace_mode in ("hull", "all"):
+            workspace_edges = workspace_hull_edges(workspace_points)
+
     with mujoco.viewer.launch_passive(sim.model, sim.data) as viewer:
+        workspace_drawn = False
         while viewer.is_running() and running:
+            redraw_workspace = workspace_draw and (
+                not workspace_drawn
+                or (routine_trace and not hasattr(viewer, "add_marker") and hasattr(viewer, "user_scn"))
+            )
+            if redraw_workspace:
+                if not draw_workspace(
+                    viewer,
+                    workspace_points,
+                    workspace_bbox,
+                    workspace_edges,
+                    workspace_mode,
+                    workspace_point_max,
+                ):
+                    print("WARNING: Workspace drawing not supported in this viewer.", flush=True)
+                workspace_drawn = True
             loop_start = time.monotonic()
 
             if routine_duration > 0.0 and t >= routine_duration:
@@ -637,7 +913,7 @@ def run_demo_mode(
                         trace_points.append(pos.copy())
                 if len(trace_points) > routine_trace_max:
                     trace_points = trace_points[-routine_trace_max :]
-                draw_trace(viewer, trace_points)
+                draw_trace(viewer, trace_points, reset_scene=not redraw_workspace)
             viewer.sync()
 
             pos_err = float(np.linalg.norm(last_ee_pose[:3, 3] - last_target_pose[:3, 3]))
@@ -919,6 +1195,24 @@ def main():
         help="Seconds per square trace (overrides square speed if set).",
     )
     parser.add_argument(
+        "--routine-center-x",
+        type=float,
+        default=0.0,
+        help="Additive offset to routine center X (meters). Default: 0.",
+    )
+    parser.add_argument(
+        "--routine-center-y",
+        type=float,
+        default=0.0,
+        help="Additive offset to routine center Y (meters). Default: 0.",
+    )
+    parser.add_argument(
+        "--routine-center-z",
+        type=float,
+        default=0.0,
+        help="Additive offset to routine center Z (meters). Default: 0.",
+    )
+    parser.add_argument(
         "--routine-duration",
         type=float,
         default=0.0,
@@ -949,6 +1243,36 @@ def main():
         type=float,
         default=2.0,
         help="Minimum distance between trace points (mm). Default: 2.0.",
+    )
+    parser.add_argument(
+        "--workspace-draw",
+        action="store_true",
+        help="Draw an approximate reachable workspace in the viewer.",
+    )
+    parser.add_argument(
+        "--workspace-mode",
+        type=str,
+        default="bbox",
+        choices=["bbox", "points", "both", "hull", "all"],
+        help="Workspace draw mode. Default: bbox.",
+    )
+    parser.add_argument(
+        "--workspace-samples",
+        type=int,
+        default=2000,
+        help="Number of random joint samples for workspace. Default: 2000.",
+    )
+    parser.add_argument(
+        "--workspace-point-max",
+        type=int,
+        default=1200,
+        help="Max workspace points to draw. Default: 1200.",
+    )
+    parser.add_argument(
+        "--workspace-seed",
+        type=int,
+        default=0,
+        help="Random seed for workspace sampling (-1 for random). Default: 0.",
     )
     parser.add_argument(
         "--estimate-max-square",
@@ -1053,6 +1377,8 @@ def main():
         perimeter = 4.0 * max(args.routine_square_size, 0.001)
         args.routine_square_speed = perimeter / args.routine_square_period
 
+    workspace_seed = None if args.workspace_seed < 0 else args.workspace_seed
+
     no_controller = args.no_controller or args.motion_routine
 
     if no_controller:
@@ -1062,11 +1388,19 @@ def main():
             routine_plane=args.routine_plane,
             routine_square_size=args.routine_square_size,
             routine_square_speed=args.routine_square_speed,
+            routine_center_x=args.routine_center_x,
+            routine_center_y=args.routine_center_y,
+            routine_center_z=args.routine_center_z,
             routine_duration=args.routine_duration,
             routine_scale=args.routine_scale,
             routine_trace=args.routine_trace,
             routine_trace_max=args.routine_trace_max,
             routine_trace_step_mm=args.routine_trace_step_mm,
+            workspace_draw=args.workspace_draw,
+            workspace_mode=args.workspace_mode,
+            workspace_samples=args.workspace_samples,
+            workspace_point_max=args.workspace_point_max,
+            workspace_seed=workspace_seed,
             ik_log_path=args.ik_log,
             ik_max_err_mm=args.ik_max_err_mm,
             ik_mean_err_mm=args.ik_mean_err_mm,
@@ -1081,6 +1415,14 @@ def main():
             ik_log_path=args.ik_log,
             ik_max_err_mm=args.ik_max_err_mm,
             ik_mean_err_mm=args.ik_mean_err_mm,
+            routine_trace=args.routine_trace,
+            routine_trace_max=args.routine_trace_max,
+            routine_trace_step_mm=args.routine_trace_step_mm,
+            workspace_draw=args.workspace_draw,
+            workspace_mode=args.workspace_mode,
+            workspace_samples=args.workspace_samples,
+            workspace_point_max=args.workspace_point_max,
+            workspace_seed=workspace_seed,
         )
     sys.exit(exit_code)
 

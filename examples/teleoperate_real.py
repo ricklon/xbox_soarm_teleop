@@ -23,6 +23,7 @@ Controls:
 """
 
 import argparse
+import csv
 import signal
 import sys
 import time
@@ -93,6 +94,13 @@ def run_teleoperation(
     routine_plane: str = "xy",
     routine_square_size: float = 0.06,
     routine_square_speed: float = 0.03,
+    routine_center_x: float = 0.0,
+    routine_center_y: float = 0.0,
+    routine_center_z: float = 0.0,
+    ik_log_path: str | None = None,
+    ik_max_err_mm: float = 30.0,
+    ik_mean_err_mm: float = 10.0,
+    ik_vel_scale: float = 1.0,
 ):
     """Run teleoperation with real robot.
 
@@ -111,6 +119,13 @@ def run_teleoperation(
         routine_plane: Plane for square routine (xy, xz, yz).
         routine_square_size: Square side length in meters.
         routine_square_speed: Max tracking speed for square (m/s).
+        routine_center_x: Offset to add to routine center (meters).
+        routine_center_y: Offset to add to routine center (meters).
+        routine_center_z: Offset to add to routine center (meters).
+        ik_log_path: Optional CSV path for IK error logging.
+        ik_max_err_mm: Warn if max IK position error exceeds this (mm).
+        ik_mean_err_mm: Warn if mean IK position error exceeds this (mm).
+        ik_vel_scale: Scale factor for IK joint velocity limits.
     """
     import shutil
 
@@ -158,7 +173,7 @@ def run_teleoperation(
     gripper_rate = config.gripper_rate
 
     # Joint velocity limits for IK joints (4 joints, no wrist_roll)
-    ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])
+    ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0]) * max(ik_vel_scale, 0.1)
 
     print(f"Controller deadzone: {config.deadzone}", flush=True)
     print(f"Linear scale: {config.linear_scale} m/s", flush=True)
@@ -235,8 +250,11 @@ def run_teleoperation(
 
     # Get initial EE pose
     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+    last_target_pose = ee_pose.copy()
+    last_ee_pose = ee_pose.copy()
     gripper_pos = 0.0  # 0-1 range
     routine_center = ee_pose[:3, 3].copy()
+    routine_center += np.array([routine_center_x, routine_center_y, routine_center_z], dtype=float)
 
     def square_offset(u: float, size: float) -> tuple[float, float]:
         half = size / 2.0
@@ -262,6 +280,30 @@ def run_teleoperation(
     running = True
     loop_counter = 0
     routine_start = time.monotonic()
+    error_count = 0
+    error_sum = 0.0
+    error_max = 0.0
+    clip_count = 0
+    clip_joints = 0
+
+    csv_file = None
+    csv_writer = None
+    if ik_log_path:
+        csv_file = open(ik_log_path, "w", newline="")
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(
+            [
+                "t_s",
+                "target_x",
+                "target_y",
+                "target_z",
+                "actual_x",
+                "actual_y",
+                "actual_z",
+                "pos_err_mm",
+                "clipped",
+            ]
+        )
 
     def signal_handler(sig, frame):
         nonlocal running
@@ -274,6 +316,7 @@ def run_teleoperation(
     try:
         while running:
             loop_start = time.monotonic()
+            clipped_this = False
 
             if motion_routine:
                 t = time.monotonic() - routine_start
@@ -387,6 +430,10 @@ def run_teleoperation(
                 max_delta = ik_joint_vel_limits * LOOP_PERIOD
                 joint_delta = ik_result - ik_joint_pos_deg
                 clipped_delta = np.clip(joint_delta, -max_delta, max_delta)
+                if np.any(np.abs(joint_delta) > max_delta):
+                    clip_count += 1
+                    clip_joints += int(np.sum(np.abs(joint_delta) > max_delta))
+                    clipped_this = True
                 ik_joint_pos_deg = ik_joint_pos_deg + clipped_delta
 
                 # Apply wrist roll directly (not part of IK)
@@ -396,6 +443,8 @@ def run_teleoperation(
                     wrist_roll_deg = np.clip(wrist_roll_deg, -180.0, 180.0)
 
                 ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+                last_target_pose = target_pose.copy()
+                last_ee_pose = ee_pose.copy()
 
                 if debug_ik and (loop_counter % max(debug_ik_every, 1) == 0):
                     pos_error = np.linalg.norm(target_pose[:3, 3] - ee_pose[:3, 3])
@@ -430,6 +479,25 @@ def run_teleoperation(
 
             # Status - show position and orientation
             pos = ee_pose[:3, 3]
+            pos_err = float(np.linalg.norm(last_ee_pose[:3, 3] - last_target_pose[:3, 3]))
+            error_count += 1
+            error_sum += pos_err
+            error_max = max(error_max, pos_err)
+            if csv_writer:
+                t_s = time.monotonic() - routine_start
+                csv_writer.writerow(
+                    [
+                        f"{t_s:.3f}",
+                        f"{last_target_pose[0, 3]:.6f}",
+                        f"{last_target_pose[1, 3]:.6f}",
+                        f"{last_target_pose[2, 3]:.6f}",
+                        f"{last_ee_pose[0, 3]:.6f}",
+                        f"{last_ee_pose[1, 3]:.6f}",
+                        f"{last_ee_pose[2, 3]:.6f}",
+                        f"{pos_err * 1000.0:.3f}",
+                        "1" if clipped_this else "0",
+                    ]
+                )
             pitch_deg = np.rad2deg(target_pitch)
             yaw_deg = np.rad2deg(target_yaw)
             print(
@@ -448,6 +516,19 @@ def run_teleoperation(
         if controller is not None:
             controller.disconnect()
         robot.disconnect()
+        if csv_file:
+            csv_file.close()
+        if error_count > 0:
+            mean_err_mm = (error_sum / error_count) * 1000.0
+            max_err_mm = error_max * 1000.0
+            clip_rate = (clip_count / error_count) * 100.0
+            print("\nIK routine summary")
+            print(f"  samples: {error_count}")
+            print(f"  max position error: {max_err_mm:.1f} mm")
+            print(f"  mean position error: {mean_err_mm:.1f} mm")
+            print(f"  velocity clipping: {clip_rate:.1f}% (joints clipped: {clip_joints})")
+            if max_err_mm > ik_max_err_mm or mean_err_mm > ik_mean_err_mm:
+                print("WARNING: IK error exceeded thresholds.")
         print("\nDisconnected.", flush=True)
 
 
@@ -541,6 +622,48 @@ def main():
         default=None,
         help="Seconds per square trace (overrides square speed if set).",
     )
+    parser.add_argument(
+        "--routine-center-x",
+        type=float,
+        default=0.0,
+        help="Additive offset to routine center X (meters). Default: 0.",
+    )
+    parser.add_argument(
+        "--routine-center-y",
+        type=float,
+        default=0.0,
+        help="Additive offset to routine center Y (meters). Default: 0.",
+    )
+    parser.add_argument(
+        "--routine-center-z",
+        type=float,
+        default=0.0,
+        help="Additive offset to routine center Z (meters). Default: 0.",
+    )
+    parser.add_argument(
+        "--ik-log",
+        type=str,
+        default=None,
+        help="Write IK position error CSV to this path.",
+    )
+    parser.add_argument(
+        "--ik-max-err-mm",
+        type=float,
+        default=30.0,
+        help="Warn if max position error exceeds this (mm). Default: 30.",
+    )
+    parser.add_argument(
+        "--ik-mean-err-mm",
+        type=float,
+        default=10.0,
+        help="Warn if mean position error exceeds this (mm). Default: 10.",
+    )
+    parser.add_argument(
+        "--ik-vel-scale",
+        type=float,
+        default=1.0,
+        help="Scale IK joint velocity limits. Default: 1.0.",
+    )
     args = parser.parse_args()
 
     if args.recalibrate and args.no_calibrate:
@@ -582,6 +705,13 @@ def main():
         routine_plane=args.routine_plane,
         routine_square_size=args.routine_square_size,
         routine_square_speed=args.routine_square_speed,
+        routine_center_x=args.routine_center_x,
+        routine_center_y=args.routine_center_y,
+        routine_center_z=args.routine_center_z,
+        ik_log_path=args.ik_log,
+        ik_max_err_mm=args.ik_max_err_mm,
+        ik_mean_err_mm=args.ik_mean_err_mm,
+        ik_vel_scale=args.ik_vel_scale,
     )
 
 

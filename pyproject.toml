@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6.0",
     "mujoco>=3.4.0",
     "scservo-sdk",
+    "scipy>=1.15.3",
 ]
 
 [project.optional-dependencies]

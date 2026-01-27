@@ -130,6 +130,9 @@ def run_dual_mode(
     routine_plane: str = "xy",
     routine_square_size: float = 0.06,
     routine_square_speed: float = 0.03,
+    routine_center_x: float = 0.0,
+    routine_center_y: float = 0.0,
+    routine_center_z: float = 0.0,
     routine_trace: bool = False,
     routine_trace_max: int = 300,
     routine_trace_step_mm: float = 2.0,
@@ -212,6 +215,7 @@ def run_dual_mode(
     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
     gripper_pos = GRIPPER_DEFAULT
     routine_center = ee_pose[:3, 3].copy()
+    routine_center += np.array([routine_center_x, routine_center_y, routine_center_z], dtype=float)
 
     # Target orientation (euler angles in radians)
     target_pitch = 0.0
@@ -535,6 +539,24 @@ def main():
         help="Seconds per square trace (overrides square speed if set).",
     )
     parser.add_argument(
+        "--routine-center-x",
+        type=float,
+        default=0.0,
+        help="Additive offset to routine center X (meters). Default: 0.",
+    )
+    parser.add_argument(
+        "--routine-center-y",
+        type=float,
+        default=0.0,
+        help="Additive offset to routine center Y (meters). Default: 0.",
+    )
+    parser.add_argument(
+        "--routine-center-z",
+        type=float,
+        default=0.0,
+        help="Additive offset to routine center Z (meters). Default: 0.",
+    )
+    parser.add_argument(
         "--routine-trace",
         action="store_true",
         help="Draw a virtual pen trace of the end effector in the sim.",
@@ -582,6 +604,9 @@ def main():
         routine_plane=args.routine_plane,
         routine_square_size=args.routine_square_size,
         routine_square_speed=args.routine_square_speed,
+        routine_center_x=args.routine_center_x,
+        routine_center_y=args.routine_center_y,
+        routine_center_z=args.routine_center_z,
         routine_trace=args.routine_trace,
         routine_trace_max=args.routine_trace_max,
         routine_trace_step_mm=args.routine_trace_step_mm,
