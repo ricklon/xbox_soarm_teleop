@@ -26,6 +26,7 @@ Controls (Demo mode, --no-controller):
 """
 
 import argparse
+import csv
 import signal
 import sys
 import time
@@ -141,7 +142,10 @@ def run_with_controller(
     linear_scale: float | None = None,
     debug_ik: bool = False,
     debug_ik_every: int = 10,
-):
+    ik_log_path: str | None = None,
+    ik_max_err_mm: float = 30.0,
+    ik_mean_err_mm: float = 10.0,
+) -> int:
     """Run with Xbox controller and MuJoCo viewer."""
     from lerobot.model.kinematics import RobotKinematics
 
@@ -218,11 +222,36 @@ def run_with_controller(
 
     # Get initial EE pose (with base at 0)
     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+    last_target_pose = ee_pose.copy()
+    last_ee_pose = ee_pose.copy()
     gripper_pos = 0.0  # Current gripper position (smoothed)
     gripper_rate = config.gripper_rate  # Position change per second
 
     running = True
     loop_counter = 0
+    error_count = 0
+    error_sum = 0.0
+    error_max = 0.0
+    error_start = time.monotonic()
+
+    csv_file = None
+    csv_writer = None
+    if ik_log_path:
+        csv_file = open(ik_log_path, "w", newline="")
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(
+            [
+                "t_s",
+                "target_x",
+                "target_y",
+                "target_z",
+                "actual_x",
+                "actual_y",
+                "actual_z",
+                "pos_err_mm",
+            ]
+        )
+        print(f"IK error logging: {ik_log_path}", flush=True)
 
     def signal_handler(sig, frame):
         nonlocal running
@@ -244,6 +273,8 @@ def run_with_controller(
                 target_pitch = 0.0
                 target_yaw = 0.0
                 ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+                last_ee_pose = ee_pose.copy()
+                last_target_pose = ee_pose.copy()
                 sim.go_home()
                 viewer.sync()
                 continue
@@ -309,6 +340,8 @@ def run_with_controller(
                     wrist_roll_deg = np.clip(wrist_roll_deg, -180.0, 180.0)
 
                 ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+                last_ee_pose = ee_pose.copy()
+                last_target_pose = target_pose.copy()
 
                 if debug_ik and (loop_counter % max(debug_ik_every, 1) == 0):
                     pos_error = np.linalg.norm(target_pose[:3, 3] - ee_pose[:3, 3])
@@ -338,6 +371,24 @@ def run_with_controller(
 
             # Status - show position and orientation
             pos = sim.get_ee_position()
+            pos_err = float(np.linalg.norm(last_ee_pose[:3, 3] - last_target_pose[:3, 3]))
+            error_count += 1
+            error_sum += pos_err
+            error_max = max(error_max, pos_err)
+            if csv_writer:
+                t_s = time.monotonic() - error_start
+                csv_writer.writerow(
+                    [
+                        f"{t_s:.3f}",
+                        f"{last_target_pose[0, 3]:.6f}",
+                        f"{last_target_pose[1, 3]:.6f}",
+                        f"{last_target_pose[2, 3]:.6f}",
+                        f"{last_ee_pose[0, 3]:.6f}",
+                        f"{last_ee_pose[1, 3]:.6f}",
+                        f"{last_ee_pose[2, 3]:.6f}",
+                        f"{pos_err * 1000.0:.3f}",
+                    ]
+                )
             pitch_deg = np.rad2deg(target_pitch)
             yaw_deg = np.rad2deg(target_yaw)
             print(
@@ -353,10 +404,34 @@ def run_with_controller(
                 time.sleep(LOOP_PERIOD - elapsed)
 
     controller.disconnect()
+    if csv_file:
+        csv_file.close()
     print("\nDisconnected.", flush=True)
 
+    if error_count == 0:
+        print("IK error summary: no samples collected.")
+        return 0
 
-def run_demo_mode(sim: MuJoCoSimulator):
+    mean_err_mm = (error_sum / error_count) * 1000.0
+    max_err_mm = error_max * 1000.0
+    print("IK error summary (kinematics FK)")
+    print(f"  samples: {error_count}")
+    print(f"  max position error: {max_err_mm:.1f} mm")
+    print(f"  mean position error: {mean_err_mm:.1f} mm")
+
+    if max_err_mm > ik_max_err_mm or mean_err_mm > ik_mean_err_mm:
+        print("FAIL: IK error exceeded thresholds.")
+        return 1
+    print("PASS")
+    return 0
+
+
+def run_demo_mode(
+    sim: MuJoCoSimulator,
+    ik_log_path: str | None = None,
+    ik_max_err_mm: float = 30.0,
+    ik_mean_err_mm: float = 10.0,
+) -> int:
     """Run demo mode with automatic movement."""
     from lerobot.model.kinematics import RobotKinematics
 
@@ -372,9 +447,35 @@ def run_demo_mode(sim: MuJoCoSimulator):
     wrist_roll_deg = 0.0
     ik_joint_pos_deg = np.zeros(4)
     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+    last_target_pose = ee_pose.copy()
+    last_ee_pose = ee_pose.copy()
+    ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])
     t = 0.0
 
     running = True
+    error_count = 0
+    error_sum = 0.0
+    error_max = 0.0
+    error_start = time.monotonic()
+
+    csv_file = None
+    csv_writer = None
+    if ik_log_path:
+        csv_file = open(ik_log_path, "w", newline="")
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(
+            [
+                "t_s",
+                "target_x",
+                "target_y",
+                "target_z",
+                "actual_x",
+                "actual_y",
+                "actual_z",
+                "pos_err_mm",
+            ]
+        )
+        print(f"IK error logging: {ik_log_path}", flush=True)
 
     def signal_handler(sig, frame):
         nonlocal running
@@ -410,7 +511,13 @@ def run_demo_mode(sim: MuJoCoSimulator):
             new_joints = kinematics.inverse_kinematics(
                 ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=0.0
             )
-            ik_joint_pos_deg = new_joints[:4]
+            ik_result = new_joints[:4]
+
+            # Apply joint velocity limiting to smooth IK output
+            max_delta = ik_joint_vel_limits * LOOP_PERIOD
+            joint_delta = ik_result - ik_joint_pos_deg
+            joint_delta = np.clip(joint_delta, -max_delta, max_delta)
+            ik_joint_pos_deg = ik_joint_pos_deg + joint_delta
 
             # Apply wrist roll directly
             if abs(droll) > 0.001:
@@ -419,6 +526,8 @@ def run_demo_mode(sim: MuJoCoSimulator):
                 wrist_roll_deg = np.clip(wrist_roll_deg, -180.0, 180.0)
 
             ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+            last_ee_pose = ee_pose.copy()
+            last_target_pose = target_pose.copy()
 
             full_joint_pos_deg = np.array([
                 ik_joint_pos_deg[0],
@@ -434,6 +543,24 @@ def run_demo_mode(sim: MuJoCoSimulator):
             viewer.sync()
 
             pos = sim.get_ee_position()
+            pos_err = float(np.linalg.norm(last_ee_pose[:3, 3] - last_target_pose[:3, 3]))
+            error_count += 1
+            error_sum += pos_err
+            error_max = max(error_max, pos_err)
+            if csv_writer:
+                t_s = time.monotonic() - error_start
+                csv_writer.writerow(
+                    [
+                        f"{t_s:.3f}",
+                        f"{last_target_pose[0, 3]:.6f}",
+                        f"{last_target_pose[1, 3]:.6f}",
+                        f"{last_target_pose[2, 3]:.6f}",
+                        f"{last_ee_pose[0, 3]:.6f}",
+                        f"{last_ee_pose[1, 3]:.6f}",
+                        f"{last_ee_pose[2, 3]:.6f}",
+                        f"{pos_err * 1000.0:.3f}",
+                    ]
+                )
             print(
                 f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | Gripper: {gripper:.2f}   ",
                 end="\r",
@@ -446,7 +573,26 @@ def run_demo_mode(sim: MuJoCoSimulator):
             if elapsed < LOOP_PERIOD:
                 time.sleep(LOOP_PERIOD - elapsed)
 
+    if csv_file:
+        csv_file.close()
+
     print("\nDone.", flush=True)
+    if error_count == 0:
+        print("IK error summary: no samples collected.")
+        return 0
+
+    mean_err_mm = (error_sum / error_count) * 1000.0
+    max_err_mm = error_max * 1000.0
+    print("IK error summary (kinematics FK)")
+    print(f"  samples: {error_count}")
+    print(f"  max position error: {max_err_mm:.1f} mm")
+    print(f"  mean position error: {mean_err_mm:.1f} mm")
+
+    if max_err_mm > ik_max_err_mm or mean_err_mm > ik_mean_err_mm:
+        print("FAIL: IK error exceeded thresholds.")
+        return 1
+    print("PASS")
+    return 0
 
 
 def main():
@@ -475,6 +621,24 @@ def main():
         default=10,
         help="Print IK debug every N control loops. Default: 10.",
     )
+    parser.add_argument(
+        "--ik-log",
+        type=str,
+        default=None,
+        help="Write IK position error CSV to this path.",
+    )
+    parser.add_argument(
+        "--ik-max-err-mm",
+        type=float,
+        default=30.0,
+        help="Fail if max position error exceeds this (mm). Default: 30.",
+    )
+    parser.add_argument(
+        "--ik-mean-err-mm",
+        type=float,
+        default=10.0,
+        help="Fail if mean position error exceeds this (mm). Default: 10.",
+    )
     args = parser.parse_args()
 
     if not URDF_PATH.exists():
@@ -486,15 +650,24 @@ def main():
     print("Model loaded!", flush=True)
 
     if args.no_controller:
-        run_demo_mode(sim)
+        exit_code = run_demo_mode(
+            sim,
+            ik_log_path=args.ik_log,
+            ik_max_err_mm=args.ik_max_err_mm,
+            ik_mean_err_mm=args.ik_mean_err_mm,
+        )
     else:
-        run_with_controller(
+        exit_code = run_with_controller(
             sim,
             deadzone=args.deadzone,
             linear_scale=args.linear_scale,
             debug_ik=args.debug_ik,
             debug_ik_every=args.debug_ik_every,
+            ik_log_path=args.ik_log,
+            ik_max_err_mm=args.ik_max_err_mm,
+            ik_mean_err_mm=args.ik_mean_err_mm,
         )
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

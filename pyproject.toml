@@ -13,6 +13,8 @@ dependencies = [
     "inputs>=0.5",
     "numpy>=1.24.0",
     "pyyaml>=6.0",
+    "mujoco>=3.4.0",
+    "scservo-sdk",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +27,10 @@ dev = [
 pygame = [
     "pygame>=2.5.0",
 ]
+
+[project.scripts]
+ik-smoke = "xbox_soarm_teleop.cli.ik_smoke:main"
+mujoco-ik-check = "xbox_soarm_teleop.cli.mujoco_ik_check:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -54,3 +60,11 @@ indent-style = "space"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
+
+[tool.uv.workspace]
+members = [
+    "third_party/ftservo_python",
+]
+
+[tool.uv.sources]
+scservo-sdk = { workspace = true }

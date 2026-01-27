@@ -83,6 +83,11 @@ A window will open with the robot. Close window or Ctrl+C to exit.
 uv run python examples/simulate_mujoco.py --no-controller
 ```
 
+**IK error logging + thresholds (demo mode)**:
+```bash
+uv run mujoco-ik-check --no-controller --ik-log ik_error.csv --ik-max-err-mm 25 --ik-mean-err-mm 8
+```
+
 ### 4. Run with Real Robot
 
 Connect your SO-ARM101 via USB, then:
@@ -125,6 +130,31 @@ uv run pytest tests/test_xbox_input.py -v
 
 # IK roundtrip tests
 uv run pytest tests/test_ik_roundtrip.py -v
+
+# IK smoke test (opt-in)
+IK_SMOKE=1 uv run pytest tests/test_ik_smoke.py -v
+```
+
+## IK Smoke Check (Routine)
+
+Use this when you want a fast, repeatable IK sanity check without a robot:
+
+```bash
+uv run ik-smoke
+```
+
+Optional tuning:
+
+```bash
+uv run ik-smoke --duration 20 --hz 60 --max-err-mm 25 --mean-err-mm 8 --verbose
+```
+
+## MuJoCo IK Check (Routine)
+
+Use this to log IK position error in MuJoCo and fail if thresholds are exceeded:
+
+```bash
+uv run mujoco-ik-check --no-controller --ik-log ik_error.csv
 ```
 
 ## Development

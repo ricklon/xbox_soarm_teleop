@@ -8,6 +8,7 @@ Usage:
     uv run python examples/teleoperate_real.py --port /dev/ttyUSB0
     uv run python examples/teleoperate_real.py --recalibrate  # Fresh calibration
     uv run python examples/teleoperate_real.py --no-calibrate # Skip calibration
+    uv run python examples/teleoperate_real.py --motion-routine
 
 Controls:
     - Hold LB (left bumper) to enable arm movement
@@ -84,6 +85,9 @@ def run_teleoperation(
     linear_scale: float | None = None,
     debug_ik: bool = False,
     debug_ik_every: int = 10,
+    motion_routine: bool = False,
+    routine_duration: float = 15.0,
+    routine_scale: float = 1.0,
 ):
     """Run teleoperation with real robot.
 
@@ -95,6 +99,9 @@ def run_teleoperation(
         linear_scale: Linear velocity scale (m/s), or None for config default.
         debug_ik: If True, print IK debug output periodically.
         debug_ik_every: Print IK debug every N control loops.
+        motion_routine: If True, run an automatic motion routine (no controller).
+        routine_duration: Duration in seconds for motion routine.
+        routine_scale: Scale for routine motion amplitudes.
     """
     import shutil
 
@@ -103,7 +110,7 @@ def run_teleoperation(
     from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
 
     from xbox_soarm_teleop.config.xbox_config import XboxConfig
-    from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta
+    from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, MapXboxToEEDelta
     from xbox_soarm_teleop.teleoperators.xbox import XboxController
 
     # Handle recalibration - delete existing calibration cache
@@ -128,14 +135,17 @@ def run_teleoperation(
     config = XboxConfig(deadzone=deadzone)
     if linear_scale is not None:
         config.linear_scale = linear_scale
-    controller = XboxController(config)
-    mapper = MapXboxToEEDelta(
-        linear_scale=config.linear_scale,
-        angular_scale=config.angular_scale,
-        orientation_scale=config.orientation_scale,
-        invert_pitch=config.invert_pitch,
-        invert_yaw=config.invert_yaw,
-    )
+    controller = None
+    mapper = None
+    if not motion_routine:
+        controller = XboxController(config)
+        mapper = MapXboxToEEDelta(
+            linear_scale=config.linear_scale,
+            angular_scale=config.angular_scale,
+            orientation_scale=config.orientation_scale,
+            invert_pitch=config.invert_pitch,
+            invert_yaw=config.invert_yaw,
+        )
     gripper_rate = config.gripper_rate
 
     # Joint velocity limits for IK joints (4 joints, no wrist_roll)
@@ -145,12 +155,15 @@ def run_teleoperation(
     print(f"Linear scale: {config.linear_scale} m/s", flush=True)
     print(f"Orientation scale: {config.orientation_scale} rad/s", flush=True)
 
-    if not controller.connect():
-        print("ERROR: Failed to connect to Xbox controller")
-        print("  - Check that controller is connected")
-        sys.exit(1)
-
-    print("Xbox controller connected", flush=True)
+    if not motion_routine:
+        if not controller.connect():
+            print("ERROR: Failed to connect to Xbox controller")
+            print("  - Check that controller is connected")
+            sys.exit(1)
+        print("Xbox controller connected", flush=True)
+    else:
+        print("Motion routine enabled (no controller required).", flush=True)
+        print("Ensure the arm is in home position and the area is clear.", flush=True)
 
     # Initialize robot
     print(f"Connecting to robot on {port}...", flush=True)
@@ -166,21 +179,27 @@ def run_teleoperation(
         print(f"ERROR: Failed to connect to robot: {e}")
         if no_calibrate and "calibration" in str(e).lower():
             print("  No existing calibration found. Run without --no-calibrate first.")
-        controller.disconnect()
+        if controller is not None:
+            controller.disconnect()
         sys.exit(1)
 
     print("Robot connected!", flush=True)
-    print("\nControls:", flush=True)
-    print("  Hold LB + move sticks to control arm", flush=True)
-    print("  Left stick X: Move left/right (Y axis)", flush=True)
-    print("  Left stick Y: Move up/down", flush=True)
-    print("  Right stick Y: Move forward/back", flush=True)
-    print("  Right stick X: Wrist roll (direct)", flush=True)
-    print("  D-pad up/down: Pitch (tilt gripper)", flush=True)
-    print("  D-pad left/right: Yaw (rotate heading)", flush=True)
-    print("  Right trigger: Gripper", flush=True)
-    print("  A button: Go home", flush=True)
-    print("  Ctrl+C: Exit\n", flush=True)
+    if motion_routine:
+        print("\nMotion routine:", flush=True)
+        print(f"  Duration: {routine_duration:.1f}s | Scale: {routine_scale:.2f}", flush=True)
+        print("  Ctrl+C: Stop\n", flush=True)
+    else:
+        print("\nControls:", flush=True)
+        print("  Hold LB + move sticks to control arm", flush=True)
+        print("  Left stick X: Move left/right (Y axis)", flush=True)
+        print("  Left stick Y: Move up/down", flush=True)
+        print("  Right stick Y: Move forward/back", flush=True)
+        print("  Right stick X: Wrist roll (direct)", flush=True)
+        print("  D-pad up/down: Pitch (tilt gripper)", flush=True)
+        print("  D-pad left/right: Yaw (rotate heading)", flush=True)
+        print("  Right trigger: Gripper", flush=True)
+        print("  A button: Go home", flush=True)
+        print("  Ctrl+C: Exit\n", flush=True)
 
     # IK joint positions (4 joints: base, shoulder_lift, elbow_flex, wrist_flex)
     ik_joint_pos_deg = np.zeros(4)
@@ -207,6 +226,7 @@ def run_teleoperation(
 
     running = True
     loop_counter = 0
+    routine_start = time.monotonic()
 
     def signal_handler(sig, frame):
         nonlocal running
@@ -220,26 +240,38 @@ def run_teleoperation(
         while running:
             loop_start = time.monotonic()
 
-            state = controller.read()
+            if motion_routine:
+                t = time.monotonic() - routine_start
+                if t >= routine_duration:
+                    break
+                dx = routine_scale * 0.03 * np.sin(t * 0.5)
+                dy = routine_scale * 0.03 * np.cos(t * 0.5)
+                dz = routine_scale * 0.02 * np.sin(t * 0.3)
+                droll = routine_scale * 0.10 * np.sin(t * 0.4)
+                gripper = 0.5 + 0.2 * np.sin(t * 0.2)
+                gripper = float(np.clip(gripper, 0.0, 1.0))
+                ee_delta = EEDelta(dx=dx, dy=dy, dz=dz, droll=droll, gripper=gripper)
+            else:
+                state = controller.read()
 
-            if state.a_button_pressed:
-                print("\nGoing home...", flush=True)
-                ik_joint_pos_deg = np.zeros(4)
-                wrist_roll_deg = 0.0
-                target_pitch = 0.0
-                target_yaw = 0.0
-                ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-                gripper_pos = 0.0
+                if state.a_button_pressed:
+                    print("\nGoing home...", flush=True)
+                    ik_joint_pos_deg = np.zeros(4)
+                    wrist_roll_deg = 0.0
+                    target_pitch = 0.0
+                    target_yaw = 0.0
+                    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+                    gripper_pos = 0.0
 
-                # Send home position to robot
-                action = {}
-                for i, name in enumerate(JOINT_NAMES[:-1]):
-                    action[f"{name}.pos"] = 0.0
-                action["gripper.pos"] = 0.0  # Open
-                robot.send_action(action)
-                continue
+                    # Send home position to robot
+                    action = {}
+                    for i, name in enumerate(JOINT_NAMES[:-1]):
+                        action[f"{name}.pos"] = 0.0
+                    action["gripper.pos"] = 0.0  # Open
+                    robot.send_action(action)
+                    continue
 
-            ee_delta = mapper(state)
+                ee_delta = mapper(state)
 
             # Rate-limit gripper movement
             gripper_target = ee_delta.gripper
@@ -351,7 +383,8 @@ def run_teleoperation(
                 time.sleep(LOOP_PERIOD - elapsed)
 
     finally:
-        controller.disconnect()
+        if controller is not None:
+            controller.disconnect()
         robot.disconnect()
         print("\nDisconnected.", flush=True)
 
@@ -397,6 +430,23 @@ def main():
         default=10,
         help="Print IK debug every N control loops. Default: 10.",
     )
+    parser.add_argument(
+        "--motion-routine",
+        action="store_true",
+        help="Run automatic motion routine (no controller input).",
+    )
+    parser.add_argument(
+        "--routine-duration",
+        type=float,
+        default=15.0,
+        help="Motion routine duration in seconds. Default: 15.",
+    )
+    parser.add_argument(
+        "--routine-scale",
+        type=float,
+        default=1.0,
+        help="Scale factor for routine motion amplitudes. Default: 1.0.",
+    )
     args = parser.parse_args()
 
     if args.recalibrate and args.no_calibrate:
@@ -424,6 +474,9 @@ def main():
         linear_scale=args.linear_scale,
         debug_ik=args.debug_ik,
         debug_ik_every=args.debug_ik_every,
+        motion_routine=args.motion_routine,
+        routine_duration=args.routine_duration,
+        routine_scale=args.routine_scale,
     )
 
 
