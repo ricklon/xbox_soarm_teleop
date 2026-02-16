@@ -61,14 +61,13 @@ JOINT_LIMITS_RAD: dict[str, tuple[float, float]] = {
     "shoulder_pan": (-1.91986, 1.91986),
     "shoulder_lift": (-1.74533, 1.74533),
     "elbow_flex": (-1.69, 1.69),
-    "wrist_flex": (-1.65806, 1.65806),
+    "wrist_flex": (-1.65806, 1.256),  # -95° to +72° (hardware verified, hard mechanical limit)
     "wrist_roll": (-2.74385, 2.84121),
     "gripper": (-0.0349066, 2.21657),  # -2° to +127° (measured on hardware)
 }
 
 JOINT_LIMITS_DEG: dict[str, tuple[float, float]] = {
-    name: (np.rad2deg(low), np.rad2deg(high))
-    for name, (low, high) in JOINT_LIMITS_RAD.items()
+    name: (np.rad2deg(low), np.rad2deg(high)) for name, (low, high) in JOINT_LIMITS_RAD.items()
 }
 
 # ---------------------------------------------------------------------------
@@ -86,9 +85,7 @@ HOME_POSITION_RAW: dict[str, int] = {
 }
 
 # Same position in degrees (derived from raw values)
-HOME_POSITION_DEG: dict[str, float] = {
-    name: raw_to_deg(raw) for name, raw in HOME_POSITION_RAW.items()
-}
+HOME_POSITION_DEG: dict[str, float] = {name: raw_to_deg(raw) for name, raw in HOME_POSITION_RAW.items()}
 
 # ---------------------------------------------------------------------------
 # Per-joint test positions for ROM sweep (collision avoidance)
@@ -100,15 +97,15 @@ HOME_POSITION_DEG: dict[str, float] = {
 
 SWEEP_TEST_POSITIONS: dict[str, dict[str, float]] = {
     "shoulder_lift": {
-        "shoulder_lift": 99.0,   # start extended forward
-        "elbow_flex": -88.0,     # arm straight
-        "wrist_flex": 13.0,      # wrist neutral
+        "shoulder_lift": 99.0,  # start extended forward
+        "elbow_flex": -88.0,  # arm straight
+        "wrist_flex": 13.0,  # wrist neutral
     },
     "wrist_flex": {
-        "elbow_flex": 15.0,      # straighten elbow for clearance
+        "elbow_flex": 15.0,  # straighten elbow for clearance
     },
     "gripper": {
-        "elbow_flex": 0.0,       # extend elbow to clear table
+        "elbow_flex": 0.0,  # extend elbow to clear table
     },
 }
 
@@ -133,9 +130,7 @@ IK_JOINT_VEL_LIMITS_ARRAY: np.ndarray = np.array(
 # ---------------------------------------------------------------------------
 
 
-def parse_joint_limits(
-    urdf_path: str | Path, joint_names: list[str]
-) -> dict[str, tuple[float, float]]:
+def parse_joint_limits(urdf_path: str | Path, joint_names: list[str]) -> dict[str, tuple[float, float]]:
     """Parse joint limits from a URDF file.
 
     Args:
@@ -173,7 +168,4 @@ def limits_rad_to_deg(
     Returns:
         Dict mapping joint name to (lower, upper) in degrees.
     """
-    return {
-        name: (np.rad2deg(low), np.rad2deg(high))
-        for name, (low, high) in limits.items()
-    }
+    return {name: (np.rad2deg(low), np.rad2deg(high)) for name, (low, high) in limits.items()}

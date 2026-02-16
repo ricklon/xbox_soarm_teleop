@@ -91,3 +91,4 @@ Thumbs.db
 *.log
 MUJOCO_LOG.TXT
 ik_error.csv
+calibration/

@@ -9,6 +9,7 @@ Usage:
 
 Options:
     --no-controller    Run without Xbox controller (demo mode)
+    --challenge        Run benchmark challenge mode with targets
 
 Controls (Xbox):
     - Hold LB (left bumper) to enable arm movement
@@ -23,6 +24,11 @@ Controls (Xbox):
 Controls (Demo mode, --no-controller):
     - Automatic demo movement pattern
     - Ctrl+C or close window: Exit
+
+Challenge mode:
+    - Collect targets by moving gripper close to them
+    - Starts with 1 target, difficulty increases
+    - Tracks accuracy, smoothness, and time metrics
 """
 
 import argparse
@@ -32,13 +38,18 @@ import signal
 import sys
 import time
 from pathlib import Path
-from xml.etree import ElementTree
 
 import mujoco
 import mujoco.viewer
 import numpy as np
 
-from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES, JOINT_NAMES_WITH_GRIPPER
+from xbox_soarm_teleop.config.joints import (
+    IK_JOINT_NAMES,
+    IK_JOINT_VEL_LIMITS_ARRAY,
+    JOINT_NAMES_WITH_GRIPPER,
+    limits_rad_to_deg,
+    parse_joint_limits,
+)
 
 # Path to URDF
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
@@ -136,6 +147,346 @@ class MuJoCoSimulator:
     def step(self) -> None:
         """Update kinematics (no physics simulation)."""
         mujoco.mj_forward(self.model, self.data)
+
+
+class ChallengeTarget:
+    """A single target in the challenge mode."""
+
+    def __init__(self, position: np.ndarray, target_id: int):
+        self.position = position.copy()
+        self.target_id = target_id
+        self.spawn_time = time.monotonic()
+        self.collected = False
+        self.collect_time: float | None = None
+        # Tracking for smoothness metrics
+        self.approach_velocities: list[float] = []
+        self.approach_jerks: list[float] = []
+        self.path_length = 0.0
+        self.direct_distance: float | None = None
+        self.final_error: float | None = None
+
+    def time_to_collect(self) -> float | None:
+        if self.collect_time is None:
+            return None
+        return self.collect_time - self.spawn_time
+
+    def path_efficiency(self) -> float | None:
+        """Return path efficiency: direct_distance / path_length (1.0 = perfect, <1.0 = longer path)."""
+        if self.direct_distance is None or self.path_length < 0.001:
+            return None
+        return self.direct_distance / self.path_length
+
+    def mean_jerk(self) -> float | None:
+        if not self.approach_jerks:
+            return None
+        return float(np.mean(np.abs(self.approach_jerks)))
+
+
+class ChallengeManager:
+    """Manages challenge mode with targets to collect."""
+
+    # Target colors (RGBA) - cycle through for multiple targets
+    TARGET_COLORS = [
+        (1.0, 0.2, 0.2, 0.9),  # Red
+        (0.2, 1.0, 0.2, 0.9),  # Green
+        (0.2, 0.2, 1.0, 0.9),  # Blue
+        (1.0, 1.0, 0.2, 0.9),  # Yellow
+        (1.0, 0.2, 1.0, 0.9),  # Magenta
+        (0.2, 1.0, 1.0, 0.9),  # Cyan
+    ]
+
+    def __init__(
+        self,
+        kinematics,
+        joint_limits_deg: dict[str, tuple[float, float]],
+        collect_radius: float = 0.03,
+        target_size: float = 0.015,
+        initial_targets: int = 1,
+        targets_per_level: int = 5,
+        max_targets: int = 3,
+        seed: int | None = None,
+        workspace_margin: float = 0.05,
+        initial_ee_position: np.ndarray | None = None,
+    ):
+        self.kinematics = kinematics
+        self.joint_limits_deg = joint_limits_deg
+        self.collect_radius = collect_radius
+        self.target_size = target_size
+        self.initial_targets = initial_targets
+        self.targets_per_level = targets_per_level
+        self.max_targets = max_targets
+        self.workspace_margin = workspace_margin
+        self.initial_ee_position = initial_ee_position
+
+        self.rng = np.random.default_rng(seed)
+        self.active_targets: list[ChallengeTarget] = []
+        self.collected_targets: list[ChallengeTarget] = []
+        self.total_spawned = 0
+        self.current_level = 1
+        self.level_collected = 0
+
+        # Pre-compute reachable workspace bounds
+        self._compute_workspace_bounds()
+
+        # Tracking for smoothness
+        self.last_ee_pos: np.ndarray | None = None
+        self.last_ee_vel: np.ndarray | None = None
+        self.last_update_time: float | None = None
+
+    def _compute_workspace_bounds(self) -> None:
+        """Build list of reachable positions using a small grid around home."""
+        # Use provided initial EE position if available, otherwise use FK
+        if self.initial_ee_position is not None:
+            self.home_pos = self.initial_ee_position.copy()
+            print(
+                f"  Challenge: Using actual EE position [{self.home_pos[0]:.3f}, "
+                f"{self.home_pos[1]:.3f}, {self.home_pos[2]:.3f}]",
+                flush=True,
+            )
+        else:
+            home_joints = np.zeros(len(self.joint_limits_deg))
+            home_pose = self.kinematics.forward_kinematics(home_joints)
+            self.home_pos = home_pose[:3, 3].copy()
+            print(
+                f"  Challenge: Home position at [{self.home_pos[0]:.3f}, "
+                f"{self.home_pos[1]:.3f}, {self.home_pos[2]:.3f}]",
+                flush=True,
+            )
+
+        # Use a simple grid around home - small enough to be definitely reachable
+        # These offsets are conservative and should always be reachable
+        self.verified_positions: list[np.ndarray] = []
+
+        # Grid: X (forward/back), Y (left/right), Z (up/down)
+        # Keep offsets small to ensure reachability
+        x_offsets = [-0.06, -0.03, 0.0, 0.03]  # Mostly forward (negative X)
+        y_offsets = [-0.06, -0.03, 0.0, 0.03, 0.06]  # Left/right symmetric
+        z_offsets = [-0.04, 0.0, 0.04, 0.08]  # Up/down
+
+        for dx in x_offsets:
+            for dy in y_offsets:
+                for dz in z_offsets:
+                    # Skip origin (too close to home)
+                    if abs(dx) < 0.02 and abs(dy) < 0.02 and abs(dz) < 0.02:
+                        continue
+
+                    candidate = self.home_pos + np.array([dx, dy, dz])
+
+                    # Must stay above table (min Z = 0.12m)
+                    if candidate[2] < 0.12:
+                        continue
+
+                    self.verified_positions.append(candidate.copy())
+
+        print(f"  Challenge: {len(self.verified_positions)} target positions available", flush=True)
+
+    def _sample_reachable_position(self, avoid_positions: list[np.ndarray] | None = None) -> np.ndarray:
+        """Sample a random position from verified reachable positions."""
+        min_separation = self.collect_radius * 3
+
+        # Shuffle verified positions
+        candidates = self.verified_positions.copy()
+        self.rng.shuffle(candidates)
+
+        for pos in candidates:
+            # Check separation from existing targets
+            if avoid_positions:
+                too_close = False
+                for other in avoid_positions:
+                    if np.linalg.norm(pos - other) < min_separation:
+                        too_close = True
+                        break
+                if too_close:
+                    continue
+            return pos.copy()
+
+        # Fallback: return home position with small offset
+        offset = self.rng.uniform(-0.03, 0.03, size=3)
+        offset[2] = abs(offset[2])  # Keep Z positive
+        return self.home_pos + offset
+
+    def spawn_targets(self, count: int) -> None:
+        """Spawn new targets."""
+        existing_positions = [t.position for t in self.active_targets]
+        for _ in range(count):
+            pos = self._sample_reachable_position(existing_positions)
+            target = ChallengeTarget(pos, self.total_spawned)
+            self.active_targets.append(target)
+            existing_positions.append(pos)
+            print(
+                f"  Spawned target {self.total_spawned} at [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]",
+                flush=True,
+            )
+            self.total_spawned += 1
+
+    def start(self) -> None:
+        """Start the challenge with initial targets."""
+        self.spawn_targets(self.initial_targets)
+        print("\n=== CHALLENGE MODE ===", flush=True)
+        print(f"Collect targets by moving gripper within {self.collect_radius * 100:.1f}cm", flush=True)
+        print(f"Starting with {self.initial_targets} target(s)", flush=True)
+        print(f"Difficulty increases every {self.targets_per_level} collections\n", flush=True)
+
+    def update(self, ee_position: np.ndarray, dt: float) -> list[ChallengeTarget]:
+        """Update challenge state, return newly collected targets."""
+        now = time.monotonic()
+        collected_this_frame: list[ChallengeTarget] = []
+
+        # Compute velocity and jerk for smoothness tracking
+        ee_vel = np.zeros(3)
+        ee_jerk = 0.0
+        if self.last_ee_pos is not None and dt > 0:
+            ee_vel = (ee_position - self.last_ee_pos) / dt
+            if self.last_ee_vel is not None:
+                ee_accel = (ee_vel - self.last_ee_vel) / dt
+                ee_jerk = float(np.linalg.norm(ee_accel))
+
+        # Update path tracking for all active targets
+        for target in self.active_targets:
+            if target.direct_distance is None:
+                target.direct_distance = float(np.linalg.norm(ee_position - target.position))
+
+            if self.last_ee_pos is not None:
+                target.path_length += float(np.linalg.norm(ee_position - self.last_ee_pos))
+
+            target.approach_velocities.append(float(np.linalg.norm(ee_vel)))
+            if ee_jerk > 0:
+                target.approach_jerks.append(ee_jerk)
+
+        # Check for collections
+        for target in self.active_targets[:]:  # Copy list for safe removal
+            dist = np.linalg.norm(ee_position - target.position)
+            if dist <= self.collect_radius:
+                target.collected = True
+                target.collect_time = now
+                target.final_error = dist
+                self.active_targets.remove(target)
+                self.collected_targets.append(target)
+                collected_this_frame.append(target)
+                self.level_collected += 1
+
+                # Print collection info
+                ttc = target.time_to_collect()
+                eff = target.path_efficiency()
+                jerk = target.mean_jerk()
+                print(f"\n  Target {target.target_id} collected!", flush=True)
+                eff_str = f"{eff:.0%}" if eff is not None else "N/A"
+                err_str = f"{target.final_error * 1000:.1f}mm" if target.final_error else "N/A"
+                ttc_str = f"{ttc:.1f}s" if ttc is not None else "N/A"
+                print(f"    Time: {ttc_str} | Efficiency: {eff_str} | Error: {err_str}", flush=True)
+                if jerk is not None:
+                    print(f"    Mean jerk: {jerk:.1f} m/s³", flush=True)
+
+        # Level up check
+        if self.level_collected >= self.targets_per_level:
+            self.level_collected = 0
+            if self.current_level < self.max_targets:
+                self.current_level += 1
+                print(f"\n  Level up! Now spawning {self.current_level} targets at a time", flush=True)
+
+        # Spawn replacements
+        targets_needed = self.current_level - len(self.active_targets)
+        if targets_needed > 0:
+            self.spawn_targets(targets_needed)
+
+        self.last_ee_pos = ee_position.copy()
+        self.last_ee_vel = ee_vel.copy()
+        self.last_update_time = now
+
+        return collected_this_frame
+
+    def draw_targets(self, viewer) -> None:
+        """Draw active targets in the viewer."""
+        use_markers = hasattr(viewer, "add_marker")
+        use_user_scn = hasattr(viewer, "user_scn")
+
+        if not use_markers and not use_user_scn:
+            return
+
+        scene = viewer.user_scn if use_user_scn else None
+        mat = np.eye(3).flatten()
+
+        for i, target in enumerate(self.active_targets):
+            color = self.TARGET_COLORS[target.target_id % len(self.TARGET_COLORS)]
+            size = self.target_size
+
+            if use_markers:
+                viewer.add_marker(
+                    pos=target.position,
+                    size=[size, size, size],
+                    rgba=color,
+                    type=mujoco.mjtGeom.mjGEOM_BOX,
+                )
+            elif scene is not None and scene.ngeom < scene.maxgeom:
+                geom = scene.geoms[scene.ngeom]
+                mujoco.mjv_initGeom(
+                    geom,
+                    mujoco.mjtGeom.mjGEOM_BOX,
+                    np.array([size, size, size]),
+                    target.position,
+                    mat,
+                    np.array(color),
+                )
+                scene.ngeom += 1
+
+    def print_summary(self) -> None:
+        """Print end-of-session summary."""
+        if not self.collected_targets:
+            print("\n=== CHALLENGE SUMMARY ===", flush=True)
+            print("No targets collected.", flush=True)
+            return
+
+        times = [t.time_to_collect() for t in self.collected_targets if t.time_to_collect() is not None]
+        efficiencies = [
+            t.path_efficiency() for t in self.collected_targets if t.path_efficiency() is not None
+        ]
+        errors = [t.final_error for t in self.collected_targets if t.final_error is not None]
+        jerks = [t.mean_jerk() for t in self.collected_targets if t.mean_jerk() is not None]
+
+        print("\n" + "=" * 50, flush=True)
+        print("CHALLENGE SUMMARY", flush=True)
+        print("=" * 50, flush=True)
+        print(f"Targets collected: {len(self.collected_targets)}", flush=True)
+        print(f"Final level: {self.current_level}", flush=True)
+
+        if times:
+            print("\nTime to collect:", flush=True)
+            print(
+                f"  Mean: {np.mean(times):.1f}s | Min: {np.min(times):.1f}s | Max: {np.max(times):.1f}s",
+                flush=True,
+            )
+
+        if efficiencies:
+            print("\nPath efficiency (direct/actual):", flush=True)
+            print(
+                f"  Mean: {np.mean(efficiencies):.0%} | Min: {np.min(efficiencies):.0%} | Max: {np.max(efficiencies):.0%}",
+                flush=True,
+            )
+
+        if errors:
+            errors_mm = [e * 1000 for e in errors]
+            print("\nFinal position error:", flush=True)
+            print(
+                f"  Mean: {np.mean(errors_mm):.1f}mm | Min: {np.min(errors_mm):.1f}mm | Max: {np.max(errors_mm):.1f}mm",
+                flush=True,
+            )
+
+        if jerks:
+            print("\nMotion smoothness (mean jerk, lower=smoother):", flush=True)
+            print(
+                f"  Mean: {np.mean(jerks):.1f} m/s³ | Min: {np.min(jerks):.1f} | Max: {np.max(jerks):.1f}",
+                flush=True,
+            )
+
+        # Overall score (lower is better)
+        if times and efficiencies and errors:
+            # Normalized score: time penalty + inefficiency penalty + error penalty
+            time_score = np.mean(times) / 5.0  # 5s = 1.0
+            eff_score = 1.0 - np.mean(efficiencies)  # 100% efficiency = 0.0
+            err_score = np.mean(errors) * 100  # 1cm = 1.0
+            total_score = time_score + eff_score + err_score
+            print(f"\nOverall score (lower is better): {total_score:.2f}", flush=True)
+        print("=" * 50 + "\n", flush=True)
 
 
 def sample_workspace_points(
@@ -240,20 +591,31 @@ def draw_workspace(
 
     if bbox is not None and mode in ("bbox", "both", "all"):
         mins, maxs = bbox
-        corners = np.array([
-            [mins[0], mins[1], mins[2]],
-            [maxs[0], mins[1], mins[2]],
-            [maxs[0], maxs[1], mins[2]],
-            [mins[0], maxs[1], mins[2]],
-            [mins[0], mins[1], maxs[2]],
-            [maxs[0], mins[1], maxs[2]],
-            [maxs[0], maxs[1], maxs[2]],
-            [mins[0], maxs[1], maxs[2]],
-        ])
+        corners = np.array(
+            [
+                [mins[0], mins[1], mins[2]],
+                [maxs[0], mins[1], mins[2]],
+                [maxs[0], maxs[1], mins[2]],
+                [mins[0], maxs[1], mins[2]],
+                [mins[0], mins[1], maxs[2]],
+                [maxs[0], mins[1], maxs[2]],
+                [maxs[0], maxs[1], maxs[2]],
+                [mins[0], maxs[1], maxs[2]],
+            ]
+        )
         edges = [
-            (0, 1), (1, 2), (2, 3), (3, 0),
-            (4, 5), (5, 6), (6, 7), (7, 4),
-            (0, 4), (1, 5), (2, 6), (3, 7),
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
         ]
         rgba = (0.9, 0.2, 0.2, 0.8)
         radius = 0.004
@@ -304,6 +666,12 @@ def run_with_controller(
     workspace_samples: int = 2000,
     workspace_point_max: int = 1200,
     workspace_seed: int | None = 0,
+    challenge_mode: bool = False,
+    challenge_collect_radius: float = 0.025,
+    challenge_initial_targets: int = 1,
+    challenge_targets_per_level: int = 5,
+    challenge_max_targets: int = 3,
+    challenge_seed: int | None = None,
 ) -> int:
     """Run with Xbox controller and MuJoCo viewer."""
     from lerobot.model.kinematics import RobotKinematics
@@ -339,7 +707,7 @@ def run_with_controller(
     print(f"Orientation scale: {config.orientation_scale} rad/s", flush=True)
 
     # Joint velocity limits for IK joints (4 joints, no wrist_roll)
-    ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])  # deg/s
+    ik_joint_vel_limits = IK_JOINT_VEL_LIMITS_ARRAY
 
     if not controller.connect():
         print("ERROR: Failed to connect to Xbox controller")
@@ -360,6 +728,22 @@ def run_with_controller(
     print("  A button to go home", flush=True)
     print("  Close window to exit\n", flush=True)
 
+    # Initialize challenge mode if enabled
+    challenge: ChallengeManager | None = None
+    if challenge_mode:
+        limits = parse_joint_limits(URDF_PATH, ik_joint_names)
+        limits_deg = limits_rad_to_deg(limits)
+        challenge = ChallengeManager(
+            kinematics=kinematics,
+            joint_limits_deg=limits_deg,
+            collect_radius=challenge_collect_radius,
+            initial_targets=challenge_initial_targets,
+            targets_per_level=challenge_targets_per_level,
+            max_targets=challenge_max_targets,
+            seed=challenge_seed,
+        )
+        challenge.start()
+
     # IK joint positions (4 joints: base, shoulder_lift, elbow_flex, wrist_flex)
     ik_joint_pos_deg = np.zeros(4)
     wrist_roll_deg = 0.0
@@ -373,11 +757,13 @@ def run_with_controller(
         cr, sr = np.cos(roll), np.sin(roll)
         cp, sp = np.cos(pitch), np.sin(pitch)
         cy, sy = np.cos(yaw), np.sin(yaw)
-        return np.array([
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
-        ])
+        return np.array(
+            [
+                [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                [-sp, cp * sr, cp * cr],
+            ]
+        )
 
     # Get initial EE pose (with base at 0)
     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
@@ -436,7 +822,9 @@ def run_with_controller(
         if workspace_mode in ("hull", "all"):
             workspace_edges = workspace_hull_edges(workspace_points)
 
-    def draw_trace(viewer: mujoco.viewer.Handle, points: list[np.ndarray], reset_scene: bool = True) -> None:
+    def draw_trace(
+        viewer: mujoco.viewer.Handle, points: list[np.ndarray], reset_scene: bool = True
+    ) -> None:
         if not routine_trace:
             return
         rgba = (0.1, 0.9, 0.1, 1.0)
@@ -551,7 +939,10 @@ def run_with_controller(
 
                 # Solve IK for 4 joints
                 new_joints = kinematics.inverse_kinematics(
-                    ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=orientation_weight
+                    ik_joint_pos_deg,
+                    target_pose,
+                    position_weight=1.0,
+                    orientation_weight=orientation_weight,
                 )
                 ik_result = new_joints[:4]
 
@@ -583,13 +974,15 @@ def run_with_controller(
 
             # Combine base + IK joints for full 5-joint position
             # Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll
-            full_joint_pos_deg = np.array([
-                ik_joint_pos_deg[0],  # shoulder_pan
-                ik_joint_pos_deg[1],  # shoulder_lift
-                ik_joint_pos_deg[2],  # elbow_flex
-                ik_joint_pos_deg[3],  # wrist_flex
-                wrist_roll_deg,  # wrist_roll
-            ])
+            full_joint_pos_deg = np.array(
+                [
+                    ik_joint_pos_deg[0],  # shoulder_pan
+                    ik_joint_pos_deg[1],  # shoulder_lift
+                    ik_joint_pos_deg[2],  # elbow_flex
+                    ik_joint_pos_deg[3],  # wrist_flex
+                    wrist_roll_deg,  # wrist_roll
+                ]
+            )
 
             # Update simulation
             sim.set_joint_targets(full_joint_pos_deg)
@@ -602,8 +995,14 @@ def run_with_controller(
                 elif np.linalg.norm(pos - trace_points[-1]) >= trace_min_step_m:
                     trace_points.append(pos.copy())
                 if len(trace_points) > routine_trace_max:
-                    trace_points = trace_points[-routine_trace_max :]
+                    trace_points = trace_points[-routine_trace_max:]
                 draw_trace(viewer, trace_points, reset_scene=not redraw_workspace)
+
+            # Challenge mode update
+            if challenge is not None:
+                challenge.update(pos, LOOP_PERIOD)
+                challenge.draw_targets(viewer)
+
             viewer.sync()
 
             # Status - show position and orientation
@@ -627,12 +1026,22 @@ def run_with_controller(
                 )
             pitch_deg = np.rad2deg(target_pitch)
             yaw_deg = np.rad2deg(target_yaw)
-            print(
-                f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
-                f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {gripper_pos:.2f}   ",
-                end="\r",
-                flush=True,
-            )
+            if challenge is not None:
+                n_targets = len(challenge.active_targets)
+                n_collected = len(challenge.collected_targets)
+                print(
+                    f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
+                    f"Targets: {n_targets} | Collected: {n_collected} | Grip: {gripper_pos:.2f}   ",
+                    end="\r",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
+                    f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {gripper_pos:.2f}   ",
+                    end="\r",
+                    flush=True,
+                )
 
             loop_counter += 1
             elapsed = time.monotonic() - loop_start
@@ -643,6 +1052,10 @@ def run_with_controller(
     if csv_file:
         csv_file.close()
     print("\nDisconnected.", flush=True)
+
+    # Print challenge summary if in challenge mode
+    if challenge is not None:
+        challenge.print_summary()
 
     if error_count == 0:
         print("IK error summary: no samples collected.")
@@ -702,7 +1115,7 @@ def run_demo_mode(
     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
     last_target_pose = ee_pose.copy()
     last_ee_pose = ee_pose.copy()
-    ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])
+    ik_joint_vel_limits = IK_JOINT_VEL_LIMITS_ARRAY
     t = 0.0
     center_pos = ee_pose[:3, 3].copy()
     center_pos += np.array([routine_center_x, routine_center_y, routine_center_z], dtype=float)
@@ -732,11 +1145,13 @@ def run_demo_mode(
 
     def demo_target_offset(t_s: float) -> np.ndarray:
         if routine_pattern == "lissajous":
-            return routine_scale * np.array([
-                0.03 * np.sin(t_s * 0.5),
-                0.03 * np.cos(t_s * 0.5),
-                0.02 * np.sin(t_s * 0.3),
-            ])
+            return routine_scale * np.array(
+                [
+                    0.03 * np.sin(t_s * 0.5),
+                    0.03 * np.cos(t_s * 0.5),
+                    0.02 * np.sin(t_s * 0.3),
+                ]
+            )
         size = routine_square_size * routine_scale
         if routine_pattern == "square-xyz":
             period = max((4.0 * size) / max(routine_square_speed, 0.001), 0.1)
@@ -749,7 +1164,9 @@ def run_demo_mode(
         u = (t_s / period) % 1.0
         return plane_offset(routine_plane, u, size)
 
-    def draw_trace(viewer: mujoco.viewer.Handle, points: list[np.ndarray], reset_scene: bool = True) -> None:
+    def draw_trace(
+        viewer: mujoco.viewer.Handle, points: list[np.ndarray], reset_scene: bool = True
+    ) -> None:
         if not routine_trace:
             return
         rgba = (0.1, 0.9, 0.1, 1.0)
@@ -893,13 +1310,15 @@ def run_demo_mode(
             last_ee_pose = ee_pose.copy()
             last_target_pose = target_pose.copy()
 
-            full_joint_pos_deg = np.array([
-                ik_joint_pos_deg[0],
-                ik_joint_pos_deg[1],
-                ik_joint_pos_deg[2],
-                ik_joint_pos_deg[3],
-                wrist_roll_deg,
-            ])
+            full_joint_pos_deg = np.array(
+                [
+                    ik_joint_pos_deg[0],
+                    ik_joint_pos_deg[1],
+                    ik_joint_pos_deg[2],
+                    ik_joint_pos_deg[3],
+                    wrist_roll_deg,
+                ]
+            )
 
             sim.set_joint_targets(full_joint_pos_deg)
             sim.set_gripper(gripper)
@@ -912,7 +1331,7 @@ def run_demo_mode(
                     if np.linalg.norm(pos - trace_points[-1]) >= trace_min_step_m:
                         trace_points.append(pos.copy())
                 if len(trace_points) > routine_trace_max:
-                    trace_points = trace_points[-routine_trace_max :]
+                    trace_points = trace_points[-routine_trace_max:]
                 draw_trace(viewer, trace_points, reset_scene=not redraw_workspace)
             viewer.sync()
 
@@ -966,29 +1385,6 @@ def run_demo_mode(
         return 1
     print("PASS")
     return 0
-
-
-def parse_joint_limits(urdf_path: Path, joint_names: list[str]) -> dict[str, tuple[float, float]]:
-    """Return URDF joint limits in radians."""
-    limits: dict[str, tuple[float, float]] = {}
-    root = ElementTree.parse(urdf_path).getroot()
-    for joint in root.findall("joint"):
-        name = joint.get("name")
-        if name not in joint_names:
-            continue
-        limit = joint.find("limit")
-        if limit is None:
-            continue
-        lower = limit.get("lower")
-        upper = limit.get("upper")
-        if lower is None or upper is None:
-            continue
-        limits[name] = (float(lower), float(upper))
-    return limits
-
-
-def limits_rad_to_deg(limits: dict[str, tuple[float, float]]) -> dict[str, tuple[float, float]]:
-    return {name: (np.rad2deg(low), np.rad2deg(high)) for name, (low, high) in limits.items()}
 
 
 def load_calibration_fractions(calibration_path: Path, joint_names: list[str]) -> dict[str, float]:
@@ -1101,7 +1497,7 @@ def estimate_max_square_size(
         ok = square_ok(mid)
         if verbose:
             status = "ok" if ok else "fail"
-            print(f"  iter {i+1:02d}: size={mid:.4f}m -> {status}", flush=True)
+            print(f"  iter {i + 1:02d}: size={mid:.4f}m -> {status}", flush=True)
         if ok:
             lower_bound = mid
         else:
@@ -1116,6 +1512,41 @@ def main():
         "--motion-routine",
         action="store_true",
         help="Run automatic motion routine (alias for --no-controller).",
+    )
+    parser.add_argument(
+        "--challenge",
+        action="store_true",
+        help="Run benchmark challenge mode with targets to collect.",
+    )
+    parser.add_argument(
+        "--challenge-collect-radius",
+        type=float,
+        default=0.03,
+        help="Distance to target for collection (m). Default: 0.03.",
+    )
+    parser.add_argument(
+        "--challenge-initial-targets",
+        type=int,
+        default=1,
+        help="Number of targets to start with. Default: 1.",
+    )
+    parser.add_argument(
+        "--challenge-targets-per-level",
+        type=int,
+        default=5,
+        help="Collections before difficulty increases. Default: 5.",
+    )
+    parser.add_argument(
+        "--challenge-max-targets",
+        type=int,
+        default=3,
+        help="Maximum simultaneous targets. Default: 3.",
+    )
+    parser.add_argument(
+        "--challenge-seed",
+        type=int,
+        default=None,
+        help="Random seed for target placement. Default: random.",
     )
     parser.add_argument(
         "--deadzone",
@@ -1337,7 +1768,11 @@ def main():
         )
         limits = limits_rad_to_deg(parse_joint_limits(URDF_PATH, IK_JOINT_NAMES))
         if args.estimate_use_calibration:
-            cal_path = Path(args.estimate_calibration_path) if args.estimate_calibration_path else find_default_calibration()
+            cal_path = (
+                Path(args.estimate_calibration_path)
+                if args.estimate_calibration_path
+                else find_default_calibration()
+            )
             if cal_path is None:
                 print("ERROR: No calibration JSON found.")
                 sys.exit(2)
@@ -1346,7 +1781,11 @@ def main():
             print(f"Using calibration limits: {cal_path}", flush=True)
 
         center = kinematics.forward_kinematics(np.zeros(len(IK_JOINT_NAMES)))[:3, 3].copy()
-        planes = ["xy", "xz", "yz"] if args.estimate_max_square_plane == "all" else [args.estimate_max_square_plane]
+        planes = (
+            ["xy", "xz", "yz"]
+            if args.estimate_max_square_plane == "all"
+            else [args.estimate_max_square_plane]
+        )
         print("Max square estimate (kinematics-only)")
         print(f"  max_size search: {args.estimate_max_square_max:.3f} m")
         print(f"  samples/side: {args.estimate_max_square_samples}")
@@ -1423,6 +1862,12 @@ def main():
             workspace_samples=args.workspace_samples,
             workspace_point_max=args.workspace_point_max,
             workspace_seed=workspace_seed,
+            challenge_mode=args.challenge,
+            challenge_collect_radius=args.challenge_collect_radius,
+            challenge_initial_targets=args.challenge_initial_targets,
+            challenge_targets_per_level=args.challenge_targets_per_level,
+            challenge_max_targets=args.challenge_max_targets,
+            challenge_seed=args.challenge_seed,
         )
     sys.exit(exit_code)
 

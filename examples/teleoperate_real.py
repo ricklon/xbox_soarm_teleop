@@ -2,10 +2,11 @@
 """Xbox controller teleoperation for real SO-ARM101.
 
 This example connects to a real SO-ARM101 robot and controls it
-via Xbox controller using inverse kinematics.
+via Xbox controller using inverse kinematics or Jacobian-based control.
 
 Usage:
     uv run python examples/teleoperate_real.py --port /dev/ttyUSB0
+    uv run python examples/teleoperate_real.py --jacobian      # Use Jacobian control
     uv run python examples/teleoperate_real.py --recalibrate  # Fresh calibration
     uv run python examples/teleoperate_real.py --no-calibrate # Skip calibration
     uv run python examples/teleoperate_real.py --motion-routine
@@ -31,10 +32,17 @@ from pathlib import Path
 
 import numpy as np
 
-from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES, JOINT_NAMES_WITH_GRIPPER
+from xbox_soarm_teleop.config.joints import (
+    HOME_POSITION_DEG,
+    IK_JOINT_NAMES,
+    JOINT_NAMES_WITH_GRIPPER,
+)
 
 # Path to URDF
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
+
+# Default calibration directory (project-local)
+DEFAULT_CALIBRATION_DIR = Path(__file__).parent.parent / "calibration"
 
 # Joint names (order matters - matches URDF and robot)
 JOINT_NAMES = JOINT_NAMES_WITH_GRIPPER
@@ -81,6 +89,7 @@ def normalized_to_deg(normalized: float, joint_name: str) -> float:
 
 def run_teleoperation(
     port: str,
+    calibration_dir: Path | None = None,
     recalibrate: bool = False,
     no_calibrate: bool = False,
     deadzone: float = 0.15,
@@ -101,11 +110,14 @@ def run_teleoperation(
     ik_max_err_mm: float = 30.0,
     ik_mean_err_mm: float = 10.0,
     ik_vel_scale: float = 1.0,
+    use_jacobian: bool = False,
+    jacobian_damping: float = 0.05,
 ):
     """Run teleoperation with real robot.
 
     Args:
         port: Serial port for robot.
+        calibration_dir: Directory for calibration files. Default: ./calibration/
         recalibrate: If True, delete existing calibration and run fresh.
         no_calibrate: If True, skip calibration (use existing only).
         deadzone: Controller deadzone (0.0-1.0).
@@ -126,6 +138,8 @@ def run_teleoperation(
         ik_max_err_mm: Warn if max IK position error exceeds this (mm).
         ik_mean_err_mm: Warn if mean IK position error exceeds this (mm).
         ik_vel_scale: Scale factor for IK joint velocity limits.
+        use_jacobian: If True, use Jacobian-based control instead of IK.
+        jacobian_damping: Damping factor for Jacobian pseudo-inverse.
     """
     import shutil
 
@@ -134,15 +148,23 @@ def run_teleoperation(
     from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
 
     from xbox_soarm_teleop.config.xbox_config import XboxConfig
+    from xbox_soarm_teleop.kinematics.jacobian import JacobianController
     from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, MapXboxToEEDelta
     from xbox_soarm_teleop.teleoperators.xbox import XboxController
 
-    # Handle recalibration - delete existing calibration cache
-    calibration_dir = Path.home() / ".cache/huggingface/lerobot/calibration/robots"
+    # Use project-local calibration directory by default
+    if calibration_dir is None:
+        calibration_dir = DEFAULT_CALIBRATION_DIR
+    calibration_dir = Path(calibration_dir)
+    calibration_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Calibration directory: {calibration_dir}", flush=True)
+
+    # Handle recalibration - delete existing calibration
     if recalibrate and calibration_dir.exists():
         print("Deleting existing calibration for recalibration...", flush=True)
         shutil.rmtree(calibration_dir)
-        print("Calibration cache cleared.", flush=True)
+        calibration_dir.mkdir(parents=True, exist_ok=True)
+        print("Calibration cleared.", flush=True)
 
     # IK joint names - include base, exclude wrist_roll (controlled directly)
     ik_joint_names = IK_JOINT_NAMES
@@ -154,6 +176,14 @@ def run_teleoperation(
         target_frame_name="gripper_frame_link",
         joint_names=ik_joint_names,
     )
+
+    # Initialize Jacobian controller if needed
+    jacobian_ctrl = None
+    if use_jacobian:
+        jacobian_ctrl = JacobianController(kinematics, damping=jacobian_damping)
+        print(f"Control mode: JACOBIAN (damping={jacobian_damping})", flush=True)
+    else:
+        print("Control mode: IK", flush=True)
 
     # Initialize Xbox controller with passed parameters
     config = XboxConfig(deadzone=deadzone)
@@ -191,7 +221,7 @@ def run_teleoperation(
 
     # Initialize robot
     print(f"Connecting to robot on {port}...", flush=True)
-    robot_config = SOFollowerRobotConfig(port=port)
+    robot_config = SOFollowerRobotConfig(port=port, calibration_dir=calibration_dir)
     robot = SOFollower(robot_config)
 
     # Determine calibration mode
@@ -199,6 +229,11 @@ def run_teleoperation(
 
     try:
         robot.connect(calibrate=calibrate)
+        # When --no-calibrate is used, we still need to write calibration to the motor bus
+        # lerobot skips this when calibrate=False, so we do it manually
+        if no_calibrate and robot.calibration and not robot.bus.is_calibrated:
+            print("Loading existing calibration...", flush=True)
+            robot.bus.write_calibration(robot.calibration)
     except Exception as e:
         print(f"ERROR: Failed to connect to robot: {e}")
         if no_calibrate and "calibration" in str(e).lower():
@@ -242,11 +277,13 @@ def run_teleoperation(
         cr, sr = np.cos(roll), np.sin(roll)
         cp, sp = np.cos(pitch), np.sin(pitch)
         cy, sy = np.cos(yaw), np.sin(yaw)
-        return np.array([
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
-        ])
+        return np.array(
+            [
+                [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                [-sp, cp * sr, cp * cr],
+            ]
+        )
 
     # Get initial EE pose
     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
@@ -420,21 +457,43 @@ def run_teleoperation(
                 else:
                     orientation_weight = 0.0
 
-                # Solve IK for 4 joints
-                new_joints = kinematics.inverse_kinematics(
-                    ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=orientation_weight
-                )
-                ik_result = new_joints[:4]
+                if use_jacobian:
+                    # Jacobian-based control: EE velocity -> joint velocity -> integrate
+                    # Use position + pitch mode (4 DOF) for optimal control with 4 joints
+                    ee_vel = np.array([ee_delta.dx, ee_delta.dy, ee_delta.dz, ee_delta.dpitch])
+                    joint_vel_deg = jacobian_ctrl.ee_vel_to_joint_vel(
+                        ee_vel, ik_joint_pos_deg, mode="position_pitch"
+                    )
 
-                # Apply joint velocity limiting to smooth IK output
-                max_delta = ik_joint_vel_limits * LOOP_PERIOD
-                joint_delta = ik_result - ik_joint_pos_deg
-                clipped_delta = np.clip(joint_delta, -max_delta, max_delta)
-                if np.any(np.abs(joint_delta) > max_delta):
-                    clip_count += 1
-                    clip_joints += int(np.sum(np.abs(joint_delta) > max_delta))
-                    clipped_this = True
-                ik_joint_pos_deg = ik_joint_pos_deg + clipped_delta
+                    # Apply velocity limits
+                    joint_vel_deg = np.clip(joint_vel_deg, -ik_joint_vel_limits, ik_joint_vel_limits)
+
+                    # Integrate to get new joint positions
+                    joint_delta = joint_vel_deg * LOOP_PERIOD
+                    ik_joint_pos_deg = ik_joint_pos_deg + joint_delta
+
+                    # Apply joint limits
+                    joint_limits_deg = np.array([180.0, 90.0, 90.0, 90.0])
+                    ik_joint_pos_deg = np.clip(ik_joint_pos_deg, -joint_limits_deg, joint_limits_deg)
+                else:
+                    # IK-based control: solve IK for target pose
+                    new_joints = kinematics.inverse_kinematics(
+                        ik_joint_pos_deg,
+                        target_pose,
+                        position_weight=1.0,
+                        orientation_weight=orientation_weight,
+                    )
+                    ik_result = new_joints[:4]
+
+                    # Apply joint velocity limiting to smooth IK output
+                    max_delta = ik_joint_vel_limits * LOOP_PERIOD
+                    joint_delta = ik_result - ik_joint_pos_deg
+                    clipped_delta = np.clip(joint_delta, -max_delta, max_delta)
+                    if np.any(np.abs(joint_delta) > max_delta):
+                        clip_count += 1
+                        clip_joints += int(np.sum(np.abs(joint_delta) > max_delta))
+                        clipped_this = True
+                    ik_joint_pos_deg = ik_joint_pos_deg + clipped_delta
 
                 # Apply wrist roll directly (not part of IK)
                 if abs(ee_delta.droll) > 0.001:
@@ -460,13 +519,15 @@ def run_teleoperation(
                     )
 
             # Combine base + IK joints for full 5-joint position
-            full_joint_pos_deg = np.array([
-                ik_joint_pos_deg[0],  # shoulder_pan
-                ik_joint_pos_deg[1],  # shoulder_lift
-                ik_joint_pos_deg[2],  # elbow_flex
-                ik_joint_pos_deg[3],  # wrist_flex
-                wrist_roll_deg,  # wrist_roll
-            ])
+            full_joint_pos_deg = np.array(
+                [
+                    ik_joint_pos_deg[0],  # shoulder_pan
+                    ik_joint_pos_deg[1],  # shoulder_lift
+                    ik_joint_pos_deg[2],  # elbow_flex
+                    ik_joint_pos_deg[3],  # wrist_flex
+                    wrist_roll_deg,  # wrist_roll
+                ]
+            )
 
             # Send to robot (convert to normalized values)
             action = {}
@@ -513,6 +574,18 @@ def run_teleoperation(
                 time.sleep(LOOP_PERIOD - elapsed)
 
     finally:
+        print("\nReturning to home position...", flush=True)
+        try:
+            # Send home position command
+            home_action = {}
+            for name in JOINT_NAMES[:-1]:  # All except gripper
+                home_action[f"{name}.pos"] = HOME_POSITION_DEG[name]
+            home_action["gripper.pos"] = 0.0  # Gripper closed
+            robot.send_action(home_action)
+            time.sleep(2.0)  # Wait for movement
+        except Exception as e:
+            print(f"Warning: Could not return home: {e}")
+
         if controller is not None:
             controller.disconnect()
         robot.disconnect()
@@ -539,6 +612,12 @@ def main():
         type=str,
         default=None,
         help="Serial port for robot (e.g., /dev/ttyUSB0). Auto-detected if not specified.",
+    )
+    parser.add_argument(
+        "--calibration-dir",
+        type=str,
+        default=None,
+        help=f"Calibration directory. Default: {DEFAULT_CALIBRATION_DIR}",
     )
     parser.add_argument(
         "--recalibrate",
@@ -664,6 +743,17 @@ def main():
         default=1.0,
         help="Scale IK joint velocity limits. Default: 1.0.",
     )
+    parser.add_argument(
+        "--jacobian",
+        action="store_true",
+        help="Use Jacobian-based control instead of IK.",
+    )
+    parser.add_argument(
+        "--jacobian-damping",
+        type=float,
+        default=0.05,
+        help="Damping factor for Jacobian pseudo-inverse. Default: 0.05.",
+    )
     args = parser.parse_args()
 
     if args.recalibrate and args.no_calibrate:
@@ -692,6 +782,7 @@ def main():
 
     run_teleoperation(
         port,
+        calibration_dir=Path(args.calibration_dir) if args.calibration_dir else None,
         recalibrate=args.recalibrate,
         no_calibrate=args.no_calibrate,
         deadzone=args.deadzone,
@@ -712,6 +803,8 @@ def main():
         ik_max_err_mm=args.ik_max_err_mm,
         ik_mean_err_mm=args.ik_mean_err_mm,
         ik_vel_scale=args.ik_vel_scale,
+        use_jacobian=args.jacobian,
+        jacobian_damping=args.jacobian_damping,
     )
 
 

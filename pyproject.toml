@@ -16,6 +16,7 @@ dependencies = [
     "mujoco>=3.4.0",
     "scservo-sdk",
     "scipy>=1.15.3",
+    "pygame>=2.6.1",
 ]
 
 [project.optional-dependencies]

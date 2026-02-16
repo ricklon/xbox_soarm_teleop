@@ -1,0 +1,30 @@
+<mujoco model="so101_with_cameras">
+  <!-- Include the robot URDF -->
+  <include file="so101_abs.urdf"/>
+
+  <!-- Add a ground plane for reference -->
+  <worldbody>
+    <geom name="floor" type="plane" size="0.5 0.5 0.01" rgba="0.3 0.3 0.3 1" pos="0.2 0 0"/>
+  </worldbody>
+
+  <!-- Camera definitions for multiple views -->
+  <!-- Use [ and ] keys to cycle through cameras in the viewer -->
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+  </visual>
+
+  <!-- Back view: behind robot looking forward -->
+  <camera name="back" pos="-0.3 0 0.4" xyaxes="0 -1 0 0.5 0 1" fovy="60"/>
+
+  <!-- Left view: from the left side -->
+  <camera name="left" pos="0.2 0.5 0.3" xyaxes="-1 0 0 0 0.5 1" fovy="60"/>
+
+  <!-- Top view: from above looking down -->
+  <camera name="top" pos="0.2 0 0.7" xyaxes="0 -1 0 1 0 0" fovy="60"/>
+
+  <!-- Front-right angle: good for seeing gripper -->
+  <camera name="front_right" pos="0.5 -0.3 0.3" xyaxes="0.6 1 0 -0.2 0 1" fovy="60"/>
+
+  <!-- Isometric view: classic 3D view -->
+  <camera name="isometric" pos="-0.2 -0.4 0.5" xyaxes="0.9 -0.5 0 0.2 0.4 0.9" fovy="50"/>
+</mujoco>
