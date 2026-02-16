@@ -408,6 +408,7 @@ def sweep_joint(
 
     # 5. Compute errors
     base_target = base_positions[joint_name]
+    result["home_target"] = base_target
     errors = [
         abs(result["lower_actual"] - lower_deg),
         abs(result["upper_actual"] - upper_deg),
@@ -447,7 +448,8 @@ def print_report(results: list[dict]) -> int:
         rng = f"[{r['lower_target']:+6.1f}, {r['upper_target']:+6.1f}]"
         low_err = abs(r["lower_actual"] - r["lower_target"])
         high_err = abs(r["upper_actual"] - r["upper_target"])
-        home_err = abs(r["home_actual"] - HOME_POSITION_DEG.get(joint, 0.0))
+        home_target = r.get("home_target", HOME_POSITION_DEG.get(joint, 0.0))
+        home_err = abs(r["home_actual"] - home_target)
         status = "PASS" if r["passed"] else "FAIL"
         if not r["passed"]:
             all_passed = False

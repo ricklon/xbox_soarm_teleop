@@ -21,32 +21,34 @@ def find_port() -> str | None:
 
 def check_motor_status(bus, motor_id: int) -> dict:
     """Check status of a single motor."""
+    motor_key = str(motor_id)
     try:
         # Try to read position
-        pos_raw = bus.read("Present_Position", motor_id, normalize=False)
-        pos_normalized = bus.read("Present_Position", motor_id, normalize=True)
+        pos_raw = bus.read("Present_Position", motor_key, normalize=False)
+        # Use raw-only reads so this diagnostic works without bus calibration loaded.
+        pos_normalized = None
 
         # Read additional diagnostics
         try:
-            temp = bus.read("Temperature", motor_id, normalize=False)
-        except:
+            temp = bus.read("Temperature", motor_key, normalize=False)
+        except Exception:
             temp = None
 
         try:
-            voltage = bus.read("Input_Voltage", motor_id, normalize=False)
-        except:
+            voltage = bus.read("Input_Voltage", motor_key, normalize=False)
+        except Exception:
             voltage = None
 
         try:
-            load = bus.read("Present_Current", motor_id, normalize=False)
-        except:
+            load = bus.read("Present_Current", motor_key, normalize=False)
+        except Exception:
             load = None
 
         return {
             "id": motor_id,
             "status": "OK",
             "position_raw": int(pos_raw),
-            "position_norm": float(pos_normalized),
+            "position_norm": float(pos_normalized) if pos_normalized is not None else None,
             "temperature": int(temp) if temp is not None else None,
             "voltage": float(voltage) / 10 if voltage is not None else None,  # Usually in 0.1V
             "load": int(load) if load is not None else None,
@@ -67,6 +69,7 @@ def check_motor_status(bus, motor_id: int) -> dict:
 
 def run_motor_diagnostic(port: str, interactive: bool = False):
     """Run diagnostic test on all motors."""
+    bus = None
     try:
         from lerobot.motors.feetech.feetech import FeetechMotorsBus
         from lerobot.motors.motors_bus import Motor, MotorNormMode
@@ -79,9 +82,10 @@ def run_motor_diagnostic(port: str, interactive: bool = False):
 
         # Initialize bus (without calibration check)
         motors = {
-            str(i): Motor(id=i, model="STS3215", norm_mode=MotorNormMode.DEGREES) for i in range(1, 7)
+            str(i): Motor(id=i, model="sts3215", norm_mode=MotorNormMode.DEGREES) for i in range(1, 7)
         }
         bus = FeetechMotorsBus(port=port, motors=motors)
+        bus.connect()
 
         print("Checking motor IDs 1-6...")
         print()
@@ -104,7 +108,7 @@ def run_motor_diagnostic(port: str, interactive: bool = False):
             results.append(result)
 
             if result["status"] == "OK":
-                print(f"✓ OK - Pos: {result['position_norm']:.1f}°", end="")
+                print(f"✓ OK - PosRaw: {result['position_raw']}", end="")
                 if result["temperature"] is not None:
                     print(f" Temp: {result['temperature']}°C", end="")
                 print()
@@ -155,9 +159,9 @@ def run_motor_diagnostic(port: str, interactive: bool = False):
                 target_plus = current_pos + 10
                 print(f"  Moving to +10° ({target_plus:.1f}°)...", end=" ", flush=True)
                 try:
-                    bus.write("Goal_Position", motor_id, target_plus, normalize=True)
+                    bus.write("Goal_Position", str(motor_id), target_plus, normalize=True)
                     time.sleep(1.0)
-                    new_pos = bus.read("Present_Position", motor_id, normalize=True)
+                    new_pos = bus.read("Present_Position", str(motor_id), normalize=True)
                     print(f"Actual: {new_pos:.1f}° ✓")
                 except KeyboardInterrupt:
                     print("Skipped")
@@ -170,9 +174,9 @@ def run_motor_diagnostic(port: str, interactive: bool = False):
                 target_minus = current_pos - 10
                 print(f"  Moving to -10° ({target_minus:.1f}°)...", end=" ", flush=True)
                 try:
-                    bus.write("Goal_Position", motor_id, target_minus, normalize=True)
+                    bus.write("Goal_Position", str(motor_id), target_minus, normalize=True)
                     time.sleep(1.0)
-                    new_pos = bus.read("Present_Position", motor_id, normalize=True)
+                    new_pos = bus.read("Present_Position", str(motor_id), normalize=True)
                     print(f"Actual: {new_pos:.1f}° ✓")
                 except KeyboardInterrupt:
                     print("Skipped")
@@ -184,10 +188,10 @@ def run_motor_diagnostic(port: str, interactive: bool = False):
                 # Return to original
                 print(f"  Returning to original ({current_pos:.1f}°)...", end=" ", flush=True)
                 try:
-                    bus.write("Goal_Position", motor_id, current_pos, normalize=True)
+                    bus.write("Goal_Position", str(motor_id), current_pos, normalize=True)
                     time.sleep(1.0)
                     print("Done")
-                except:
+                except Exception:
                     print("Failed to return")
 
         print()
@@ -218,6 +222,12 @@ def run_motor_diagnostic(port: str, interactive: bool = False):
         import traceback
 
         traceback.print_exc()
+    finally:
+        if bus is not None:
+            try:
+                bus.disconnect()
+            except Exception:
+                pass
         sys.exit(1)
 
 

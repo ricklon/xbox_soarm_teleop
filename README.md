@@ -128,9 +128,40 @@ uv run python examples/teleoperate_dual.py --port /dev/ttyUSB0 --motion-routine 
 | `examples/teleoperate.py --sim` | Test controller (terminal output only) |
 | `examples/simulate.py` | 3D visualization with meshcat |
 | `examples/simulate_mujoco.py` | MuJoCo simulation |
+| `examples/xbox_joint_diagnostic.py` | Direct joint drive + telemetry logging (no IK) |
 | `examples/diagnose_robot.py` | Pre-flight motor diagnostics |
 | `examples/teleoperate_real.py` | Control real robot |
 | `examples/teleoperate_dual.py` | Digital twin (real + simulation) |
+
+Direct joint diagnostic (recommended when IK appears sluggish):
+
+```bash
+uv run python examples/xbox_joint_diagnostic.py --port /dev/ttyACM0
+```
+
+This bypasses IK and maps Xbox input directly to one selected servo at a time, with CSV logging of commanded velocity, goal, position, velocity, load, current, temperature, and voltage.
+It automatically applies per-joint clearance poses (from `SWEEP_TEST_POSITIONS`) so each joint can reach fuller ROM without self-collision or gripper overload.
+
+Control direction details:
+- Hold `LB` to enable movement
+- Left stick X:
+  - right (`+X`) moves selected joint toward its configured upper limit
+  - left (`-X`) moves selected joint toward its configured lower limit
+- D-pad left/right:
+  - left selects previous joint
+  - right selects next joint
+- `Y` toggles auto-sweep for selected joint
+- `A` resets selected joint to its base test pose
+
+If needed:
+- Disable clearance poses: `--no-test-positions`
+- Enable trigger-driven gripper during gripper test: `--gripper-trigger-control`
+
+Analyze a captured diagnostic log:
+
+```bash
+uv run python examples/analyze_joint_diag.py --input joint_diag_YYYYMMDD_HHMMSS.csv
+```
 
 ## Testing
 

@@ -25,6 +25,7 @@ Controls:
 
 import argparse
 import csv
+import json
 import signal
 import sys
 import time
@@ -35,6 +36,7 @@ import numpy as np
 from xbox_soarm_teleop.config.joints import (
     HOME_POSITION_DEG,
     IK_JOINT_NAMES,
+    JOINT_LIMITS_DEG,
     JOINT_NAMES_WITH_GRIPPER,
 )
 
@@ -58,6 +60,13 @@ WORKSPACE_LIMITS = {
     "z": (0.05, 0.45),
 }
 
+# Conservative workspace used by strict safety mode.
+STRICT_WORKSPACE_LIMITS = {
+    "x": (0.10, 0.32),
+    "y": (-0.20, 0.20),
+    "z": (0.05, 0.30),
+}
+
 
 def find_serial_port() -> str | None:
     """Find available serial port for the robot."""
@@ -67,29 +76,75 @@ def find_serial_port() -> str | None:
     return ports[0] if ports else None
 
 
-def deg_to_normalized(deg: float, joint_name: str) -> float:
-    """Convert degrees to LeRobot normalized value [-100, 100].
+def resolve_robot_id(calibration_dir: Path, robot_id: str | None) -> str | None:
+    """Resolve robot calibration id, preferring known non-None calibration files."""
+    if robot_id:
+        return robot_id
 
-    The SO101 uses approximately +/-180 degrees range mapped to [-100, 100].
-    """
+    # Prefer explicit project calibration ids before falling back to None.json behavior.
+    for candidate in ("so101_calibration", "lerobot_calibration_real", "test_arm"):
+        if (calibration_dir / f"{candidate}.json").exists():
+            return candidate
+    return None
+
+
+def warn_if_suspicious_pan_calibration(calibration_dir: Path, robot_id: str | None) -> None:
+    """Warn when shoulder_pan calibration span is abnormally small."""
+    calib_path = calibration_dir / f"{robot_id}.json"
+    if not calib_path.exists():
+        print(f"Calibration file not found yet: {calib_path.name}", flush=True)
+        return
+    try:
+        data = json.loads(calib_path.read_text())
+        pan = data.get("shoulder_pan")
+        if not isinstance(pan, dict):
+            return
+        rmin = int(pan.get("range_min"))
+        rmax = int(pan.get("range_max"))
+    except Exception:
+        return
+
+    span = rmax - rmin
+    print(f"Calibration file: {calib_path.name} (shoulder_pan raw span={span})", flush=True)
+    if span < 500:
+        print(
+            "WARNING: shoulder_pan calibration span is very small. "
+            "This can cause almost no base rotation.",
+            flush=True,
+        )
+        print(
+            "  Use --robot-id with the correct calibration file (e.g. --robot-id so101_calibration).",
+            flush=True,
+        )
+
+
+def deg_to_normalized(deg: float, joint_name: str) -> float:
+    """Convert degrees to LeRobot normalized value [-100, 100]."""
     # Approximate mapping: 180 deg = 100 normalized
     if joint_name == "gripper":
         # Gripper uses [0, 100] range
         # Our gripper_pos is 0-1, map to 0-100
         return deg  # Actually we pass 0-100 directly for gripper
-    return deg * (100.0 / 180.0)
+    lower, upper = JOINT_LIMITS_DEG[joint_name]
+    max_abs = max(abs(lower), abs(upper), 1e-6)
+    normalized = deg * (100.0 / max_abs)
+    return float(np.clip(normalized, -100.0, 100.0))
 
 
 def normalized_to_deg(normalized: float, joint_name: str) -> float:
     """Convert LeRobot normalized value [-100, 100] to degrees."""
     if joint_name == "gripper":
         return normalized
-    return normalized * (180.0 / 100.0)
+    lower, upper = JOINT_LIMITS_DEG[joint_name]
+    max_abs = max(abs(lower), abs(upper), 1e-6)
+    deg = normalized * (max_abs / 100.0)
+    return float(np.clip(deg, lower, upper))
 
 
 def run_teleoperation(
     port: str,
     calibration_dir: Path | None = None,
+    robot_id: str | None = None,
     recalibrate: bool = False,
     no_calibrate: bool = False,
     deadzone: float = 0.15,
@@ -110,8 +165,19 @@ def run_teleoperation(
     ik_max_err_mm: float = 30.0,
     ik_mean_err_mm: float = 10.0,
     ik_vel_scale: float = 1.0,
+    swap_xy: bool = True,
+    debug_limiters: bool = False,
+    debug_limiters_every: int = 30,
     use_jacobian: bool = False,
     jacobian_damping: float = 0.05,
+    strict_safety: bool = True,
+    strict_joint_margin_deg: float = 15.0,
+    strict_danger_margin_deg: float = 8.0,
+    strict_max_linear_speed: float = 0.02,
+    strict_max_angular_speed: float = 0.25,
+    strict_allow_orientation: bool = False,
+    strict_wrist_min_deg: float = -60.0,
+    strict_wrist_max_deg: float = 45.0,
 ):
     """Run teleoperation with real robot.
 
@@ -138,8 +204,19 @@ def run_teleoperation(
         ik_max_err_mm: Warn if max IK position error exceeds this (mm).
         ik_mean_err_mm: Warn if mean IK position error exceeds this (mm).
         ik_vel_scale: Scale factor for IK joint velocity limits.
+        swap_xy: If True, swap Cartesian X/Y commands for real-robot frame alignment.
+        debug_limiters: If True, print live limiter diagnostics periodically.
+        debug_limiters_every: Print limiter diagnostics every N control loops.
         use_jacobian: If True, use Jacobian-based control instead of IK.
         jacobian_damping: Damping factor for Jacobian pseudo-inverse.
+        strict_safety: If True, apply conservative safety limits and motion gating.
+        strict_joint_margin_deg: Keep IK joints this far from hard limits.
+        strict_danger_margin_deg: Reject command steps below this margin.
+        strict_max_linear_speed: Cap Cartesian linear speed (m/s) in strict mode.
+        strict_max_angular_speed: Cap angular command speed (rad/s) in strict mode.
+        strict_allow_orientation: If False, disable pitch/yaw in strict mode.
+        strict_wrist_min_deg: Extra strict lower bound for wrist_flex in strict mode.
+        strict_wrist_max_deg: Extra strict upper bound for wrist_flex in strict mode.
     """
     import shutil
 
@@ -204,10 +281,39 @@ def run_teleoperation(
 
     # Joint velocity limits for IK joints (4 joints, no wrist_roll)
     ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0]) * max(ik_vel_scale, 0.1)
+    ik_joint_lower_limits = np.array([JOINT_LIMITS_DEG[name][0] for name in IK_JOINT_NAMES], dtype=float)
+    ik_joint_upper_limits = np.array([JOINT_LIMITS_DEG[name][1] for name in IK_JOINT_NAMES], dtype=float)
+    workspace_limits = STRICT_WORKSPACE_LIMITS if strict_safety else WORKSPACE_LIMITS
+    safe_lower_limits = ik_joint_lower_limits + max(strict_joint_margin_deg, 0.0)
+    safe_upper_limits = ik_joint_upper_limits - max(strict_joint_margin_deg, 0.0)
+    # Hard override for wrist_flex envelope in strict mode (self-collision guard).
+    if strict_safety:
+        wrist_idx = IK_JOINT_NAMES.index("wrist_flex")
+        safe_lower_limits[wrist_idx] = max(safe_lower_limits[wrist_idx], strict_wrist_min_deg)
+        safe_upper_limits[wrist_idx] = min(safe_upper_limits[wrist_idx], strict_wrist_max_deg)
+    invalid = safe_lower_limits >= safe_upper_limits
+    if np.any(invalid):
+        mids = 0.5 * (ik_joint_lower_limits + ik_joint_upper_limits)
+        safe_lower_limits[invalid] = mids[invalid] - 1.0
+        safe_upper_limits[invalid] = mids[invalid] + 1.0
+    pitch_limit_rad = np.deg2rad(25.0 if strict_safety else 90.0)
+    yaw_limit_rad = np.deg2rad(45.0 if strict_safety else 180.0)
 
     print(f"Controller deadzone: {config.deadzone}", flush=True)
     print(f"Linear scale: {config.linear_scale} m/s", flush=True)
     print(f"Orientation scale: {config.orientation_scale} rad/s", flush=True)
+    print(f"XY axis swap (real frame fix): {'ON' if swap_xy else 'OFF'}", flush=True)
+    if strict_safety:
+        print(
+            "Strict safety: ON "
+            f"(joint margin {strict_joint_margin_deg:.1f}deg, "
+            f"danger margin {strict_danger_margin_deg:.1f}deg, "
+            f"max v={strict_max_linear_speed:.3f}m/s, "
+            f"wrist=[{strict_wrist_min_deg:.1f},{strict_wrist_max_deg:.1f}]deg)",
+            flush=True,
+        )
+    else:
+        print("Strict safety: OFF", flush=True)
 
     if not motion_routine:
         if not controller.connect():
@@ -221,7 +327,14 @@ def run_teleoperation(
 
     # Initialize robot
     print(f"Connecting to robot on {port}...", flush=True)
-    robot_config = SOFollowerRobotConfig(port=port, calibration_dir=calibration_dir)
+    resolved_robot_id = resolve_robot_id(calibration_dir, robot_id)
+    print(f"Robot calibration id: {resolved_robot_id}", flush=True)
+    warn_if_suspicious_pan_calibration(calibration_dir, resolved_robot_id)
+    robot_config = SOFollowerRobotConfig(
+        port=port,
+        calibration_dir=calibration_dir,
+        id=resolved_robot_id,
+    )
     robot = SOFollower(robot_config)
 
     # Determine calibration mode
@@ -265,8 +378,19 @@ def run_teleoperation(
         print("  Ctrl+C: Exit\n", flush=True)
 
     # IK joint positions (4 joints: base, shoulder_lift, elbow_flex, wrist_flex)
-    ik_joint_pos_deg = np.zeros(4)
-    wrist_roll_deg = 0.0
+    home_ik_joint_pos_deg = np.array([HOME_POSITION_DEG[name] for name in IK_JOINT_NAMES], dtype=float)
+    if strict_safety:
+        clipped_home = np.clip(home_ik_joint_pos_deg, safe_lower_limits, safe_upper_limits)
+        if np.any(clipped_home != home_ik_joint_pos_deg):
+            print(
+                "Strict safety adjusted home IK pose to fit safety envelope."
+                f" from={np.array2string(home_ik_joint_pos_deg, precision=1)}"
+                f" to={np.array2string(clipped_home, precision=1)}",
+                flush=True,
+            )
+        home_ik_joint_pos_deg = clipped_home
+    ik_joint_pos_deg = home_ik_joint_pos_deg.copy()
+    wrist_roll_deg = float(HOME_POSITION_DEG["wrist_roll"])
 
     # Target orientation (euler angles in radians)
     target_pitch = 0.0
@@ -322,6 +446,17 @@ def run_teleoperation(
     error_max = 0.0
     clip_count = 0
     clip_joints = 0
+    workspace_clip_x = 0
+    workspace_clip_y = 0
+    workspace_clip_z = 0
+    pitch_sat_count = 0
+    yaw_sat_count = 0
+    min_joint_margin_deg = float("inf")
+    min_margin_joint = ""
+    safety_reject_count = 0
+    safety_clip_joint_count = 0
+    safety_clip_speed_count = 0
+    safety_clip_orient_count = 0
 
     csv_file = None
     csv_writer = None
@@ -398,8 +533,8 @@ def run_teleoperation(
 
                 if state.a_button_pressed:
                     print("\nGoing home...", flush=True)
-                    ik_joint_pos_deg = np.zeros(4)
-                    wrist_roll_deg = 0.0
+                    ik_joint_pos_deg = home_ik_joint_pos_deg.copy()
+                    wrist_roll_deg = float(HOME_POSITION_DEG["wrist_roll"])
                     target_pitch = 0.0
                     target_yaw = 0.0
                     ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
@@ -407,13 +542,57 @@ def run_teleoperation(
 
                     # Send home position to robot
                     action = {}
-                    for i, name in enumerate(JOINT_NAMES[:-1]):
-                        action[f"{name}.pos"] = 0.0
+                    home_deg = {name: HOME_POSITION_DEG[name] for name in JOINT_NAMES[:-1]}
+                    for idx, name in enumerate(IK_JOINT_NAMES):
+                        home_deg[name] = float(ik_joint_pos_deg[idx])
+                    home_deg["wrist_roll"] = wrist_roll_deg
+                    for name in JOINT_NAMES[:-1]:
+                        action[f"{name}.pos"] = deg_to_normalized(home_deg[name], name)
                     action["gripper.pos"] = 0.0  # Open
                     robot.send_action(action)
                     continue
 
                 ee_delta = mapper(state)
+                if swap_xy:
+                    ee_delta = EEDelta(
+                        dx=ee_delta.dy,
+                        dy=ee_delta.dx,
+                        dz=ee_delta.dz,
+                        droll=ee_delta.droll,
+                        dpitch=ee_delta.dpitch,
+                        dyaw=ee_delta.dyaw,
+                        gripper=ee_delta.gripper,
+                    )
+                if strict_safety:
+                    lin = np.array([ee_delta.dx, ee_delta.dy, ee_delta.dz], dtype=float)
+                    lin_norm = float(np.linalg.norm(lin))
+                    max_lin = max(0.001, strict_max_linear_speed)
+                    if lin_norm > max_lin:
+                        lin *= max_lin / lin_norm
+                        safety_clip_speed_count += 1
+                    droll = float(np.clip(ee_delta.droll, -strict_max_angular_speed, strict_max_angular_speed))
+                    dpitch = float(ee_delta.dpitch)
+                    dyaw = float(ee_delta.dyaw)
+                    if not strict_allow_orientation:
+                        if abs(dpitch) > 1e-6 or abs(dyaw) > 1e-6:
+                            safety_clip_orient_count += 1
+                        dpitch = 0.0
+                        dyaw = 0.0
+                    else:
+                        old_dpitch, old_dyaw = dpitch, dyaw
+                        dpitch = float(np.clip(dpitch, -strict_max_angular_speed, strict_max_angular_speed))
+                        dyaw = float(np.clip(dyaw, -strict_max_angular_speed, strict_max_angular_speed))
+                        if old_dpitch != dpitch or old_dyaw != dyaw:
+                            safety_clip_orient_count += 1
+                    ee_delta = EEDelta(
+                        dx=float(lin[0]),
+                        dy=float(lin[1]),
+                        dz=float(lin[2]),
+                        droll=droll,
+                        dpitch=dpitch,
+                        dyaw=dyaw,
+                        gripper=ee_delta.gripper,
+                    )
 
             # Rate-limit gripper movement
             gripper_target = ee_delta.gripper
@@ -432,18 +611,33 @@ def run_teleoperation(
                 target_pos[2] += ee_delta.dz * LOOP_PERIOD  # Up/down
 
                 # Workspace limits
-                target_pos[0] = np.clip(target_pos[0], *WORKSPACE_LIMITS["x"])
-                target_pos[1] = np.clip(target_pos[1], *WORKSPACE_LIMITS["y"])
-                target_pos[2] = np.clip(target_pos[2], *WORKSPACE_LIMITS["z"])
+                clipped_x = np.clip(target_pos[0], *workspace_limits["x"])
+                clipped_y = np.clip(target_pos[1], *workspace_limits["y"])
+                clipped_z = np.clip(target_pos[2], *workspace_limits["z"])
+                if clipped_x != target_pos[0]:
+                    workspace_clip_x += 1
+                if clipped_y != target_pos[1]:
+                    workspace_clip_y += 1
+                if clipped_z != target_pos[2]:
+                    workspace_clip_z += 1
+                target_pos[0] = clipped_x
+                target_pos[1] = clipped_y
+                target_pos[2] = clipped_z
 
                 # Update target orientation
                 if abs(ee_delta.dpitch) > 0.001:
-                    target_pitch += ee_delta.dpitch * LOOP_PERIOD
-                    target_pitch = np.clip(target_pitch, -np.pi / 2, np.pi / 2)
+                    next_pitch = target_pitch + ee_delta.dpitch * LOOP_PERIOD
+                    clipped_pitch = np.clip(next_pitch, -pitch_limit_rad, pitch_limit_rad)
+                    if clipped_pitch != next_pitch:
+                        pitch_sat_count += 1
+                    target_pitch = clipped_pitch
 
                 if abs(ee_delta.dyaw) > 0.001:
-                    target_yaw += ee_delta.dyaw * LOOP_PERIOD
-                    target_yaw = np.clip(target_yaw, -np.pi, np.pi)
+                    next_yaw = target_yaw + ee_delta.dyaw * LOOP_PERIOD
+                    clipped_yaw = np.clip(next_yaw, -yaw_limit_rad, yaw_limit_rad)
+                    if clipped_yaw != next_yaw:
+                        yaw_sat_count += 1
+                    target_yaw = clipped_yaw
 
                 target_pose = ee_pose.copy()
                 target_pose[:3, 3] = target_pos
@@ -472,9 +666,15 @@ def run_teleoperation(
                     joint_delta = joint_vel_deg * LOOP_PERIOD
                     ik_joint_pos_deg = ik_joint_pos_deg + joint_delta
 
-                    # Apply joint limits
-                    joint_limits_deg = np.array([180.0, 90.0, 90.0, 90.0])
-                    ik_joint_pos_deg = np.clip(ik_joint_pos_deg, -joint_limits_deg, joint_limits_deg)
+                    # Apply conservative joint limits in strict mode.
+                    if strict_safety:
+                        clipped_next = np.clip(ik_joint_pos_deg, safe_lower_limits, safe_upper_limits)
+                        if np.any(clipped_next != ik_joint_pos_deg):
+                            safety_clip_joint_count += 1
+                        ik_joint_pos_deg = clipped_next
+                    else:
+                        joint_limits_deg = np.array([180.0, 90.0, 90.0, 90.0])
+                        ik_joint_pos_deg = np.clip(ik_joint_pos_deg, -joint_limits_deg, joint_limits_deg)
                 else:
                     # IK-based control: solve IK for target pose
                     new_joints = kinematics.inverse_kinematics(
@@ -493,7 +693,29 @@ def run_teleoperation(
                         clip_count += 1
                         clip_joints += int(np.sum(np.abs(joint_delta) > max_delta))
                         clipped_this = True
-                    ik_joint_pos_deg = ik_joint_pos_deg + clipped_delta
+                    candidate_joints = ik_joint_pos_deg + clipped_delta
+                    if strict_safety:
+                        candidate_joints = np.clip(candidate_joints, safe_lower_limits, safe_upper_limits)
+                        if np.any(candidate_joints != ik_joint_pos_deg + clipped_delta):
+                            safety_clip_joint_count += 1
+                        cand_margins = np.minimum(
+                            candidate_joints - ik_joint_lower_limits,
+                            ik_joint_upper_limits - candidate_joints,
+                        )
+                        current_margins = np.minimum(
+                            ik_joint_pos_deg - ik_joint_lower_limits,
+                            ik_joint_upper_limits - ik_joint_pos_deg,
+                        )
+                        cand_min_margin = float(np.min(cand_margins))
+                        current_min_margin_local = float(np.min(current_margins))
+                        if (
+                            cand_min_margin < strict_danger_margin_deg
+                            and cand_min_margin < current_min_margin_local - 1e-6
+                        ):
+                            safety_reject_count += 1
+                            clipped_this = True
+                            candidate_joints = ik_joint_pos_deg.copy()
+                    ik_joint_pos_deg = candidate_joints
 
                 # Apply wrist roll directly (not part of IK)
                 if abs(ee_delta.droll) > 0.001:
@@ -528,6 +750,15 @@ def run_teleoperation(
                     wrist_roll_deg,  # wrist_roll
                 ]
             )
+            joint_margins = np.minimum(
+                ik_joint_pos_deg - ik_joint_lower_limits,
+                ik_joint_upper_limits - ik_joint_pos_deg,
+            )
+            current_min_margin = float(np.min(joint_margins))
+            if current_min_margin < min_joint_margin_deg:
+                min_joint_margin_deg = current_min_margin
+                min_idx = int(np.argmin(joint_margins))
+                min_margin_joint = IK_JOINT_NAMES[min_idx]
 
             # Send to robot (convert to normalized values)
             action = {}
@@ -567,6 +798,35 @@ def run_teleoperation(
                 end="\r",
                 flush=True,
             )
+            if debug_limiters and (loop_counter % max(debug_limiters_every, 1) == 0) and error_count > 0:
+                clip_rate = (clip_count / error_count) * 100.0
+                wx_rate = (workspace_clip_x / error_count) * 100.0
+                wy_rate = (workspace_clip_y / error_count) * 100.0
+                wz_rate = (workspace_clip_z / error_count) * 100.0
+                print(
+                    f"\nLIMITERS: clip={clip_rate:.1f}% "
+                    f"ws[x={wx_rate:.1f}%, y={wy_rate:.1f}%, z={wz_rate:.1f}%] "
+                    f"sat[pitch={pitch_sat_count}, yaw={yaw_sat_count}]",
+                    flush=True,
+                )
+                print(
+                    "JOINTS: "
+                    f"pan={ik_joint_pos_deg[0]:+6.1f} "
+                    f"lift={ik_joint_pos_deg[1]:+6.1f} "
+                    f"elbow={ik_joint_pos_deg[2]:+6.1f} "
+                    f"wrist={ik_joint_pos_deg[3]:+6.1f} "
+                    f"| min_margin={current_min_margin:.1f}deg",
+                    flush=True,
+                )
+                if strict_safety:
+                    print(
+                        "SAFETY: "
+                        f"reject={safety_reject_count} "
+                        f"joint_clip={safety_clip_joint_count} "
+                        f"speed_clip={safety_clip_speed_count} "
+                        f"orient_clip={safety_clip_orient_count}",
+                        flush=True,
+                    )
 
             loop_counter += 1
             elapsed = time.monotonic() - loop_start
@@ -578,8 +838,11 @@ def run_teleoperation(
         try:
             # Send home position command
             home_action = {}
+            home_deg = {name: HOME_POSITION_DEG[name] for name in JOINT_NAMES[:-1]}
+            for idx, name in enumerate(IK_JOINT_NAMES):
+                home_deg[name] = float(home_ik_joint_pos_deg[idx])
             for name in JOINT_NAMES[:-1]:  # All except gripper
-                home_action[f"{name}.pos"] = HOME_POSITION_DEG[name]
+                home_action[f"{name}.pos"] = deg_to_normalized(home_deg[name], name)
             home_action["gripper.pos"] = 0.0  # Gripper closed
             robot.send_action(home_action)
             time.sleep(2.0)  # Wait for movement
@@ -600,6 +863,26 @@ def run_teleoperation(
             print(f"  max position error: {max_err_mm:.1f} mm")
             print(f"  mean position error: {mean_err_mm:.1f} mm")
             print(f"  velocity clipping: {clip_rate:.1f}% (joints clipped: {clip_joints})")
+            print(
+                "  workspace clipping:"
+                f" x={workspace_clip_x} y={workspace_clip_y} z={workspace_clip_z}"
+            )
+            print(
+                f"  orientation saturation: pitch={pitch_sat_count} yaw={yaw_sat_count}"
+            )
+            if min_margin_joint:
+                print(
+                    f"  closest joint-to-limit margin: {min_joint_margin_deg:.1f} deg "
+                    f"({min_margin_joint})"
+                )
+            if strict_safety:
+                print(
+                    "  safety interventions:"
+                    f" reject={safety_reject_count}"
+                    f" joint_clip={safety_clip_joint_count}"
+                    f" speed_clip={safety_clip_speed_count}"
+                    f" orient_clip={safety_clip_orient_count}"
+                )
             if max_err_mm > ik_max_err_mm or mean_err_mm > ik_mean_err_mm:
                 print("WARNING: IK error exceeded thresholds.")
         print("\nDisconnected.", flush=True)
@@ -618,6 +901,12 @@ def main():
         type=str,
         default=None,
         help=f"Calibration directory. Default: {DEFAULT_CALIBRATION_DIR}",
+    )
+    parser.add_argument(
+        "--robot-id",
+        type=str,
+        default=None,
+        help="Calibration robot id (loads <calibration-dir>/<id>.json). Auto-selects known ids if omitted.",
     )
     parser.add_argument(
         "--recalibrate",
@@ -744,6 +1033,22 @@ def main():
         help="Scale IK joint velocity limits. Default: 1.0.",
     )
     parser.add_argument(
+        "--no-swap-xy",
+        action="store_true",
+        help="Disable XY swap for real-robot Cartesian mapping (legacy behavior).",
+    )
+    parser.add_argument(
+        "--debug-limiters",
+        action="store_true",
+        help="Print live limiter diagnostics (workspace/orientation/velocity clipping).",
+    )
+    parser.add_argument(
+        "--debug-limiters-every",
+        type=int,
+        default=30,
+        help="Print limiter diagnostics every N control loops. Default: 30.",
+    )
+    parser.add_argument(
         "--jacobian",
         action="store_true",
         help="Use Jacobian-based control instead of IK.",
@@ -753,6 +1058,52 @@ def main():
         type=float,
         default=0.05,
         help="Damping factor for Jacobian pseudo-inverse. Default: 0.05.",
+    )
+    parser.add_argument(
+        "--no-strict-safety",
+        action="store_true",
+        help="Disable strict safety mode (not recommended on real hardware).",
+    )
+    parser.add_argument(
+        "--strict-joint-margin-deg",
+        type=float,
+        default=15.0,
+        help="Joint-limit margin (deg) used by strict safety. Default: 15.",
+    )
+    parser.add_argument(
+        "--strict-danger-margin-deg",
+        type=float,
+        default=8.0,
+        help="Reject IK updates that move deeper below this margin (deg). Default: 8.",
+    )
+    parser.add_argument(
+        "--strict-max-linear-speed",
+        type=float,
+        default=0.02,
+        help="Cartesian linear speed cap (m/s) in strict safety. Default: 0.02.",
+    )
+    parser.add_argument(
+        "--strict-max-angular-speed",
+        type=float,
+        default=0.25,
+        help="Angular speed cap (rad/s) in strict safety. Default: 0.25.",
+    )
+    parser.add_argument(
+        "--strict-allow-orientation",
+        action="store_true",
+        help="Allow pitch/yaw commands in strict safety mode.",
+    )
+    parser.add_argument(
+        "--strict-wrist-min-deg",
+        type=float,
+        default=-60.0,
+        help="Strict lower wrist_flex bound (deg). Default: -60.",
+    )
+    parser.add_argument(
+        "--strict-wrist-max-deg",
+        type=float,
+        default=45.0,
+        help="Strict upper wrist_flex bound (deg). Default: 45.",
     )
     args = parser.parse_args()
 
@@ -783,6 +1134,7 @@ def main():
     run_teleoperation(
         port,
         calibration_dir=Path(args.calibration_dir) if args.calibration_dir else None,
+        robot_id=args.robot_id,
         recalibrate=args.recalibrate,
         no_calibrate=args.no_calibrate,
         deadzone=args.deadzone,
@@ -803,8 +1155,19 @@ def main():
         ik_max_err_mm=args.ik_max_err_mm,
         ik_mean_err_mm=args.ik_mean_err_mm,
         ik_vel_scale=args.ik_vel_scale,
+        swap_xy=not args.no_swap_xy,
+        debug_limiters=args.debug_limiters,
+        debug_limiters_every=args.debug_limiters_every,
         use_jacobian=args.jacobian,
         jacobian_damping=args.jacobian_damping,
+        strict_safety=not args.no_strict_safety,
+        strict_joint_margin_deg=args.strict_joint_margin_deg,
+        strict_danger_margin_deg=args.strict_danger_margin_deg,
+        strict_max_linear_speed=args.strict_max_linear_speed,
+        strict_max_angular_speed=args.strict_max_angular_speed,
+        strict_allow_orientation=args.strict_allow_orientation,
+        strict_wrist_min_deg=args.strict_wrist_min_deg,
+        strict_wrist_max_deg=args.strict_wrist_max_deg,
     )
 
 
