@@ -732,6 +732,7 @@ def run_with_controller(
     linear_scale: float | None = None,
     mode: str = "crane",
     controller_type: str = "xbox",
+    keyboard_grab: bool = False,
     debug_ik: bool = False,
     debug_ik_every: int = 10,
     ik_log_path: str | None = None,
@@ -790,9 +791,16 @@ def run_with_controller(
         from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
         from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
 
-        config = KeyboardConfig()
+        config = KeyboardConfig(grab=keyboard_grab)
         if linear_scale is not None:
             config.speed_levels = tuple(s * linear_scale / 0.1 for s in config.speed_levels)
+        if not keyboard_grab:
+            print(
+                "WARNING: keyboard controller active without --keyboard-grab. "
+                "Keypresses will be detected even when this window is not focused. "
+                "Use --keyboard-grab for exclusive access.",
+                flush=True,
+            )
         controller = KeyboardController(config)
         # Processor scale values come from defaults; keyboard speed is internal to the controller
         _proc_cfg = XboxConfig()
@@ -1728,6 +1736,12 @@ def main():
         default="xbox",
         help="Controller type: xbox, joycon, or keyboard. Default: xbox.",
     )
+    parser.add_argument(
+        "--keyboard-grab",
+        action="store_true",
+        help="Grab keyboard device exclusively (keyboard mode only). "
+        "Prevents keypresses from reaching other windows when focus changes.",
+    )
     parser.add_argument("--no-controller", action="store_true", help="Run demo mode")
     parser.add_argument(
         "--motion-routine",
@@ -2089,6 +2103,7 @@ def main():
             linear_scale=args.linear_scale,
             mode=args.mode,
             controller_type=args.controller,
+            keyboard_grab=args.keyboard_grab,
             debug_ik=args.debug_ik,
             debug_ik_every=args.debug_ik_every,
             ik_log_path=args.ik_log,

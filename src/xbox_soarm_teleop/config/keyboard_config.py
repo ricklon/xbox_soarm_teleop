@@ -69,3 +69,9 @@ class KeyboardConfig:
 
     # Device selection — None = auto-detect first keyboard with letter keys
     device_path: str | None = None
+
+    # Exclusive device access — when True, device.grab() is called on connect so
+    # keypresses are not forwarded to other applications (e.g. the X11 desktop).
+    # Prevents accidental arm movement when the terminal loses focus.
+    # Requires no other process to have the device open.
+    grab: bool = False

@@ -52,6 +52,8 @@ class KeyboardController:
         self._speed_level: int = self.config.default_speed_level
         self._key_map: dict[str, int] = {}   # config key name → evdev keycode
 
+        self._grabbed: bool = False
+
         # Edge-detection state (home / frame-toggle)
         self._prev_home: bool = False
         self._prev_frame: bool = False
@@ -84,6 +86,15 @@ class KeyboardController:
 
         self._device = device
         self._build_key_map()
+        if self.config.grab:
+            try:
+                device.grab()
+                self._grabbed = True
+            except OSError as exc:
+                device.close()
+                raise RuntimeError(
+                    f"Could not grab keyboard device (another process may have it open): {exc}"
+                ) from exc
         self._enter_cbreak()
         self._connected = True
         self._stop_event.clear()
@@ -101,6 +112,12 @@ class KeyboardController:
             self._reader_thread = None
         self._restore_terminal()
         if self._device is not None:
+            if getattr(self, "_grabbed", False):
+                try:
+                    self._device.ungrab()
+                except Exception:
+                    pass
+                self._grabbed = False
             try:
                 self._device.close()
             except Exception:

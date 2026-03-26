@@ -201,6 +201,7 @@ def run_teleoperation(
     deadzone: float = 0.15,
     linear_scale: float | None = None,
     controller_type: str = "xbox",
+    keyboard_grab: bool = False,
     mode: str = "crane",
     debug_ik: bool = False,
     debug_ik_every: int = 10,
@@ -336,9 +337,16 @@ def run_teleoperation(
         from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
         from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
 
-        config = KeyboardConfig()
+        config = KeyboardConfig(grab=keyboard_grab)
         if linear_scale is not None:
             config.speed_levels = tuple(s * linear_scale / 0.1 for s in config.speed_levels)
+        if not keyboard_grab:
+            print(
+                "WARNING: keyboard controller active without --keyboard-grab. "
+                "Keypresses will be detected even when this terminal is not focused. "
+                "Use --keyboard-grab for exclusive access.",
+                flush=True,
+            )
         _proc_cfg = XboxConfig()
         if linear_scale is not None:
             _proc_cfg.linear_scale = linear_scale
@@ -1066,6 +1074,12 @@ def main():
         help="Controller type: xbox, joycon, or keyboard. Default: xbox.",
     )
     parser.add_argument(
+        "--keyboard-grab",
+        action="store_true",
+        help="Grab keyboard device exclusively (keyboard mode only). "
+        "Prevents keypresses from reaching other windows when focus changes.",
+    )
+    parser.add_argument(
         "--deadzone",
         type=float,
         default=0.15,
@@ -1306,6 +1320,7 @@ def main():
         deadzone=args.deadzone,
         linear_scale=args.linear_scale,
         controller_type=args.controller,
+        keyboard_grab=args.keyboard_grab,
         mode=args.mode,
         debug_ik=args.debug_ik,
         debug_ik_every=args.debug_ik_every,
