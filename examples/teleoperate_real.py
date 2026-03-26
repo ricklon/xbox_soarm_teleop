@@ -141,6 +141,54 @@ def normalized_to_deg(normalized: float, joint_name: str) -> float:
     return float(np.clip(deg, lower, upper))
 
 
+def _print_controls(controller_type: str, mode: str) -> None:
+    """Print control instructions appropriate for the controller and mode."""
+    print("\nControls:", flush=True)
+    if controller_type == "keyboard":
+        if mode == "joint":
+            print("  A / D           drive selected joint (- / +)", flush=True)
+            print("  ← / →           cycle joint selection", flush=True)
+            print("  Space (hold)    gripper close", flush=True)
+            print("  H               home position", flush=True)
+            print("  1–5             speed level  (default 3 = 75%)", flush=True)
+            print("  Shift           2× speed multiplier", flush=True)
+        else:
+            print("  W / S           forward / back  (X)", flush=True)
+            print("  A / D           left / right    (Y)", flush=True)
+            print("  R / F           up / down       (Z)", flush=True)
+            print("  Q / E           wrist roll", flush=True)
+            print("  ↑ / ↓           pitch", flush=True)
+            print("  ← / →           yaw", flush=True)
+            print("  Space (hold)    gripper close", flush=True)
+            print("  H               home  |  Y  toggle frame", flush=True)
+            print("  1–5             speed level  |  Shift  2× speed", flush=True)
+        print("  Ctrl+C          exit\n", flush=True)
+    elif controller_type == "joycon":
+        if mode == "joint":
+            print("  Stick left/right    drive selected joint", flush=True)
+        else:
+            print("  Stick               move arm (X/Y/Z/roll)", flush=True)
+            print("  ZR                  gripper (hold=close)", flush=True)
+        print("  SL (hold)           deadman switch", flush=True)
+        print("  + button            home position", flush=True)
+        print("  Ctrl+C              exit\n", flush=True)
+    else:  # xbox
+        if mode == "joint":
+            print("  Hold LB + Left stick X    drive selected joint", flush=True)
+            print("  D-pad left/right          cycle joint", flush=True)
+            print("  Right trigger             gripper", flush=True)
+            print("  A button                  home position", flush=True)
+        else:
+            print("  Hold LB + move sticks     control arm", flush=True)
+            print("  Left stick X/Y            left-right / up-down", flush=True)
+            print("  Right stick Y/X           forward-back / wrist roll", flush=True)
+            print("  D-pad up/down             pitch", flush=True)
+            print("  D-pad left/right          yaw", flush=True)
+            print("  Right trigger             gripper", flush=True)
+            print("  A button                  home  |  Y  toggle frame", flush=True)
+        print("  Ctrl+C                    exit\n", flush=True)
+
+
 def run_teleoperation(
     port: str,
     calibration_dir: Path | None = None,
@@ -149,6 +197,7 @@ def run_teleoperation(
     no_calibrate: bool = False,
     deadzone: float = 0.15,
     linear_scale: float | None = None,
+    controller_type: str = "xbox",
     mode: str = "cartesian",
     debug_ik: bool = False,
     debug_ik_every: int = 10,
@@ -232,7 +281,7 @@ def run_teleoperation(
     from xbox_soarm_teleop.kinematics.jacobian import JacobianController
     from xbox_soarm_teleop.processors.factory import make_processor
     from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta
-    from xbox_soarm_teleop.teleoperators.xbox import XboxController
+    from xbox_soarm_teleop.teleoperators.xbox import XboxController  # noqa: F401 (may be unused)
 
     control_mode = ControlMode(mode)
     print(f"Control mode: {control_mode.value.upper()}", flush=True)
@@ -270,26 +319,50 @@ def run_teleoperation(
         else:
             print("Kinematics: IK", flush=True)
 
-    # Initialize Xbox controller with passed parameters
-    config = XboxConfig(deadzone=deadzone)
-    if linear_scale is not None:
-        config.linear_scale = linear_scale
+    # Initialize controller — xbox, joycon, or keyboard
+    if controller_type == "joycon":
+        from xbox_soarm_teleop.config.joycon_config import JoyConConfig
+        from xbox_soarm_teleop.teleoperators.joycon import JoyConController
+
+        config = JoyConConfig(deadzone=deadzone)
+        if linear_scale is not None:
+            config.linear_scale = linear_scale
+        _proc_cfg = config
+        _make_ctrl = lambda: JoyConController(config)  # noqa: E731
+    elif controller_type == "keyboard":
+        from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
+        from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
+
+        config = KeyboardConfig()
+        if linear_scale is not None:
+            config.speed_levels = tuple(s * linear_scale / 0.1 for s in config.speed_levels)
+        _proc_cfg = XboxConfig()
+        if linear_scale is not None:
+            _proc_cfg.linear_scale = linear_scale
+        _make_ctrl = lambda: KeyboardController(config)  # noqa: E731
+    else:
+        config = XboxConfig(deadzone=deadzone)
+        if linear_scale is not None:
+            config.linear_scale = linear_scale
+        _proc_cfg = config
+        _make_ctrl = lambda: XboxController(config)  # noqa: E731
+
     controller = None
     processor = None
     if not motion_routine:
-        controller = XboxController(config)
+        controller = _make_ctrl()
         processor = make_processor(
             control_mode,
-            linear_scale=config.linear_scale,
-            angular_scale=config.angular_scale,
-            orientation_scale=config.orientation_scale,
-            invert_pitch=config.invert_pitch,
-            invert_yaw=config.invert_yaw,
+            linear_scale=_proc_cfg.linear_scale,
+            angular_scale=_proc_cfg.angular_scale,
+            orientation_scale=_proc_cfg.orientation_scale,
+            invert_pitch=_proc_cfg.invert_pitch,
+            invert_yaw=_proc_cfg.invert_yaw,
             loop_dt=LOOP_PERIOD,
             urdf_path=str(URDF_PATH),
         )
     mapper = processor  # alias for cartesian/crane path compatibility
-    gripper_rate = config.gripper_rate
+    gripper_rate = getattr(_proc_cfg, "gripper_rate", 2.0)
 
     # Joint velocity limits for IK joints (4 joints, no wrist_roll)
     ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0]) * max(ik_vel_scale, 0.1)
@@ -311,9 +384,9 @@ def run_teleoperation(
     pitch_limit_rad = np.deg2rad(25.0 if strict_safety else 90.0)
     yaw_limit_rad = np.deg2rad(45.0 if strict_safety else 180.0)
 
-    print(f"Controller deadzone: {config.deadzone}", flush=True)
-    print(f"Linear scale: {config.linear_scale} m/s", flush=True)
-    print(f"Orientation scale: {config.orientation_scale} rad/s", flush=True)
+    print(f"Controller deadzone: {getattr(config, 'deadzone', 'n/a')}", flush=True)
+    print(f"Linear scale: {_proc_cfg.linear_scale} m/s", flush=True)
+    print(f"Orientation scale: {_proc_cfg.orientation_scale} rad/s", flush=True)
     print(f"XY axis swap (real frame fix): {'ON' if swap_xy else 'OFF'}", flush=True)
     if strict_safety:
         print(
@@ -327,12 +400,22 @@ def run_teleoperation(
     else:
         print("Strict safety: OFF", flush=True)
 
+    _ctrl_labels = {"joycon": "Joy-Con", "keyboard": "keyboard", "xbox": "Xbox controller"}
+    _ctrl_label = _ctrl_labels.get(controller_type, controller_type)
     if not motion_routine:
         if not controller.connect():
-            print("ERROR: Failed to connect to Xbox controller")
-            print("  - Check that controller is connected")
+            print(f"ERROR: Failed to connect to {_ctrl_label}")
+            if controller_type == "keyboard":
+                print("  Check 'input' group: groups $USER | grep input")
+                print("  Add with: sudo usermod -aG input $USER  (then re-login)")
+            elif controller_type == "joycon":
+                print("  Joy-Con setup: bluetooth connect + press SL+SR for single-controller mode")
+                print("  joycond must be running: systemctl is-active joycond")
+            else:
+                print("  - Check that controller is connected")
             sys.exit(1)
-        print("Xbox controller connected", flush=True)
+        print(f"{_ctrl_label} connected", flush=True)
+        _print_controls(controller_type, mode)
     else:
         print("Motion routine enabled (no controller required).", flush=True)
         print("Ensure the arm is in home position and the area is clear.", flush=True)
@@ -973,6 +1056,12 @@ def main():
         help="Skip calibration (use existing). Fails if no calibration exists.",
     )
     parser.add_argument(
+        "--controller",
+        choices=["xbox", "joycon", "keyboard"],
+        default="xbox",
+        help="Controller type: xbox, joycon, or keyboard. Default: xbox.",
+    )
+    parser.add_argument(
         "--deadzone",
         type=float,
         default=0.15,
@@ -1212,6 +1301,7 @@ def main():
         no_calibrate=args.no_calibrate,
         deadzone=args.deadzone,
         linear_scale=args.linear_scale,
+        controller_type=args.controller,
         mode=args.mode,
         debug_ik=args.debug_ik,
         debug_ik_every=args.debug_ik_every,
