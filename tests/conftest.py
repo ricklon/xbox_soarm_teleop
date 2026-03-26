@@ -3,8 +3,10 @@
 import pytest
 
 from xbox_soarm_teleop.config.joycon_config import JoyConConfig
+from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
 from xbox_soarm_teleop.config.xbox_config import XboxConfig
 from xbox_soarm_teleop.teleoperators.joycon import JoyConController
+from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
 from xbox_soarm_teleop.teleoperators.xbox import XboxController, XboxState
 
 
@@ -18,6 +20,18 @@ def joycon_config() -> JoyConConfig:
 def joycon_controller(joycon_config: JoyConConfig) -> JoyConController:
     """JoyConController instance for testing (not connected)."""
     return JoyConController(joycon_config)
+
+
+@pytest.fixture
+def keyboard_config() -> KeyboardConfig:
+    """Default keyboard configuration for testing."""
+    return KeyboardConfig()
+
+
+@pytest.fixture
+def keyboard_controller(keyboard_config: KeyboardConfig) -> KeyboardController:
+    """KeyboardController instance for testing (not connected)."""
+    return KeyboardController(keyboard_config)
 
 
 @pytest.fixture

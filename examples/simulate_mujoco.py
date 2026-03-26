@@ -672,6 +672,61 @@ class _HeadlessViewer:
         pass
 
 
+def _print_controls(controller_type: str, mode: str) -> None:
+    """Print control instructions appropriate for the controller and mode."""
+    print("\nControls:", flush=True)
+
+    if controller_type == "keyboard":
+        if mode == "joint":
+            print("  A / D           drive selected joint (- / +)", flush=True)
+            print("  ← / →           cycle joint selection", flush=True)
+            print("  Space (hold)    gripper close", flush=True)
+            print("  H               home position", flush=True)
+            print("  1–5             speed level  (default 3 = 75%)", flush=True)
+            print("  Shift           2× speed multiplier", flush=True)
+        else:
+            print("  W / S           forward / back  (X)", flush=True)
+            print("  A / D           left / right    (Y)", flush=True)
+            print("  R / F           up / down       (Z)", flush=True)
+            print("  Q / E           wrist roll", flush=True)
+            print("  ↑ / ↓           pitch", flush=True)
+            print("  ← / →           yaw", flush=True)
+            print("  Space (hold)    gripper close", flush=True)
+            print("  H               home position", flush=True)
+            print("  Y               toggle coord frame (world/tool)", flush=True)
+            print("  1–5             speed level  (default 3 = 75%)", flush=True)
+            print("  Shift           2× speed multiplier", flush=True)
+        print("  Ctrl+C / close window  exit\n", flush=True)
+
+    elif controller_type == "joycon":
+        if mode == "joint":
+            print("  Stick left/right    drive selected joint", flush=True)
+            print("  (no joint cycle on Joy-Con — use cartesian mode)", flush=True)
+        else:
+            print("  Stick              move arm (X/Y/Z/roll)", flush=True)
+            print("  ZR                 gripper (hold=close)", flush=True)
+        print("  SL (hold)          deadman switch", flush=True)
+        print("  + button           home position", flush=True)
+        print("  Close window       exit\n", flush=True)
+
+    else:  # xbox
+        if mode == "joint":
+            print("  Hold LB + Left stick X    drive selected joint", flush=True)
+            print("  D-pad left/right          cycle joint", flush=True)
+            print("  Right trigger             gripper", flush=True)
+            print("  A button                  home position", flush=True)
+        else:
+            print("  Hold LB + move sticks     control arm", flush=True)
+            print("  Left stick X/Y            left-right / up-down", flush=True)
+            print("  Right stick Y/X           forward-back / wrist roll", flush=True)
+            print("  D-pad up/down             pitch", flush=True)
+            print("  D-pad left/right          yaw", flush=True)
+            print("  Right trigger             gripper", flush=True)
+            print("  A button                  home position", flush=True)
+            print("  Y button                  toggle coord frame", flush=True)
+        print("  Close window              exit\n", flush=True)
+
+
 def run_with_controller(
     sim: MuJoCoSimulator,
     deadzone: float = 0.15,
@@ -731,34 +786,65 @@ def run_with_controller(
         if linear_scale is not None:
             config.linear_scale = linear_scale
         controller = JoyConController(config)
+        _proc_cfg = config
+    elif controller_type == "keyboard":
+        from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
+        from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
+
+        config = KeyboardConfig()
+        if linear_scale is not None:
+            config.speed_levels = tuple(s * linear_scale / 0.1 for s in config.speed_levels)
+        controller = KeyboardController(config)
+        # Processor scale values come from defaults; keyboard speed is internal to the controller
+        _proc_cfg = XboxConfig()
+        if linear_scale is not None:
+            _proc_cfg.linear_scale = linear_scale
     else:
         config = XboxConfig(deadzone=deadzone)
         if linear_scale is not None:
             config.linear_scale = linear_scale
         controller = XboxController(config)
+        _proc_cfg = config
     processor = make_processor(
         control_mode,
-        linear_scale=config.linear_scale,
-        angular_scale=config.angular_scale,
-        orientation_scale=config.orientation_scale,
-        invert_pitch=config.invert_pitch,
-        invert_yaw=config.invert_yaw,
+        linear_scale=_proc_cfg.linear_scale,
+        angular_scale=_proc_cfg.angular_scale,
+        orientation_scale=_proc_cfg.orientation_scale,
+        invert_pitch=_proc_cfg.invert_pitch,
+        invert_yaw=_proc_cfg.invert_yaw,
         loop_dt=LOOP_PERIOD,
         urdf_path=str(URDF_PATH),
     )
     mapper = processor  # alias for cartesian/crane path compatibility
 
-    print(f"Controller deadzone: {config.deadzone}", flush=True)
-    print(f"Linear scale: {config.linear_scale} m/s", flush=True)
-    print(f"Orientation scale: {config.orientation_scale} rad/s", flush=True)
+    print(f"Controller deadzone: {getattr(config, 'deadzone', 'n/a')}", flush=True)
+    print(f"Linear scale: {_proc_cfg.linear_scale} m/s", flush=True)
+    print(f"Orientation scale: {_proc_cfg.orientation_scale} rad/s", flush=True)
 
     # Joint velocity limits for IK joints (4 joints, no wrist_roll)
     ik_joint_vel_limits = IK_JOINT_VEL_LIMITS_ARRAY
 
     if not controller.connect():
-        label = "Joy-Con" if controller_type == "joycon" else "Xbox controller"
+        labels = {"joycon": "Joy-Con", "keyboard": "keyboard", "xbox": "Xbox controller"}
+        label = labels.get(controller_type, controller_type)
         print(f"ERROR: Failed to connect to {label}")
-        if controller_type == "joycon":
+        if controller_type == "keyboard":
+            try:
+                import evdev
+
+                names = [
+                    f"  {p}: {evdev.InputDevice(p).name}"
+                    for p in evdev.list_devices()
+                    if evdev.ecodes.EV_KEY in evdev.InputDevice(p).capabilities()
+                ]
+                print("  Keyboard devices with EV_KEY:")
+                for n in names or ["  (none found)"]:
+                    print(n)
+            except ImportError:
+                print("  evdev not installed — run: uv pip install evdev")
+            print("  Check 'input' group: groups $USER | grep input")
+            print("  Add with: sudo usermod -aG input $USER  (then re-login)")
+        elif controller_type == "joycon":
             try:
                 import evdev
 
@@ -785,19 +871,11 @@ def run_with_controller(
         print("  - Or use --no-controller for demo mode")
         sys.exit(1)
 
-    label = "Joy-Con" if controller_type == "joycon" else "Xbox controller"
+    labels = {"joycon": "Joy-Con", "keyboard": "keyboard", "xbox": "Xbox controller"}
+    label = labels.get(controller_type, controller_type)
     print(f"{label} connected", flush=True)
-    print("\nControls:", flush=True)
-    print("  Hold LB + move sticks to control arm", flush=True)
-    print("  Left stick X: Move left/right (Y axis)", flush=True)
-    print("  Left stick Y: Move up/down", flush=True)
-    print("  Right stick Y: Move forward/back", flush=True)
-    print("  Right stick X: Wrist roll (direct)", flush=True)
-    print("  D-pad up/down: Pitch (tilt gripper)", flush=True)
-    print("  D-pad left/right: Yaw (rotate heading)", flush=True)
-    print("  Right trigger for gripper", flush=True)
-    print("  A button to go home", flush=True)
-    print("  Close window to exit\n", flush=True)
+    _print_controls(controller_type, mode)
+
 
     # Initialize challenge mode if enabled
     challenge: ChallengeManager | None = None
@@ -836,12 +914,17 @@ def run_with_controller(
             ]
         )
 
-    # Get initial EE pose (with base at 0)
-    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-    last_target_pose = ee_pose.copy()
-    last_ee_pose = ee_pose.copy()
+    # Get initial EE pose (only needed for IK-based modes)
+    if kinematics is not None:
+        ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+        last_target_pose = ee_pose.copy()
+        last_ee_pose = ee_pose.copy()
+    else:
+        ee_pose = None
+        last_target_pose = None
+        last_ee_pose = None
     gripper_pos = 0.0  # Current gripper position (smoothed)
-    gripper_rate = config.gripper_rate  # Position change per second
+    gripper_rate = getattr(_proc_cfg, "gripper_rate", 2.0)  # Position change per second
     trace_points: list[np.ndarray] = []
     trace_min_step_m = max(routine_trace_step_mm / 1000.0, 0.0005)
 
@@ -1641,9 +1724,9 @@ def main():
     )
     parser.add_argument(
         "--controller",
-        choices=["xbox", "joycon"],
+        choices=["xbox", "joycon", "keyboard"],
         default="xbox",
-        help="Controller type: xbox or joycon. Default: xbox.",
+        help="Controller type: xbox, joycon, or keyboard. Default: xbox.",
     )
     parser.add_argument("--no-controller", action="store_true", help="Run demo mode")
     parser.add_argument(
