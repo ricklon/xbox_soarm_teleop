@@ -11,7 +11,7 @@ Usage:
 
 Options:
     --controller xbox|joycon|keyboard   Input device (default: xbox)
-    --mode cartesian|joint|crane        Control mode (default: cartesian)
+    --mode cartesian|joint|crane        Control mode (default: crane)
     --no-controller                     Run without controller (demo mode)
     --challenge                         Run benchmark challenge mode with targets
 
@@ -730,7 +730,7 @@ def run_with_controller(
     sim: MuJoCoSimulator,
     deadzone: float = 0.15,
     linear_scale: float | None = None,
-    mode: str = "cartesian",
+    mode: str = "crane",
     controller_type: str = "xbox",
     debug_ik: bool = False,
     debug_ik_every: int = 10,
@@ -1719,8 +1719,8 @@ def main():
         "--mode",
         type=str,
         choices=["cartesian", "joint", "crane"],
-        default="cartesian",
-        help="Control mode: cartesian (IK), joint (direct joint velocity), crane (Phase 2 stub). Default: cartesian.",
+        default="crane",
+        help="Control mode: crane (cylindrical, default), joint (direct per-joint), cartesian (full IK).",
     )
     parser.add_argument(
         "--controller",

@@ -201,7 +201,7 @@ def run_teleoperation(
     deadzone: float = 0.15,
     linear_scale: float | None = None,
     controller_type: str = "xbox",
-    mode: str = "cartesian",
+    mode: str = "crane",
     debug_ik: bool = False,
     debug_ik_every: int = 10,
     motion_routine: bool = False,
@@ -1199,8 +1199,8 @@ def main():
         "--mode",
         type=str,
         choices=["cartesian", "joint", "crane"],
-        default="cartesian",
-        help="Control mode: cartesian (IK/Jacobian), joint (direct joint velocity), crane (Phase 2 stub). Default: cartesian.",
+        default="crane",
+        help="Control mode: crane (cylindrical, default), joint (direct per-joint), cartesian (full IK/Jacobian).",
     )
     parser.add_argument(
         "--jacobian",
