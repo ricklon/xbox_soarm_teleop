@@ -754,6 +754,9 @@ def run_with_controller(
     challenge_seed: int | None = None,
     headless: bool = False,
     benchmark: bool = False,
+    rerun_mode: str | None = None,
+    rerun_addr: str = "0.0.0.0:9876",
+    rerun_save: str = "session.rrd",
 ) -> int:
     """Run with Xbox or Joy-Con controller and MuJoCo viewer (or headless physics loop)."""
     from lerobot.model.kinematics import RobotKinematics
@@ -971,6 +974,18 @@ def run_with_controller(
     from xbox_soarm_teleop.diagnostics.benchmark import LoopTimer
 
     bm_timer = LoopTimer(mode=mode) if benchmark else None
+
+    from xbox_soarm_teleop.diagnostics.rerun_logger import RerunLogger
+
+    rerun_logger: RerunLogger | None = None
+    if rerun_mode is not None:
+        rerun_logger = RerunLogger(
+            app_id="xbox_soarm_teleop_sim",
+            mode=rerun_mode,
+            addr=rerun_addr,
+            rrd_path=rerun_save,
+        )
+
     if headless:
         import os
 
@@ -1081,6 +1096,14 @@ def run_with_controller(
                 servo_ms = (time.perf_counter() - _t0) * 1000.0
                 if bm_timer is not None:
                     bm_timer.record(loop_counter, controller_ms, 0.0, servo_ms)
+                if rerun_logger is not None:
+                    rerun_logger.log_frame(
+                        loop_counter,
+                        time.monotonic() - error_start,
+                        joint_cmd.goals_deg,
+                        ee_pos=sim.get_ee_position(),
+                        mode=mode,
+                    )
                 elapsed = time.monotonic() - loop_start
                 if elapsed < LOOP_PERIOD:
                     time.sleep(LOOP_PERIOD - elapsed)
@@ -1200,6 +1223,15 @@ def run_with_controller(
             if bm_timer is not None:
                 bm_timer.record(loop_counter, controller_ms, ik_ms, servo_ms)
             pos = sim.get_ee_position()
+            if rerun_logger is not None:
+                arm_joints = dict(zip(JOINT_NAMES, full_joint_pos_deg))
+                rerun_logger.log_frame(
+                    loop_counter,
+                    time.monotonic() - error_start,
+                    arm_joints,
+                    ee_pos=pos,
+                    mode=mode,
+                )
             if routine_trace:
                 if not trace_points:
                     trace_points.append(pos.copy())
@@ -1260,6 +1292,8 @@ def run_with_controller(
                 time.sleep(LOOP_PERIOD - elapsed)
 
     controller.disconnect()
+    if rerun_logger is not None:
+        rerun_logger.close()
     if csv_file:
         csv_file.close()
     if bm_timer is not None and bm_timer.frame_count > 0:
@@ -2004,6 +2038,27 @@ def main():
             "Writes benchmark_sim_<timestamp>.csv on exit."
         ),
     )
+    parser.add_argument(
+        "--rerun",
+        action="store_true",
+        help="Stream joint angles and EE position to a local Rerun viewer (requires rerun-sdk).",
+    )
+    parser.add_argument(
+        "--rerun-mode",
+        choices=["spawn", "serve", "connect", "save"],
+        default=None,
+        help="Rerun connection mode. --rerun is shorthand for --rerun-mode spawn.",
+    )
+    parser.add_argument(
+        "--rerun-addr",
+        default="0.0.0.0:9876",
+        help="gRPC address for --rerun-mode serve/connect. Default: 0.0.0.0:9876.",
+    )
+    parser.add_argument(
+        "--rerun-save",
+        default="session.rrd",
+        help="Output .rrd file path for --rerun-mode save. Default: session.rrd.",
+    )
     args = parser.parse_args()
 
     if not URDF_PATH.exists():
@@ -2125,6 +2180,9 @@ def main():
             challenge_seed=args.challenge_seed,
             headless=args.headless,
             benchmark=args.benchmark,
+            rerun_mode=args.rerun_mode or ("spawn" if args.rerun else None),
+            rerun_addr=args.rerun_addr,
+            rerun_save=args.rerun_save,
         )
     sys.exit(exit_code)
 

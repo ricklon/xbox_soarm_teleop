@@ -32,6 +32,9 @@ joycon = [
 pygame = [
     "pygame>=2.5.0",
 ]
+rerun = [
+    "rerun-sdk>=0.21",
+]
 
 [project.scripts]
 ik-smoke = "xbox_soarm_teleop.cli.ik_smoke:main"
