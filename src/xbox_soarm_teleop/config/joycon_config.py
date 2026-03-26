@@ -45,6 +45,10 @@ class JoyConConfig:
     home_button: str = "BTN_START"       # + button — return to home
     frame_toggle_button: str = "BTN_WEST"  # Y face button — toggle frame
 
+    # Puppet mode height control buttons (used to synthesise dpad_y)
+    height_up_button: str = "BTN_TR"     # SR — raise end effector
+    height_down_button: str = "BTN_SOUTH"  # B face button — lower end effector
+
     # Axis mappings (Right Joy-Con has only right-stick axes)
     left_stick_x_axis: str = "ABS_RX"
     left_stick_y_axis: str = "ABS_RY"

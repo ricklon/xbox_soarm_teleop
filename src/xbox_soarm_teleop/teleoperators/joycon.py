@@ -108,7 +108,8 @@ class JoyConController:
               left_bumper     — SL button (deadman switch)
               a_button        — A face button (BTN_EAST)
               y_button        — X face button (BTN_NORTH)
-              dpad_x/y        — always 0.0 (no d-pad on single Joy-Con)
+              dpad_x          — always 0.0 (no d-pad on single Joy-Con)
+              dpad_y          — ±1.0 from height_up/height_down buttons (puppet mode)
         """
         if not self._connected:
             return XboxState()
@@ -153,9 +154,17 @@ class JoyConController:
         self._state.a_button = bool(raw.get(self.config.home_button, 0))
         self._state.y_button = bool(raw.get(self.config.frame_toggle_button, 0))
 
-        # No d-pad on single Joy-Con
+        # No hardware d-pad on single Joy-Con; synthesise dpad_y from height buttons
+        # (used in puppet mode: SR=up → +1.0, B=down → -1.0)
         self._state.dpad_x = 0.0
-        self._state.dpad_y = 0.0
+        height_up = bool(raw.get(self.config.height_up_button, 0))
+        height_down = bool(raw.get(self.config.height_down_button, 0))
+        if height_up and not height_down:
+            self._state.dpad_y = 1.0
+        elif height_down and not height_up:
+            self._state.dpad_y = -1.0
+        else:
+            self._state.dpad_y = 0.0
 
         # Edge detection
         self._state.a_button_pressed = self._state.a_button and not self._prev_state.a_button

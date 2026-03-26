@@ -28,7 +28,7 @@ def make_processor(
         invert_yaw: Invert yaw axis (CARTESIAN/CRANE modes).
         joint_max_vel_deg_s: Max joint velocity in deg/s (JOINT mode).
         loop_dt: Control loop period in seconds (JOINT/CRANE modes).
-        urdf_path: Path to robot URDF (CRANE mode — enables the 2-DOF planar IK).
+        urdf_path: Path to robot URDF (CRANE/PUPPET modes — enables the 2-DOF planar IK).
         multi_joint: When True, drive all joints simultaneously from separate axes
             (JOINT mode only — intended for keyboard control).
 
@@ -62,5 +62,10 @@ def make_processor(
         from xbox_soarm_teleop.processors.crane import CraneProcessor
 
         return CraneProcessor(urdf_path=urdf_path, loop_dt=loop_dt)
+
+    if mode == ControlMode.PUPPET:
+        from xbox_soarm_teleop.processors.puppet import PuppetProcessor
+
+        return PuppetProcessor(urdf_path=urdf_path, loop_dt=loop_dt)
 
     raise ValueError(f"Unknown ControlMode: {mode!r}")

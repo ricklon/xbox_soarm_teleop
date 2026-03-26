@@ -169,6 +169,14 @@ def _print_controls(controller_type: str, mode: str) -> None:
     elif controller_type == "joycon":
         if mode == "joint":
             print("  Stick left/right    drive selected joint", flush=True)
+        elif mode == "puppet":
+            print("  Stick left/right    shoulder_pan  (base rotation)", flush=True)
+            print("  Stick up/down       reach         (extend/retract)", flush=True)
+            print("  SR (hold)           height up", flush=True)
+            print("  B face button       height down", flush=True)
+            print("  IMU pitch           wrist_flex    (tilt fwd/back)", flush=True)
+            print("  IMU roll            wrist_roll    (tilt left/right)", flush=True)
+            print("  ZR                  gripper (hold=close)", flush=True)
         else:
             print("  Stick               move arm (X/Y/Z/roll)", flush=True)
             print("  ZR                  gripper (hold=close)", flush=True)
@@ -662,7 +670,7 @@ def run_teleoperation(
                     droll = 0.0
                     gripper = gripper_pos
                 ee_delta = EEDelta(dx=dx, dy=dy, dz=dz, droll=droll, gripper=gripper)
-            elif control_mode in (ControlMode.JOINT, ControlMode.CRANE):
+            elif control_mode in (ControlMode.JOINT, ControlMode.CRANE, ControlMode.PUPPET):
                 _t0 = time.perf_counter()
                 state = controller.read()
                 joint_cmd = processor(state)
@@ -1265,9 +1273,9 @@ def main():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["cartesian", "joint", "crane"],
+        choices=["cartesian", "joint", "crane", "puppet"],
         default="crane",
-        help="Control mode: crane (cylindrical, default), joint (direct per-joint), cartesian (full IK/Jacobian).",
+        help="Control mode: crane (cylindrical, default), joint (direct per-joint), cartesian (full IK/Jacobian), puppet (IMU wrist).",
     )
     parser.add_argument(
         "--jacobian",
