@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
-"""MuJoCo simulation with Xbox controller teleoperation.
+"""MuJoCo simulation with teleoperation via Xbox, Joy-Con, or keyboard.
 
-This example runs the Xbox controller teleoperation with MuJoCo physics
-simulation and real-time 3D visualization.
+This example runs SO-ARM teleoperation with MuJoCo physics simulation
+and real-time 3D visualization.
 
 Usage:
     uv run python examples/simulate_mujoco.py
+    uv run python examples/simulate_mujoco.py --controller keyboard --mode joint
+    uv run python examples/simulate_mujoco.py --controller joycon
 
 Options:
-    --no-controller    Run without Xbox controller (demo mode)
-    --challenge        Run benchmark challenge mode with targets
+    --controller xbox|joycon|keyboard   Input device (default: xbox)
+    --mode cartesian|joint|crane        Control mode (default: cartesian)
+    --no-controller                     Run without controller (demo mode)
+    --challenge                         Run benchmark challenge mode with targets
 
-Controls (Xbox):
-    - Hold LB (left bumper) to enable arm movement
-    - Left stick X: Move left/right (Y axis)
-    - Left stick Y: Up/down (Z axis)
-    - Right stick Y: Forward/back (X axis)
-    - Right stick X: Wrist roll rotation (direct, not IK)
-    - Right trigger: Gripper (released=open, pulled=closed)
-    - A button: Return to home position
-    - Ctrl+C or close window: Exit
+Controls are printed at startup based on the active controller and mode.
 
 Controls (Demo mode, --no-controller):
     - Automatic demo movement pattern
@@ -678,8 +674,11 @@ def _print_controls(controller_type: str, mode: str) -> None:
 
     if controller_type == "keyboard":
         if mode == "joint":
-            print("  A / D           drive selected joint (- / +)", flush=True)
-            print("  ← / →           cycle joint selection", flush=True)
+            print("  A / D           shoulder_pan    (left / right)", flush=True)
+            print("  W / S           shoulder_lift   (up / down)", flush=True)
+            print("  R / F           elbow_flex      (flex / extend)", flush=True)
+            print("  Q / E           wrist_flex      (up / down)", flush=True)
+            print("  ↑ / ↓           wrist_roll      (+ / -)", flush=True)
             print("  Space (hold)    gripper close", flush=True)
             print("  H               home position", flush=True)
             print("  1–5             speed level  (default 3 = 75%)", flush=True)
@@ -814,6 +813,7 @@ def run_with_controller(
         invert_yaw=_proc_cfg.invert_yaw,
         loop_dt=LOOP_PERIOD,
         urdf_path=str(URDF_PATH),
+        multi_joint=(controller_type == "keyboard" and control_mode.value == "joint"),
     )
     mapper = processor  # alias for cartesian/crane path compatibility
 

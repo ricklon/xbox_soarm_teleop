@@ -146,8 +146,11 @@ def _print_controls(controller_type: str, mode: str) -> None:
     print("\nControls:", flush=True)
     if controller_type == "keyboard":
         if mode == "joint":
-            print("  A / D           drive selected joint (- / +)", flush=True)
-            print("  ← / →           cycle joint selection", flush=True)
+            print("  A / D           shoulder_pan    (left / right)", flush=True)
+            print("  W / S           shoulder_lift   (up / down)", flush=True)
+            print("  R / F           elbow_flex      (flex / extend)", flush=True)
+            print("  Q / E           wrist_flex      (up / down)", flush=True)
+            print("  ↑ / ↓           wrist_roll      (+ / -)", flush=True)
             print("  Space (hold)    gripper close", flush=True)
             print("  H               home position", flush=True)
             print("  1–5             speed level  (default 3 = 75%)", flush=True)
@@ -360,6 +363,7 @@ def run_teleoperation(
             invert_yaw=_proc_cfg.invert_yaw,
             loop_dt=LOOP_PERIOD,
             urdf_path=str(URDF_PATH),
+            multi_joint=(controller_type == "keyboard" and control_mode.value == "joint"),
         )
     mapper = processor  # alias for cartesian/crane path compatibility
     gripper_rate = getattr(_proc_cfg, "gripper_rate", 2.0)

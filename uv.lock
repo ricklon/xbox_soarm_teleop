@@ -2533,6 +2533,7 @@ pygame = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "pytest" },
     { name = "ruff" },
 ]
 
@@ -2556,7 +2557,10 @@ requires-dist = [
 provides-extras = ["dev", "joycon", "pygame"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "ruff", specifier = ">=0.14.14" }]
+dev = [
+    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "ruff", specifier = ">=0.14.14" },
+]
 
 [[package]]
 name = "xxhash"

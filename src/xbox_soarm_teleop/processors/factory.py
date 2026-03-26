@@ -15,6 +15,7 @@ def make_processor(
     joint_max_vel_deg_s: float = 70.0,
     loop_dt: float = 1.0 / 30.0,
     urdf_path: str | None = None,
+    multi_joint: bool = False,
 ):
     """Create the processor for the given control mode.
 
@@ -28,6 +29,8 @@ def make_processor(
         joint_max_vel_deg_s: Max joint velocity in deg/s (JOINT mode).
         loop_dt: Control loop period in seconds (JOINT/CRANE modes).
         urdf_path: Path to robot URDF (CRANE mode — enables the 2-DOF planar IK).
+        multi_joint: When True, drive all joints simultaneously from separate axes
+            (JOINT mode only — intended for keyboard control).
 
     Returns:
         A processor callable for the requested mode.
@@ -52,6 +55,7 @@ def make_processor(
         return JointDirectProcessor(
             max_vel_deg_s=joint_max_vel_deg_s,
             dt=loop_dt,
+            multi_joint=multi_joint,
         )
 
     if mode == ControlMode.CRANE:
