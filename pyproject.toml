@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Xbox controller teleoperation for SO-ARM100/101 using LeRobot IK"
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 authors = [
     {name = "Rick Anderson", email = "rick.rickanderson@gmail.com"},
 ]
@@ -25,6 +25,9 @@ dev = [
     "pytest-cov",
     "ruff>=0.4.0",
     "pre-commit",
+]
+joycon = [
+    "evdev>=1.6",
 ]
 pygame = [
     "pygame>=2.5.0",

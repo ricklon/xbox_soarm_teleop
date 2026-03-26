@@ -2,8 +2,22 @@
 
 import pytest
 
+from xbox_soarm_teleop.config.joycon_config import JoyConConfig
 from xbox_soarm_teleop.config.xbox_config import XboxConfig
+from xbox_soarm_teleop.teleoperators.joycon import JoyConController
 from xbox_soarm_teleop.teleoperators.xbox import XboxController, XboxState
+
+
+@pytest.fixture
+def joycon_config() -> JoyConConfig:
+    """Default Joy-Con configuration for testing."""
+    return JoyConConfig()
+
+
+@pytest.fixture
+def joycon_controller(joycon_config: JoyConConfig) -> JoyConController:
+    """JoyConController instance for testing (not connected)."""
+    return JoyConController(joycon_config)
 
 
 @pytest.fixture

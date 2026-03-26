@@ -677,6 +677,7 @@ def run_with_controller(
     deadzone: float = 0.15,
     linear_scale: float | None = None,
     mode: str = "cartesian",
+    controller_type: str = "xbox",
     debug_ik: bool = False,
     debug_ik_every: int = 10,
     ik_log_path: str | None = None,
@@ -699,7 +700,7 @@ def run_with_controller(
     headless: bool = False,
     benchmark: bool = False,
 ) -> int:
-    """Run with Xbox controller and MuJoCo viewer (or headless physics loop)."""
+    """Run with Xbox or Joy-Con controller and MuJoCo viewer (or headless physics loop)."""
     from lerobot.model.kinematics import RobotKinematics
 
     from xbox_soarm_teleop.config.modes import ControlMode
@@ -722,10 +723,19 @@ def run_with_controller(
             joint_names=ik_joint_names,
         )
 
-    config = XboxConfig(deadzone=deadzone)
-    if linear_scale is not None:
-        config.linear_scale = linear_scale
-    controller = XboxController(config)
+    if controller_type == "joycon":
+        from xbox_soarm_teleop.config.joycon_config import JoyConConfig
+        from xbox_soarm_teleop.teleoperators.joycon import JoyConController
+
+        config = JoyConConfig(deadzone=deadzone)
+        if linear_scale is not None:
+            config.linear_scale = linear_scale
+        controller = JoyConController(config)
+    else:
+        config = XboxConfig(deadzone=deadzone)
+        if linear_scale is not None:
+            config.linear_scale = linear_scale
+        controller = XboxController(config)
     processor = make_processor(
         control_mode,
         linear_scale=config.linear_scale,
@@ -746,12 +756,37 @@ def run_with_controller(
     ik_joint_vel_limits = IK_JOINT_VEL_LIMITS_ARRAY
 
     if not controller.connect():
-        print("ERROR: Failed to connect to Xbox controller")
-        print("  - Check that controller is connected")
+        label = "Joy-Con" if controller_type == "joycon" else "Xbox controller"
+        print(f"ERROR: Failed to connect to {label}")
+        if controller_type == "joycon":
+            try:
+                import evdev
+
+                names = []
+                for path in evdev.list_devices():
+                    try:
+                        d = evdev.InputDevice(path)
+                        names.append(f"  {path}: {d.name}")
+                        d.close()
+                    except (OSError, PermissionError):
+                        pass
+                if names:
+                    print("  Input devices found:")
+                    for n in names:
+                        print(n)
+                else:
+                    print("  No input devices found (check permissions: sudo usermod -aG input $USER)")
+            except ImportError:
+                print("  evdev not installed — run: uv pip install evdev")
+            print("  Joy-Con setup: bluetooth connect + press SL+SR for single-controller mode")
+            print("  joycond must be running: systemctl is-active joycond")
+        else:
+            print("  - Check that controller is connected")
         print("  - Or use --no-controller for demo mode")
         sys.exit(1)
 
-    print("Xbox controller connected", flush=True)
+    label = "Joy-Con" if controller_type == "joycon" else "Xbox controller"
+    print(f"{label} connected", flush=True)
     print("\nControls:", flush=True)
     print("  Hold LB + move sticks to control arm", flush=True)
     print("  Left stick X: Move left/right (Y axis)", flush=True)
@@ -1604,6 +1639,12 @@ def main():
         default="cartesian",
         help="Control mode: cartesian (IK), joint (direct joint velocity), crane (Phase 2 stub). Default: cartesian.",
     )
+    parser.add_argument(
+        "--controller",
+        choices=["xbox", "joycon"],
+        default="xbox",
+        help="Controller type: xbox or joycon. Default: xbox.",
+    )
     parser.add_argument("--no-controller", action="store_true", help="Run demo mode")
     parser.add_argument(
         "--motion-routine",
@@ -1964,6 +2005,7 @@ def main():
             deadzone=args.deadzone,
             linear_scale=args.linear_scale,
             mode=args.mode,
+            controller_type=args.controller,
             debug_ik=args.debug_ik,
             debug_ik_every=args.debug_ik_every,
             ik_log_path=args.ik_log,

@@ -1,0 +1,2 @@
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="Joy-Con*", RUN+="/bin/chmod 0660 /dev/%k"
+KERNEL=="hidraw*", KERNELS=="*057E:2007*", RUN+="/bin/chmod 0660 /dev/%k", RUN+="/bin/chgrp input /dev/%k"

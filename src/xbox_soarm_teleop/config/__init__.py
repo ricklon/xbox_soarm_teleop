@@ -19,11 +19,13 @@ from xbox_soarm_teleop.config.joints import (
     parse_joint_limits,
     raw_to_deg,
 )
+from xbox_soarm_teleop.config.joycon_config import JoyConConfig
 from xbox_soarm_teleop.config.modes import ControlMode
 from xbox_soarm_teleop.config.xbox_config import XboxConfig
 
 __all__ = [
     "ControlMode",
+    "JoyConConfig",
     "HOME_POSITION_DEG",
     "HOME_POSITION_RAW",
     "IK_JOINT_NAMES",

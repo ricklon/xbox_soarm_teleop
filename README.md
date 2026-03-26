@@ -337,6 +337,83 @@ All motors must have the same firmware. Update using Feetech's Windows software:
 - Move motor through its COMPLETE range during calibration
 - For gripper: fully open AND fully closed
 
+## Joy-Con Support
+
+A Nintendo Switch Right Joy-Con can be used as an alternative to an Xbox controller,
+held sideways in single-controller mode.
+
+### Control Mapping (Right Joy-Con, horizontal)
+
+| Input | Function |
+|-------|----------|
+| Stick | Movement (same as Xbox left + right stick) |
+| SL (left rail button) | Deadman switch — hold to enable motion |
+| ZR (top shoulder) | Gripper (digital: open/closed) |
+| A face button | Home position |
+| Y face button | Toggle coordinate frame |
+| SR, B, X, +, Home | Available for future mapping |
+
+### One-time System Setup (Ubuntu 22.04+, kernel 6.8+)
+
+```bash
+sudo bash scripts/setup_joycon.sh
+```
+
+This script:
+1. Loads the `hid-nintendo` kernel module (persists across reboots)
+2. Configures BlueZ to accept non-bonded HID devices
+3. Installs udev rules so the Joy-Con is accessible without sudo
+4. Builds and installs `joycond` (keepalive daemon)
+
+### Pairing
+
+```bash
+# Hold the sync button (flat rail side) for 3 seconds — LEDs will chase
+bluetoothctl connect 98:B6:AF:5E:5D:39   # replace with your MAC
+
+# When connected, press SL+SR simultaneously on the Joy-Con
+# The second LED will become solid — single-controller mode is active
+```
+
+Find your MAC address with `bluetoothctl devices | grep Joy-Con`.
+
+### Verify it works
+
+```bash
+uv pip install evdev            # one-time
+uv run python scripts/joycon_axis_info.py   # shows axes and buttons
+```
+
+### Use in code
+
+```python
+from xbox_soarm_teleop.config.joycon_config import JoyConConfig
+from xbox_soarm_teleop.teleoperators.joycon import JoyConController
+
+ctrl = JoyConController(JoyConConfig())
+if ctrl.connect():
+    state = ctrl.read()   # returns XboxState — same interface as XboxController
+    print(state.left_stick_x, state.right_trigger, state.left_bumper)
+    ctrl.disconnect()
+```
+
+`JoyConController` is a drop-in replacement for `XboxController` — all processors
+and control loops work unchanged.
+
+### Troubleshooting
+
+**`No Joy-Con found`** — Check `bluetoothctl info <MAC>` shows `Connected: yes`.
+Press SL+SR to activate single-controller mode.
+
+**`Permission denied on /dev/input/eventN`** — Re-run `setup_joycon.sh` or manually:
+`sudo chmod 0660 /dev/input/event17`
+
+**Joy-Con goes to sleep** — `joycond` must be running: `systemctl is-active joycond`.
+If not, reconnect: `bluetoothctl connect <MAC>`.
+
+**Connection fails immediately** — The Joy-Con is asleep. Hold the sync button
+(3 sec, LEDs chase), then immediately run `bluetoothctl connect <MAC>`.
+
 ## License
 
-MIT
+Apache-2.0
