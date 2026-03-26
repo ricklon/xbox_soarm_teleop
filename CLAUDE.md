@@ -67,7 +67,7 @@ EEBoundsAndSafety (LeRobot processor - workspace limits, rate limiting)
 InverseKinematicsEEToJoints (LeRobot processor - Placo IK)
     │
     ▼
-SO101Follower (Robot)
+SOFollower (Robot)
 ```
 
 ## Control Mapping
@@ -117,17 +117,10 @@ pre-commit run --all-files
 
 ```python
 # Kinematics solver from URDF
-from lerobot.common.kinematics import RobotKinematics
-
-# Processor pipeline steps
-from lerobot.common.robot_devices.processors import (
-    EEReferenceAndDelta,
-    EEBoundsAndSafety,
-    InverseKinematicsEEToJoints,
-)
+from lerobot.model.kinematics import RobotKinematics
 
 # Robot interface
-from lerobot.robots.so101 import SO101Follower
+from lerobot.robots.so_follower import SOFollower
 ```
 
 ### XboxController Pattern (Teleoperator)
@@ -217,13 +210,13 @@ class MapXboxToEEDelta:
 from xbox_soarm_teleop.teleoperators.xbox import XboxController
 from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta
 from xbox_soarm_teleop.config.xbox_config import XboxConfig
-from lerobot.robots.so101 import SO101Follower
+from lerobot.robots.so_follower import SOFollower
 
 def main():
     # Initialize components
     controller = XboxController(XboxConfig())
     mapper = MapXboxToEEDelta()
-    robot = SO101Follower()
+    robot = SOFollower()
     
     # Control loop
     try:
@@ -371,7 +364,7 @@ def test_state_initialization():
 # tests/test_ik_roundtrip.py
 import pytest
 import numpy as np
-from lerobot.common.kinematics import RobotKinematics
+from lerobot.model.kinematics import RobotKinematics
 
 @pytest.fixture
 def kinematics():
@@ -414,7 +407,7 @@ sudo usermod -aG input $USER
 uv pip install "lerobot[kinematics]"
 
 # Verify Placo installation
-python -c "from lerobot.common.kinematics import RobotKinematics; print('OK')"
+uv run python -c "from lerobot.model.kinematics import RobotKinematics; print('OK')"
 ```
 
 ### IK fails to converge

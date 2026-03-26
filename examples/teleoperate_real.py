@@ -149,6 +149,7 @@ def run_teleoperation(
     no_calibrate: bool = False,
     deadzone: float = 0.15,
     linear_scale: float | None = None,
+    mode: str = "cartesian",
     debug_ik: bool = False,
     debug_ik_every: int = 10,
     motion_routine: bool = False,
@@ -178,6 +179,7 @@ def run_teleoperation(
     strict_allow_orientation: bool = False,
     strict_wrist_min_deg: float = -60.0,
     strict_wrist_max_deg: float = 45.0,
+    benchmark: bool = False,
 ):
     """Run teleoperation with real robot.
 
@@ -224,10 +226,16 @@ def run_teleoperation(
     from lerobot.robots.so_follower import SOFollower
     from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
 
+    from xbox_soarm_teleop.config.modes import ControlMode
     from xbox_soarm_teleop.config.xbox_config import XboxConfig
+    from xbox_soarm_teleop.diagnostics.benchmark import LoopTimer
     from xbox_soarm_teleop.kinematics.jacobian import JacobianController
-    from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, MapXboxToEEDelta
+    from xbox_soarm_teleop.processors.factory import make_processor
+    from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta
     from xbox_soarm_teleop.teleoperators.xbox import XboxController
+
+    control_mode = ControlMode(mode)
+    print(f"Control mode: {control_mode.value.upper()}", flush=True)
 
     # Use project-local calibration directory by default
     if calibration_dir is None:
@@ -246,37 +254,41 @@ def run_teleoperation(
     # IK joint names - include base, exclude wrist_roll (controlled directly)
     ik_joint_names = IK_JOINT_NAMES
 
-    # Initialize kinematics for IK (4 joints, not 5)
-    print("Loading kinematics model...", flush=True)
-    kinematics = RobotKinematics(
-        urdf_path=str(URDF_PATH),
-        target_frame_name="gripper_frame_link",
-        joint_names=ik_joint_names,
-    )
-
-    # Initialize Jacobian controller if needed
+    # Initialize kinematics for IK/Jacobian modes (not needed for joint-direct mode)
+    kinematics = None
     jacobian_ctrl = None
-    if use_jacobian:
-        jacobian_ctrl = JacobianController(kinematics, damping=jacobian_damping)
-        print(f"Control mode: JACOBIAN (damping={jacobian_damping})", flush=True)
-    else:
-        print("Control mode: IK", flush=True)
+    if control_mode != ControlMode.JOINT:
+        print("Loading kinematics model...", flush=True)
+        kinematics = RobotKinematics(
+            urdf_path=str(URDF_PATH),
+            target_frame_name="gripper_frame_link",
+            joint_names=ik_joint_names,
+        )
+        if use_jacobian:
+            jacobian_ctrl = JacobianController(kinematics, damping=jacobian_damping)
+            print(f"Kinematics: JACOBIAN (damping={jacobian_damping})", flush=True)
+        else:
+            print("Kinematics: IK", flush=True)
 
     # Initialize Xbox controller with passed parameters
     config = XboxConfig(deadzone=deadzone)
     if linear_scale is not None:
         config.linear_scale = linear_scale
     controller = None
-    mapper = None
+    processor = None
     if not motion_routine:
         controller = XboxController(config)
-        mapper = MapXboxToEEDelta(
+        processor = make_processor(
+            control_mode,
             linear_scale=config.linear_scale,
             angular_scale=config.angular_scale,
             orientation_scale=config.orientation_scale,
             invert_pitch=config.invert_pitch,
             invert_yaw=config.invert_yaw,
+            loop_dt=LOOP_PERIOD,
+            urdf_path=str(URDF_PATH),
         )
+    mapper = processor  # alias for cartesian/crane path compatibility
     gripper_rate = config.gripper_rate
 
     # Joint velocity limits for IK joints (4 joints, no wrist_roll)
@@ -485,9 +497,14 @@ def run_teleoperation(
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+    bm_timer = LoopTimer(mode=mode) if benchmark else None
+
     try:
         while running:
             loop_start = time.monotonic()
+            if bm_timer is not None:
+                bm_timer.start_frame()
+            controller_ms = ik_ms = servo_ms = 0.0
             clipped_this = False
 
             if motion_routine:
@@ -528,8 +545,34 @@ def run_teleoperation(
                     droll = 0.0
                     gripper = gripper_pos
                 ee_delta = EEDelta(dx=dx, dy=dy, dz=dz, droll=droll, gripper=gripper)
-            else:
+            elif control_mode in (ControlMode.JOINT, ControlMode.CRANE):
+                _t0 = time.perf_counter()
                 state = controller.read()
+                joint_cmd = processor(state)
+                controller_ms = (time.perf_counter() - _t0) * 1000.0
+                action = {}
+                for name in JOINT_NAMES[:-1]:
+                    action[f"{name}.pos"] = deg_to_normalized(joint_cmd.goals_deg[name], name)
+                # gripper in degrees → normalize to 0-100 range
+                g_lower, g_upper = JOINT_LIMITS_DEG["gripper"]
+                g_deg = joint_cmd.goals_deg["gripper"]
+                action["gripper.pos"] = float(
+                    np.clip((g_deg - g_lower) / max(g_upper - g_lower, 1e-6) * 100.0, 0.0, 100.0)
+                )
+                _t0 = time.perf_counter()
+                robot.send_action(action)
+                servo_ms = (time.perf_counter() - _t0) * 1000.0
+                if bm_timer is not None:
+                    bm_timer.record(loop_counter, controller_ms, 0.0, servo_ms)
+                elapsed = time.monotonic() - loop_start
+                if elapsed < LOOP_PERIOD:
+                    time.sleep(LOOP_PERIOD - elapsed)
+                loop_counter += 1
+                continue
+            else:
+                _t0 = time.perf_counter()
+                state = controller.read()
+                controller_ms = (time.perf_counter() - _t0) * 1000.0
 
                 if state.a_button_pressed:
                     print("\nGoing home...", flush=True)
@@ -677,12 +720,14 @@ def run_teleoperation(
                         ik_joint_pos_deg = np.clip(ik_joint_pos_deg, -joint_limits_deg, joint_limits_deg)
                 else:
                     # IK-based control: solve IK for target pose
+                    _t0 = time.perf_counter()
                     new_joints = kinematics.inverse_kinematics(
                         ik_joint_pos_deg,
                         target_pose,
                         position_weight=1.0,
                         orientation_weight=orientation_weight,
                     )
+                    ik_ms = (time.perf_counter() - _t0) * 1000.0
                     ik_result = new_joints[:4]
 
                     # Apply joint velocity limiting to smooth IK output
@@ -767,7 +812,11 @@ def run_teleoperation(
             # Gripper: 0-1 maps to 0-100
             action["gripper.pos"] = gripper_pos * 100.0
 
+            _t0 = time.perf_counter()
             robot.send_action(action)
+            servo_ms = (time.perf_counter() - _t0) * 1000.0
+            if bm_timer is not None:
+                bm_timer.record(loop_counter, controller_ms, ik_ms, servo_ms)
 
             # Status - show position and orientation
             pos = ee_pose[:3, 3]
@@ -854,6 +903,11 @@ def run_teleoperation(
         robot.disconnect()
         if csv_file:
             csv_file.close()
+        if bm_timer is not None and bm_timer.frame_count > 0:
+            bm_path = LoopTimer.default_path("benchmark")
+            bm_timer.write_csv(bm_path)
+            print(f"\nBenchmark data written to: {bm_path}", flush=True)
+            print(bm_timer.summary(), flush=True)
         if error_count > 0:
             mean_err_mm = (error_sum / error_count) * 1000.0
             max_err_mm = error_max * 1000.0
@@ -1049,9 +1103,16 @@ def main():
         help="Print limiter diagnostics every N control loops. Default: 30.",
     )
     parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["cartesian", "joint", "crane"],
+        default="cartesian",
+        help="Control mode: cartesian (IK/Jacobian), joint (direct joint velocity), crane (Phase 2 stub). Default: cartesian.",
+    )
+    parser.add_argument(
         "--jacobian",
         action="store_true",
-        help="Use Jacobian-based control instead of IK.",
+        help="Use Jacobian-based control instead of IK (cartesian mode only).",
     )
     parser.add_argument(
         "--jacobian-damping",
@@ -1105,7 +1166,19 @@ def main():
         default=45.0,
         help="Strict upper wrist_flex bound (deg). Default: 45.",
     )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help=(
+            "Log per-frame timing data (controller read, IK solve, servo write). "
+            "Writes benchmark_<timestamp>.csv on exit."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.jacobian and args.mode != "cartesian":
+        print("ERROR: --jacobian can only be used with --mode cartesian")
+        sys.exit(1)
 
     if args.recalibrate and args.no_calibrate:
         print("ERROR: Cannot use both --recalibrate and --no-calibrate")
@@ -1139,6 +1212,7 @@ def main():
         no_calibrate=args.no_calibrate,
         deadzone=args.deadzone,
         linear_scale=args.linear_scale,
+        mode=args.mode,
         debug_ik=args.debug_ik,
         debug_ik_every=args.debug_ik_every,
         motion_routine=args.motion_routine,
@@ -1168,6 +1242,7 @@ def main():
         strict_allow_orientation=args.strict_allow_orientation,
         strict_wrist_min_deg=args.strict_wrist_min_deg,
         strict_wrist_max_deg=args.strict_wrist_max_deg,
+        benchmark=args.benchmark,
     )
 
 

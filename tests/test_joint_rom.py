@@ -139,8 +139,14 @@ class TestURDFMatch:
         reason="URDF file not found",
     )
     def test_precomputed_limits_match_urdf(self):
+        # Some limits are intentionally tighter than URDF based on hardware measurement:
+        #   gripper lower: -2° vs URDF -10° (hardware floor)
+        #   wrist_flex upper: 72° vs URDF 95° (hard mechanical stop)
+        INTENTIONAL_DIVERGENCE = {"gripper", "wrist_flex"}
         urdf_limits = parse_joint_limits(URDF_PATH, JOINT_NAMES_WITH_GRIPPER)
         for name, (urdf_low, urdf_high) in urdf_limits.items():
+            if name in INTENTIONAL_DIVERGENCE:
+                continue
             precomputed_low, precomputed_high = JOINT_LIMITS_RAD[name]
             np.testing.assert_allclose(
                 precomputed_low, urdf_low, atol=1e-4,

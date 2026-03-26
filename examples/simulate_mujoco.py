@@ -46,6 +46,7 @@ import numpy as np
 from xbox_soarm_teleop.config.joints import (
     IK_JOINT_NAMES,
     IK_JOINT_VEL_LIMITS_ARRAY,
+    JOINT_LIMITS_DEG,
     JOINT_NAMES_WITH_GRIPPER,
     limits_rad_to_deg,
     parse_joint_limits,
@@ -649,10 +650,33 @@ def draw_workspace(
     return True
 
 
+class _HeadlessViewer:
+    """Minimal stand-in for mujoco.viewer.Handle when running headless.
+
+    Allows the same viewer-gated loop to run without an open window.
+    Marker drawing (user_scn, add_marker) is silently skipped because
+    the ``hasattr`` guards inside the loop return False.
+    """
+
+    def is_running(self) -> bool:
+        """Always True — loop is terminated by the SIGINT ``running`` flag."""
+        return True
+
+    def sync(self) -> None:
+        """No-op — no window to sync."""
+
+    def __enter__(self) -> "_HeadlessViewer":
+        return self
+
+    def __exit__(self, *args) -> None:
+        pass
+
+
 def run_with_controller(
     sim: MuJoCoSimulator,
     deadzone: float = 0.15,
     linear_scale: float | None = None,
+    mode: str = "cartesian",
     debug_ik: bool = False,
     debug_ik_every: int = 10,
     ik_log_path: str | None = None,
@@ -672,35 +696,47 @@ def run_with_controller(
     challenge_targets_per_level: int = 5,
     challenge_max_targets: int = 3,
     challenge_seed: int | None = None,
+    headless: bool = False,
+    benchmark: bool = False,
 ) -> int:
-    """Run with Xbox controller and MuJoCo viewer."""
+    """Run with Xbox controller and MuJoCo viewer (or headless physics loop)."""
     from lerobot.model.kinematics import RobotKinematics
 
+    from xbox_soarm_teleop.config.modes import ControlMode
     from xbox_soarm_teleop.config.xbox_config import XboxConfig
-    from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta
+    from xbox_soarm_teleop.processors.factory import make_processor
     from xbox_soarm_teleop.teleoperators.xbox import XboxController
+
+    control_mode = ControlMode(mode)
+    print(f"Control mode: {control_mode.value.upper()}", flush=True)
 
     # IK joint names - include base, exclude wrist_roll (controlled directly)
     ik_joint_names = IK_JOINT_NAMES
 
-    # Initialize kinematics for IK (4 joints, not 5)
-    kinematics = RobotKinematics(
-        urdf_path=str(URDF_PATH),
-        target_frame_name="gripper_frame_link",
-        joint_names=ik_joint_names,
-    )
+    # Initialize kinematics only for modes that need IK
+    kinematics = None
+    if control_mode != ControlMode.JOINT:
+        kinematics = RobotKinematics(
+            urdf_path=str(URDF_PATH),
+            target_frame_name="gripper_frame_link",
+            joint_names=ik_joint_names,
+        )
 
     config = XboxConfig(deadzone=deadzone)
     if linear_scale is not None:
         config.linear_scale = linear_scale
     controller = XboxController(config)
-    mapper = MapXboxToEEDelta(
+    processor = make_processor(
+        control_mode,
         linear_scale=config.linear_scale,
         angular_scale=config.angular_scale,
         orientation_scale=config.orientation_scale,
         invert_pitch=config.invert_pitch,
         invert_yaw=config.invert_yaw,
+        loop_dt=LOOP_PERIOD,
+        urdf_path=str(URDF_PATH),
     )
+    mapper = processor  # alias for cartesian/crane path compatibility
 
     print(f"Controller deadzone: {config.deadzone}", flush=True)
     print(f"Linear scale: {config.linear_scale} m/s", flush=True)
@@ -806,6 +842,19 @@ def run_with_controller(
 
     signal.signal(signal.SIGINT, signal_handler)
 
+    from xbox_soarm_teleop.diagnostics.benchmark import LoopTimer
+
+    bm_timer = LoopTimer(mode=mode) if benchmark else None
+    if headless:
+        import os
+
+        # Set MUJOCO_GL for any sub-processes or late renderer init.
+        # The viewer is skipped entirely in headless mode, so the physics
+        # loop runs without any display requirement.
+        if "MUJOCO_GL" not in os.environ:
+            os.environ["MUJOCO_GL"] = "osmesa"
+        print("Headless mode: viewer disabled (physics-only loop).", flush=True)
+
     workspace_points = None
     workspace_bbox = None
     workspace_edges = None
@@ -859,8 +908,9 @@ def run_with_controller(
             )
             scene.ngeom += 1
 
-    # Launch viewer
-    with mujoco.viewer.launch_passive(sim.model, sim.data) as viewer:
+    # Launch viewer (or use headless stub)
+    _viewer_ctx = _HeadlessViewer() if headless else mujoco.viewer.launch_passive(sim.model, sim.data)
+    with _viewer_ctx as viewer:
         workspace_drawn = False
         while viewer.is_running() and running:
             redraw_workspace = workspace_draw and (
@@ -879,8 +929,37 @@ def run_with_controller(
                     print("WARNING: Workspace drawing not supported in this viewer.", flush=True)
                 workspace_drawn = True
             loop_start = time.monotonic()
+            if bm_timer is not None:
+                bm_timer.start_frame()
+            controller_ms = ik_ms = servo_ms = 0.0
 
+            _t0 = time.perf_counter()
             state = controller.read()
+            controller_ms = (time.perf_counter() - _t0) * 1000.0
+
+            if control_mode in (ControlMode.JOINT, ControlMode.CRANE):
+                joint_cmd = processor(state)
+                positions_deg = np.array(
+                    [joint_cmd.goals_deg[name] for name in JOINT_NAMES[:-1]], dtype=float
+                )
+                sim.set_joint_targets(positions_deg)
+                g_lower, g_upper = JOINT_LIMITS_DEG["gripper"]
+                g_deg = joint_cmd.goals_deg["gripper"]
+                gripper_norm = float(
+                    np.clip((g_deg - g_lower) / max(g_upper - g_lower, 1e-6), 0.0, 1.0)
+                )
+                sim.set_gripper(gripper_norm)
+                _t0 = time.perf_counter()
+                sim.step()
+                viewer.sync()
+                servo_ms = (time.perf_counter() - _t0) * 1000.0
+                if bm_timer is not None:
+                    bm_timer.record(loop_counter, controller_ms, 0.0, servo_ms)
+                elapsed = time.monotonic() - loop_start
+                if elapsed < LOOP_PERIOD:
+                    time.sleep(LOOP_PERIOD - elapsed)
+                loop_counter += 1
+                continue
 
             if state.a_button_pressed:
                 print("\nGoing home...", flush=True)
@@ -938,12 +1017,14 @@ def run_with_controller(
                     orientation_weight = 0.0
 
                 # Solve IK for 4 joints
+                _t0 = time.perf_counter()
                 new_joints = kinematics.inverse_kinematics(
                     ik_joint_pos_deg,
                     target_pose,
                     position_weight=1.0,
                     orientation_weight=orientation_weight,
                 )
+                ik_ms = (time.perf_counter() - _t0) * 1000.0
                 ik_result = new_joints[:4]
 
                 # Apply joint velocity limiting to smooth IK output
@@ -987,7 +1068,11 @@ def run_with_controller(
             # Update simulation
             sim.set_joint_targets(full_joint_pos_deg)
             sim.set_gripper(gripper_pos)
+            _t0 = time.perf_counter()
             sim.step()
+            servo_ms = (time.perf_counter() - _t0) * 1000.0
+            if bm_timer is not None:
+                bm_timer.record(loop_counter, controller_ms, ik_ms, servo_ms)
             pos = sim.get_ee_position()
             if routine_trace:
                 if not trace_points:
@@ -1051,6 +1136,11 @@ def run_with_controller(
     controller.disconnect()
     if csv_file:
         csv_file.close()
+    if bm_timer is not None and bm_timer.frame_count > 0:
+        bm_path = LoopTimer.default_path("benchmark_sim")
+        bm_timer.write_csv(bm_path)
+        print(f"\nBenchmark data written to: {bm_path}", flush=True)
+        print(bm_timer.summary(), flush=True)
     print("\nDisconnected.", flush=True)
 
     # Print challenge summary if in challenge mode
@@ -1507,6 +1597,13 @@ def estimate_max_square_size(
 
 def main():
     parser = argparse.ArgumentParser(description="MuJoCo SO-ARM101 simulation")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["cartesian", "joint", "crane"],
+        default="cartesian",
+        help="Control mode: cartesian (IK), joint (direct joint velocity), crane (Phase 2 stub). Default: cartesian.",
+    )
     parser.add_argument("--no-controller", action="store_true", help="Run demo mode")
     parser.add_argument(
         "--motion-routine",
@@ -1752,6 +1849,23 @@ def main():
         default=None,
         help="Path to calibration JSON. Default: auto-detect.",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help=(
+            "Run without a display window (headless physics loop). "
+            "Sets MUJOCO_GL=osmesa unless already set. "
+            "Requires libosmesa6 on Linux: apt install libosmesa6-dev"
+        ),
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help=(
+            "Log per-frame timing data (controller read, IK solve, sim step). "
+            "Writes benchmark_sim_<timestamp>.csv on exit."
+        ),
+    )
     args = parser.parse_args()
 
     if not URDF_PATH.exists():
@@ -1849,6 +1963,7 @@ def main():
             sim,
             deadzone=args.deadzone,
             linear_scale=args.linear_scale,
+            mode=args.mode,
             debug_ik=args.debug_ik,
             debug_ik_every=args.debug_ik_every,
             ik_log_path=args.ik_log,
@@ -1868,6 +1983,8 @@ def main():
             challenge_targets_per_level=args.challenge_targets_per_level,
             challenge_max_targets=args.challenge_max_targets,
             challenge_seed=args.challenge_seed,
+            headless=args.headless,
+            benchmark=args.benchmark,
         )
     sys.exit(exit_code)
 

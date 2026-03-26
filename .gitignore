@@ -90,5 +90,6 @@ Thumbs.db
 # Project specific
 *.log
 MUJOCO_LOG.TXT
-ik_error.csv
+ik_error*.csv
+joint_diag*.csv
 calibration/
