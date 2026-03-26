@@ -74,11 +74,21 @@ class XboxTeleoperator:
                 "cartesian control without recording."
             )
 
-        xbox_cfg = XboxConfig(
-            device_index=config.device_index,
-            deadzone=config.deadzone,
-        )
-        self._controller = XboxController(xbox_cfg)
+        if config.controller_type == "joycon":
+            from xbox_soarm_teleop.config.joycon_config import JoyConConfig
+            from xbox_soarm_teleop.teleoperators.joycon import JoyConController
+
+            ctrl_cfg = JoyConConfig(deadzone=config.deadzone)
+            self._controller = JoyConController(ctrl_cfg)
+        elif config.controller_type == "keyboard":
+            from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
+            from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
+
+            ctrl_cfg = KeyboardConfig()
+            self._controller = KeyboardController(ctrl_cfg)
+        else:
+            xbox_cfg = XboxConfig(device_index=config.device_index, deadzone=config.deadzone)
+            self._controller = XboxController(xbox_cfg)
         self._processor = make_processor(
             self._mode,
             loop_dt=config.loop_dt,

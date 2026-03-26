@@ -73,3 +73,8 @@ members = [
 
 [tool.uv.sources]
 scservo-sdk = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.14",
+]

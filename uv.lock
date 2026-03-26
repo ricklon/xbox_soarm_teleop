@@ -2531,6 +2531,11 @@ pygame = [
     { name = "pygame" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "evdev", marker = "extra == 'joycon'", specifier = ">=1.6" },
@@ -2549,6 +2554,9 @@ requires-dist = [
     { name = "scservo-sdk", editable = "third_party/ftservo_python" },
 ]
 provides-extras = ["dev", "joycon", "pygame"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "ruff", specifier = ">=0.14.14" }]
 
 [[package]]
 name = "xxhash"

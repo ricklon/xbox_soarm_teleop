@@ -14,16 +14,16 @@ class XboxTeleopConfig:
     used as a drop-in when the lerobot circular-import issue is resolved.
 
     Attributes:
-        id: Optional identifier when multiple Xbox controllers are used.
-        calibration_dir: Directory for calibration files (unused — Xbox controllers
-            need no calibration, but kept for interface parity).
+        id: Optional identifier when multiple controllers are used.
+        calibration_dir: Directory for calibration files (unused, kept for interface parity).
         mode: Control mode — "joint", "crane", or "cartesian".
             For dataset recording, prefer "joint" or "crane" as they produce
             absolute joint-position actions suitable for robot replay.
         urdf_path: Path to robot URDF (required for crane IK; optional for joint).
-        deadzone: Radial deadzone applied to both sticks (0–1).
+        deadzone: Radial deadzone applied to analog inputs (0–1).
         loop_dt: Control-loop period in seconds (default 1/30 s).
         device_index: Which gamepad device to use when multiple are connected.
+        controller_type: Input device — "xbox", "joycon", or "keyboard".
     """
 
     id: str | None = None
@@ -33,7 +33,8 @@ class XboxTeleopConfig:
     deadzone: float = 0.15
     loop_dt: float = field(default_factory=lambda: 1.0 / 30.0)
     device_index: int = 0
+    controller_type: str = "xbox"  # "xbox", "joycon", or "keyboard"
 
     @property
     def type(self) -> str:
-        return "xbox"
+        return self.controller_type
