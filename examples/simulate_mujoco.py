@@ -733,6 +733,8 @@ def run_with_controller(
     mode: str = "crane",
     controller_type: str = "xbox",
     keyboard_grab: bool = False,
+    keyboard_record: str | None = None,
+    keyboard_playback: str | None = None,
     debug_ik: bool = False,
     debug_ik_every: int = 10,
     ik_log_path: str | None = None,
@@ -794,16 +796,22 @@ def run_with_controller(
         from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
         from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
 
-        config = KeyboardConfig(grab=keyboard_grab)
+        config = KeyboardConfig(
+            grab=keyboard_grab,
+            record_path=keyboard_record,
+            playback_path=keyboard_playback,
+        )
         if linear_scale is not None:
             config.speed_levels = tuple(s * linear_scale / 0.1 for s in config.speed_levels)
-        if not keyboard_grab:
+        if not keyboard_grab and not keyboard_playback:
             print(
                 "WARNING: keyboard controller active without --keyboard-grab. "
                 "Keypresses will be detected even when this window is not focused. "
                 "Use --keyboard-grab for exclusive access.",
                 flush=True,
             )
+        if keyboard_playback:
+            print(f"Keyboard playback mode: {keyboard_playback}", flush=True)
         controller = KeyboardController(config)
         # Processor scale values come from defaults; keyboard speed is internal to the controller
         _proc_cfg = XboxConfig()
@@ -1776,6 +1784,19 @@ def main():
         help="Grab keyboard device exclusively (keyboard mode only). "
         "Prevents keypresses from reaching other windows when focus changes.",
     )
+    parser.add_argument(
+        "--record",
+        metavar="PATH",
+        default=None,
+        help="Save keystroke recording to PATH when Tab is pressed (keyboard mode only). "
+        "Defaults to recording_<timestamp>.json if Tab is pressed without this flag.",
+    )
+    parser.add_argument(
+        "--playback",
+        metavar="PATH",
+        default=None,
+        help="Replay a saved keystroke recording instead of live keyboard input.",
+    )
     parser.add_argument("--no-controller", action="store_true", help="Run demo mode")
     parser.add_argument(
         "--motion-routine",
@@ -2159,6 +2180,8 @@ def main():
             mode=args.mode,
             controller_type=args.controller,
             keyboard_grab=args.keyboard_grab,
+            keyboard_record=args.record,
+            keyboard_playback=args.playback,
             debug_ik=args.debug_ik,
             debug_ik_every=args.debug_ik_every,
             ik_log_path=args.ik_log,

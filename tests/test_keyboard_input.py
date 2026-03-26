@@ -1,5 +1,8 @@
 """Tests for KeyboardController input handling."""
 
+import json
+import time
+
 import pytest
 
 from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
@@ -311,3 +314,95 @@ class TestKeyboardEdgeDetection:
         _press(ctrl, ctrl.config.key_home)
         state = ctrl.read()  # re-pressed → new edge
         assert state.a_button_pressed is True
+
+
+# ── Recording ─────────────────────────────────────────────────────────────────
+
+
+class TestRecording:
+    def test_recording_starts_stopped(self):
+        ctrl = _connected_ctrl()
+        assert ctrl._recording is False
+        assert ctrl._record_events == []
+
+    def test_toggle_starts_recording(self):
+        ctrl = _connected_ctrl()
+        ctrl._toggle_recording()
+        assert ctrl._recording is True
+
+    def test_toggle_twice_stops_recording(self, tmp_path):
+        ctrl = _connected_ctrl(KeyboardConfig(record_path=str(tmp_path / "rec.json")))
+        ctrl._toggle_recording()   # start
+        ctrl._record_events.append({"t": 0.0, "code": 17, "value": 1})
+        ctrl._toggle_recording()   # stop — should save
+        assert ctrl._recording is False
+        saved = json.loads((tmp_path / "rec.json").read_text())
+        assert len(saved) == 1
+        assert saved[0]["code"] == 17
+
+    def test_save_recording_auto_names_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        ctrl = _connected_ctrl()
+        ctrl._record_events = [{"t": 0.0, "code": 30, "value": 1}]
+        path = ctrl._save_recording()
+        assert path.exists()
+        assert path.suffix == ".json"
+
+    def test_save_recording_uses_config_path(self, tmp_path):
+        dest = tmp_path / "out.json"
+        ctrl = _connected_ctrl(KeyboardConfig(record_path=str(dest)))
+        ctrl._record_events = [{"t": 0.1, "code": 30, "value": 0}]
+        path = ctrl._save_recording()
+        assert path == dest
+        assert dest.exists()
+
+
+# ── Playback ──────────────────────────────────────────────────────────────────
+
+
+class TestPlayback:
+    def _write_recording(self, path, events):
+        with open(path, "w") as f:
+            json.dump(events, f)
+
+    def test_playback_missing_file_returns_false(self, tmp_path):
+        cfg = KeyboardConfig(playback_path=str(tmp_path / "nope.json"))
+        ctrl = KeyboardController(cfg)
+        result = ctrl._connect_playback()
+        assert result is False
+        assert ctrl._connected is False
+
+    def test_playback_empty_recording_connects_then_disconnects(self, tmp_path):
+        p = tmp_path / "empty.json"
+        self._write_recording(p, [])
+        cfg = KeyboardConfig(playback_path=str(p))
+        ctrl = KeyboardController(cfg)
+        assert ctrl._connect_playback() is True
+        # Wait for playback thread to finish
+        if ctrl._reader_thread:
+            ctrl._reader_thread.join(timeout=2.0)
+        assert ctrl._connected is False
+
+    def test_playback_feeds_held_keys(self, tmp_path):
+        import evdev
+
+        key_w = evdev.ecodes.KEY_W
+        events = [
+            {"t": 0.0, "code": key_w, "value": 1},
+            {"t": 0.05, "code": key_w, "value": 0},
+        ]
+        p = tmp_path / "demo.json"
+        self._write_recording(p, events)
+        cfg = KeyboardConfig(playback_path=str(p))
+        ctrl = KeyboardController(cfg)
+        ctrl._connect_playback()
+        # Give playback thread time to fire first event
+        time.sleep(0.02)
+        with ctrl._held_keys_lock:
+            held = frozenset(ctrl._held_keys)
+        assert key_w in held
+        # Wait for key-up and thread to finish
+        if ctrl._reader_thread:
+            ctrl._reader_thread.join(timeout=2.0)
+        with ctrl._held_keys_lock:
+            assert key_w not in ctrl._held_keys

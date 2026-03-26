@@ -75,3 +75,15 @@ class KeyboardConfig:
     # Prevents accidental arm movement when the terminal loses focus.
     # Requires no other process to have the device open.
     grab: bool = False
+
+    # Record/playback ─────────────────────────────────────────────────────────
+    # key_record_toggle: press to start/stop recording during a live session.
+    key_record_toggle: str = "KEY_TAB"
+
+    # Where to save recordings. None = auto-name as recording_<timestamp>.json
+    # in the current working directory.
+    record_path: str | None = None
+
+    # Path to a previously saved recording to play back instead of live input.
+    # When set, no physical keyboard device is opened.
+    playback_path: str | None = None

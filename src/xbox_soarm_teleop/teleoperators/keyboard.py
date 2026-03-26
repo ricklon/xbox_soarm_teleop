@@ -13,14 +13,24 @@ Usage:
     if ctrl.connect():
         state = ctrl.read()   # returns XboxState — same interface as XboxController
     ctrl.disconnect()
+
+Record/playback:
+    # Live session — press Tab to start/stop recording:
+    ctrl = KeyboardController(KeyboardConfig(record_path="demo.json"))
+
+    # Playback a saved recording (no physical keyboard needed):
+    ctrl = KeyboardController(KeyboardConfig(playback_path="demo.json"))
 """
 
 from __future__ import annotations
 
+import json
 import sys
 import termios
 import threading
+import time
 import tty
+from pathlib import Path
 from typing import Any
 
 from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
@@ -61,17 +71,28 @@ class KeyboardController:
         # Saved terminal attributes for restore on disconnect
         self._orig_term: list | None = None
 
+        # Recording state (all accessed only from the reader thread — no lock needed)
+        self._recording: bool = False
+        self._record_start: float = 0.0
+        self._record_events: list[dict] = []
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def connect(self) -> bool:
-        """Find keyboard device, suppress echo, start event reader.
+        """Find keyboard device (or load playback file), start event reader.
+
+        In playback mode (``config.playback_path`` set) no physical device is
+        opened; synthetic events are fed from the recording file instead.
 
         Returns:
-            True if a keyboard device was found and opened.
+            True if the controller connected (or playback file loaded) successfully.
 
         Raises:
-            ImportError: if evdev is not installed.
+            ImportError: if evdev is not installed (live mode only).
         """
+        if self.config.playback_path:
+            return self._connect_playback()
+
         try:
             import evdev  # noqa: F401
         except ImportError:
@@ -102,6 +123,33 @@ class KeyboardController:
             target=self._read_events_loop, daemon=True, name="keyboard-reader"
         )
         self._reader_thread.start()
+        return True
+
+    def _connect_playback(self) -> bool:
+        """Load a recording file and start the playback thread."""
+        path = Path(self.config.playback_path)  # type: ignore[arg-type]
+        if not path.exists():
+            print(f"ERROR: playback file not found: {path}", flush=True)
+            return False
+        try:
+            with path.open() as f:
+                events = json.load(f)
+        except Exception as exc:
+            print(f"ERROR: could not load playback file {path}: {exc}", flush=True)
+            return False
+
+        # Build key map from config (needed so read() can resolve key names)
+        self._build_key_map()
+        self._connected = True
+        self._stop_event.clear()
+        self._reader_thread = threading.Thread(
+            target=self._playback_loop,
+            args=(events,),
+            daemon=True,
+            name="keyboard-playback",
+        )
+        self._reader_thread.start()
+        print(f"Playback: loaded {len(events)} events from {path}", flush=True)
         return True
 
     def disconnect(self) -> None:
@@ -311,6 +359,9 @@ class KeyboardController:
                 if code is not None:
                     speed_keys[code] = i
 
+        # Keycode for record toggle (Tab by default)
+        record_toggle_code: int | None = self._key_map.get(self.config.key_record_toggle)
+
         while not self._stop_event.is_set():
             try:
                 r, _, _ = select.select([fd], [], [], 0.05)
@@ -324,15 +375,88 @@ class KeyboardController:
                             self._held_keys.add(event.code)
                         if event.code in speed_keys:
                             self._speed_level = speed_keys[event.code]
+                        # Tab: toggle recording
+                        if event.code == record_toggle_code:
+                            self._toggle_recording()
                     elif event.value == 0:   # key up
                         with self._held_keys_lock:
                             self._held_keys.discard(event.code)
-                    # value == 2 is key-repeat — ignored (state tracked via held set)
+                    else:
+                        continue   # key-repeat (value==2) — skip recording
+
+                    # Append to recording buffer (key-down and key-up only)
+                    if self._recording and event.value in (0, 1):
+                        self._record_events.append(
+                            {
+                                "t": time.monotonic() - self._record_start,
+                                "code": event.code,
+                                "value": event.value,
+                            }
+                        )
             except OSError:
                 self._connected = False
                 break
             except Exception:
                 pass
+
+    def _toggle_recording(self) -> None:
+        """Start or stop recording; auto-save on stop."""
+        if not self._recording:
+            self._recording = True
+            self._record_start = time.monotonic()
+            self._record_events = []
+            print("\n[REC] Recording started — press Tab to stop.", flush=True)
+        else:
+            self._recording = False
+            path = self._save_recording()
+            print(
+                f"\n[REC] Recording stopped — {len(self._record_events)} events saved to {path}",
+                flush=True,
+            )
+
+    def _save_recording(self) -> Path:
+        """Write _record_events to JSON and return the path used."""
+        if self.config.record_path:
+            path = Path(self.config.record_path)
+        else:
+            import datetime
+
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = Path(f"recording_{ts}.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w") as f:
+            json.dump(self._record_events, f, indent=2)
+        return path
+
+    def _playback_loop(self, events: list[dict]) -> None:
+        """Background thread: replay recorded events into _held_keys."""
+        t0 = time.monotonic()
+        for ev in events:
+            if self._stop_event.is_set():
+                break
+            target = t0 + ev["t"]
+            remaining = target - time.monotonic()
+            if remaining > 0:
+                # Sleep in short chunks so stop_event is checked promptly
+                while remaining > 0.02 and not self._stop_event.is_set():
+                    time.sleep(0.02)
+                    remaining = target - time.monotonic()
+                if not self._stop_event.is_set() and remaining > 0:
+                    time.sleep(remaining)
+            if self._stop_event.is_set():
+                break
+            code, value = ev["code"], ev["value"]
+            if value == 1:
+                with self._held_keys_lock:
+                    self._held_keys.add(code)
+            elif value == 0:
+                with self._held_keys_lock:
+                    self._held_keys.discard(code)
+        # Playback finished — release all held keys and mark disconnected
+        with self._held_keys_lock:
+            self._held_keys.clear()
+        self._connected = False
+        print("\nPlayback complete.", flush=True)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
