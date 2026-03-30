@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Test Xbox controller using evdev (lower level than inputs/pygame)."""
 
-import glob
 import sys
 import time
 
@@ -74,6 +73,5 @@ def test_controller():
 
 if __name__ == "__main__":
     import evdev
-    from evdev import ecodes
 
     test_controller()

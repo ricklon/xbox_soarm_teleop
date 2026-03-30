@@ -107,7 +107,7 @@ class JoyConController:
               right_trigger   — ZR button (0.0 or 1.0)
               left_bumper     — SL button (deadman switch)
               a_button        — A face button (BTN_EAST)
-              y_button        — X face button (BTN_NORTH)
+              y_button        — Y face button (BTN_WEST), reserved as an auxiliary button
               dpad_x          — always 0.0 (no d-pad on single Joy-Con)
               dpad_y          — ±1.0 from height_up/height_down buttons (puppet mode)
         """
@@ -152,7 +152,7 @@ class JoyConController:
         # Buttons
         self._state.left_bumper = bool(raw.get(self.config.deadman_button, 0))
         self._state.a_button = bool(raw.get(self.config.home_button, 0))
-        self._state.y_button = bool(raw.get(self.config.frame_toggle_button, 0))
+        self._state.y_button = bool(raw.get(self.config.aux_button, 0))
 
         # No hardware d-pad on single Joy-Con; synthesise dpad_y from height buttons
         # (used in puppet mode: SR=up → +1.0, B=down → -1.0)

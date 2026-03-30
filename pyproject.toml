@@ -39,6 +39,10 @@ rerun = [
 [project.scripts]
 ik-smoke = "xbox_soarm_teleop.cli.ik_smoke:main"
 mujoco-ik-check = "xbox_soarm_teleop.cli.mujoco_ik_check:main"
+analyze-joint-diag = "xbox_soarm_teleop.cli.analyze_joint_diag:main"
+diagnose-robot = "xbox_soarm_teleop.cli.diagnose_robot:main"
+joint-rom-test = "xbox_soarm_teleop.cli.joint_rom_test:main"
+xbox-joint-diagnostic = "xbox_soarm_teleop.cli.xbox_joint_diagnostic:main"
 
 [build-system]
 requires = ["hatchling"]

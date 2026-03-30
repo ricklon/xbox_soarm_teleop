@@ -202,3 +202,15 @@ def test_crane_processor_reset():
     proc._pan_deg = 99.0
     proc.reset()
     assert abs(proc._pan_deg - HOME_POSITION_DEG["shoulder_pan"]) < 0.1
+
+
+def test_crane_processor_handles_ik_none():
+    class _DummyIK:
+        def inverse_kinematics(self, *args, **kwargs):
+            return None
+
+    proc = CraneProcessor()
+    proc._planar_ik = _DummyIK()
+    # Force the IK path with deadman held
+    result = proc(_state(left_bumper=True, right_stick_y=-1.0, left_stick_y=-1.0))
+    assert isinstance(result, JointCommand)

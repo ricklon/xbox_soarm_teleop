@@ -4,8 +4,8 @@
 Uses evdev directly — works with Joy-Cons via hid-nintendo + joycond.
 
 Usage:
-    uv run python examples/probe_controller.py
-    uv run python examples/probe_controller.py --device /dev/input/event17
+    uv run python examples/diagnostics/probe_controller.py
+    uv run python examples/diagnostics/probe_controller.py --device /dev/input/event17
 """
 
 import argparse

@@ -41,8 +41,10 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
-# Import challenge mode classes from simulate_mujoco
-from simulate_mujoco import ChallengeManager
+try:
+    from examples.simulate_mujoco import ChallengeManager
+except ImportError:
+    from simulate_mujoco import ChallengeManager
 
 from xbox_soarm_teleop.config.joints import (
     IK_JOINT_NAMES,
@@ -50,6 +52,18 @@ from xbox_soarm_teleop.config.joints import (
     limits_rad_to_deg,
     parse_joint_limits,
 )
+from xbox_soarm_teleop.control.cartesian import (
+    advance_cartesian_target,
+    apply_ik_solution,
+    full_joint_positions,
+    make_cartesian_state,
+    step_gripper_toward,
+    step_wrist_roll,
+    sync_cartesian_state,
+)
+from xbox_soarm_teleop.control.routines import plane_offset
+from xbox_soarm_teleop.control.units import deg_to_normalized
+from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 
 # Paths to model files
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
@@ -80,35 +94,11 @@ def find_serial_port() -> str | None:
     return ports[0] if ports else None
 
 
-def deg_to_normalized(deg: float, joint_name: str) -> float:
-    """Convert degrees to LeRobot normalized value [-100, 100]."""
-    if joint_name == "gripper":
-        return deg
-    return deg * (100.0 / 180.0)
-
-
 def load_model_with_cameras(urdf_path: str) -> mujoco.MjModel:
     """Load URDF and add preset camera views."""
-    # Load URDF directly - skip camera setup due to mj_saveLastXML issues
+    if MUJOCO_XML_PATH.exists():
+        return mujoco.MjModel.from_xml_path(str(MUJOCO_XML_PATH))
     return mujoco.MjModel.from_xml_path(urdf_path)
-
-    # Insert camera definitions before </mujoco>
-    camera_xml = """
-  <!-- Preset camera views - use [ and ] to cycle -->
-  <camera name="back" pos="-0.3 0 0.4" xyaxes="0 -1 0 0.5 0 1" fovy="60"/>
-  <camera name="left" pos="0.2 0.5 0.3" xyaxes="-1 0 0 0 0.5 1" fovy="60"/>
-  <camera name="top" pos="0.2 0 0.7" xyaxes="0 -1 0 1 0 0" fovy="60"/>
-  <camera name="front_right" pos="0.5 -0.3 0.3" xyaxes="0.6 1 0 -0.2 0 1" fovy="60"/>
-"""
-
-    if "</mujoco>" in xml_string:
-        xml_with_cameras = xml_string.replace("</mujoco>", camera_xml + "</mujoco>")
-        try:
-            return mujoco.MjModel.from_xml_string(xml_with_cameras)
-        except Exception:
-            pass  # Fall back to original
-
-    return model
 
 
 class MuJoCoSimulator:
@@ -194,27 +184,32 @@ def run_dual_mode(
     jacobian_damping: float = 0.05,
 ):
     """Run digital twin mode with real robot and simulation."""
-    from lerobot.model.kinematics import RobotKinematics
     from lerobot.robots.so_follower import SOFollower
     from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
 
-    from xbox_soarm_teleop.config.xbox_config import XboxConfig
-    from xbox_soarm_teleop.kinematics.jacobian import JacobianController
-    from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, MapXboxToEEDelta
-    from xbox_soarm_teleop.teleoperators.xbox import XboxController
+    from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta
 
-    # Initialize kinematics
-    print("Loading kinematics model...", flush=True)
-    kinematics = RobotKinematics(
+    runtime = build_control_runtime(
+        controller_type="xbox",
+        mode="cartesian",
+        deadzone=0.1,
+        linear_scale=None,
+        keyboard_grab=False,
+        keyboard_record=None,
+        keyboard_playback=None,
+        loop_dt=LOOP_PERIOD,
         urdf_path=str(URDF_PATH),
-        target_frame_name="gripper_frame_link",
-        joint_names=IK_JOINT_NAMES,
+        use_jacobian=use_jacobian,
+        jacobian_damping=jacobian_damping,
+        announce_kinematics=True,
+        enable_controller=not motion_routine,
     )
-
-    # Initialize Jacobian controller if needed
-    jacobian_ctrl = None
+    kinematics = runtime.kinematics
+    jacobian_ctrl = runtime.jacobian_controller
+    controller = runtime.controller
+    mapper = runtime.mapper
+    gripper_rate = runtime.gripper_rate
     if use_jacobian:
-        jacobian_ctrl = JacobianController(kinematics, damping=jacobian_damping)
         print(f"Control mode: JACOBIAN (damping={jacobian_damping})", flush=True)
     else:
         print("Control mode: IK", flush=True)
@@ -227,24 +222,11 @@ def run_dual_mode(
     print("Loading MuJoCo model...", flush=True)
     sim = MuJoCoSimulator(str(URDF_PATH))
 
-    # Initialize Xbox controller
-    config = XboxConfig()
-    controller = None
-    mapper = None
     if not motion_routine:
-        controller = XboxController(config)
-        mapper = MapXboxToEEDelta(
-            linear_scale=config.linear_scale,
-            angular_scale=config.angular_scale,
-            orientation_scale=config.orientation_scale,
-            invert_pitch=config.invert_pitch,
-            invert_yaw=config.invert_yaw,
-        )
         if not controller.connect():
-            print("ERROR: Failed to connect to Xbox controller")
+            print(f"ERROR: Failed to connect to {runtime.controller_label}")
             sys.exit(1)
-        print("Xbox controller connected", flush=True)
-    gripper_rate = config.gripper_rate
+        print(f"{runtime.controller_label} connected", flush=True)
 
     # Use project-local calibration directory by default
     if calibration_dir is None:
@@ -262,7 +244,8 @@ def run_dual_mode(
         robot.connect(calibrate=True)
     except Exception as e:
         print(f"ERROR: Failed to connect to robot: {e}")
-        controller.disconnect()
+        if controller is not None:
+            controller.disconnect()
         sys.exit(1)
 
     print("Robot connected!", flush=True)
@@ -277,13 +260,7 @@ def run_dual_mode(
         )
         print("  Close window or Ctrl+C to exit\n", flush=True)
     else:
-        print("\nControls:", flush=True)
-        print("  Hold LB + move sticks to control arm", flush=True)
-        print("  D-pad up/down: Pitch (tilt gripper)", flush=True)
-        print("  D-pad left/right: Yaw (rotate heading)", flush=True)
-        print("  Right trigger for gripper", flush=True)
-        print("  A button to go home", flush=True)
-        print("  Close window or Ctrl+C to exit\n", flush=True)
+        print_controls("xbox", "cartesian", exit_hint="Close window or Ctrl+C    exit")
 
     # Initialize challenge mode if enabled
     challenge: ChallengeManager | None = None
@@ -305,50 +282,13 @@ def run_dual_mode(
         challenge.start()
 
     # Current state
-    wrist_roll_deg = 0.0
-    ik_joint_pos_deg = np.zeros(4)
-    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-    gripper_pos = GRIPPER_DEFAULT
-    routine_center = ee_pose[:3, 3].copy()
+    cartesian_state = make_cartesian_state(
+        kinematics,
+        np.zeros(4, dtype=float),
+        gripper_pos=GRIPPER_DEFAULT,
+    )
+    routine_center = cartesian_state.ee_pose[:3, 3].copy()
     routine_center += np.array([routine_center_x, routine_center_y, routine_center_z], dtype=float)
-
-    # Target orientation (euler angles in radians)
-    target_pitch = 0.0
-    target_yaw = 0.0
-
-    def euler_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
-        """Convert euler angles (ZYX convention) to rotation matrix."""
-        cr, sr = np.cos(roll), np.sin(roll)
-        cp, sp = np.cos(pitch), np.sin(pitch)
-        cy, sy = np.cos(yaw), np.sin(yaw)
-        return np.array(
-            [
-                [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-                [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-                [-sp, cp * sr, cp * cr],
-            ]
-        )
-
-    def square_offset(u: float, size: float) -> tuple[float, float]:
-        half = size / 2.0
-        s = (u % 1.0) * 4.0
-        seg = int(s)
-        f = s - seg
-        if seg == 0:
-            return (-half + f * size, -half)
-        if seg == 1:
-            return (half, -half + f * size)
-        if seg == 2:
-            return (half - f * size, half)
-        return (-half, half - f * size)
-
-    def plane_offset(plane: str, u: float, size: float) -> np.ndarray:
-        a, b = square_offset(u, size)
-        if plane == "xy":
-            return np.array([a, b, 0.0])
-        if plane == "xz":
-            return np.array([a, 0.0, b])
-        return np.array([0.0, a, b])
 
     def draw_trace(viewer: mujoco.viewer.Handle, points: list[np.ndarray]) -> None:
         if not routine_trace:
@@ -385,8 +325,8 @@ def run_dual_mode(
             scene.ngeom += 1
 
     # Ensure sim + robot start with the same gripper state
-    sim.set_joint_positions(np.zeros(5), gripper_pos)
-    robot.send_action({"gripper.pos": gripper_to_robot(gripper_pos)})
+    sim.set_joint_positions(np.zeros(5), cartesian_state.gripper_pos)
+    robot.send_action({"gripper.pos": gripper_to_robot(cartesian_state.gripper_pos)})
 
     running = True
     routine_start = time.monotonic()
@@ -425,7 +365,7 @@ def run_dual_mode(
                             plane = routine_plane
                             u = (t / max(routine_duration, 0.1)) % 1.0
                         desired = routine_center + plane_offset(plane, u, size)
-                        delta = desired - ee_pose[:3, 3]
+                        delta = desired - cartesian_state.ee_pose[:3, 3]
                         dist = float(np.linalg.norm(delta))
                         if dist < 1e-6:
                             dx = dy = dz = 0.0
@@ -442,24 +382,28 @@ def run_dual_mode(
                         gripper_target = float(np.clip(gripper_target, 0.0, 1.0))
                     else:
                         droll = 0.0
-                        gripper_target = gripper_pos
+                        gripper_target = cartesian_state.gripper_pos
                 else:
                     state = controller.read()
 
                     if state.a_button_pressed:
                         print("\\nGoing home...", flush=True)
-                        wrist_roll_deg = 0.0
-                        ik_joint_pos_deg = np.zeros(4)
-                        target_pitch = 0.0
-                        target_yaw = 0.0
-                    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
+                        sync_cartesian_state(
+                            cartesian_state,
+                            kinematics,
+                            np.zeros(4, dtype=float),
+                            wrist_roll_deg=0.0,
+                            target_pitch=0.0,
+                            target_yaw=0.0,
+                            gripper_pos=GRIPPER_DEFAULT,
+                        )
 
                 # Debug: print joint angles when in motion routine
                 if motion_routine:
                     routine_elapsed = time.monotonic() - routine_start
                     plane_str = plane if motion_routine else "    "
                     print(
-                        f" T={routine_elapsed:4.1f}s Plane={plane_str} SP={ik_joint_pos_deg[0]:6.1f}° SL={ik_joint_pos_deg[1]:6.1f}° EF={ik_joint_pos_deg[2]:6.1f}° WF={ik_joint_pos_deg[3]:6.1f}°",
+                        f" T={routine_elapsed:4.1f}s Plane={plane_str} SP={cartesian_state.ik_joint_pos_deg[0]:6.1f}° SL={cartesian_state.ik_joint_pos_deg[1]:6.1f}° EF={cartesian_state.ik_joint_pos_deg[2]:6.1f}° WF={cartesian_state.ik_joint_pos_deg[3]:6.1f}°",
                         end="\r",
                         flush=True,
                     )
@@ -470,53 +414,40 @@ def run_dual_mode(
                     ee_delta = mapper(state)
 
                 # Rate-limit gripper
-                gripper_target = ee_delta.gripper
-                gripper_diff = gripper_target - gripper_pos
-                max_delta = gripper_rate * LOOP_PERIOD
-                if abs(gripper_diff) > max_delta:
-                    gripper_pos += max_delta if gripper_diff > 0 else -max_delta
-                else:
-                    gripper_pos = gripper_target
+                cartesian_state.gripper_pos = step_gripper_toward(
+                    cartesian_state.gripper_pos,
+                    ee_delta.gripper,
+                    gripper_rate=gripper_rate,
+                    dt=LOOP_PERIOD,
+                )
 
                 if not ee_delta.is_zero_motion():
-                    # Update target EE pose (X/Y/Z)
-                    target_pos = ee_pose[:3, 3].copy()
-                    target_pos[0] += ee_delta.dx * LOOP_PERIOD
-                    target_pos[1] += ee_delta.dy * LOOP_PERIOD
-                    target_pos[2] += ee_delta.dz * LOOP_PERIOD
-
-                    # Workspace limits
-                    target_pos[0] = np.clip(target_pos[0], -0.1, 0.5)
-                    target_pos[1] = np.clip(target_pos[1], -0.3, 0.3)
-                    target_pos[2] = np.clip(target_pos[2], 0.05, 0.45)
-
-                    # Update target orientation
-                    if abs(ee_delta.dpitch) > 0.001:
-                        target_pitch += ee_delta.dpitch * LOOP_PERIOD
-                        target_pitch = np.clip(target_pitch, -np.pi / 2, np.pi / 2)
-
-                    if abs(ee_delta.dyaw) > 0.001:
-                        target_yaw += ee_delta.dyaw * LOOP_PERIOD
-                        target_yaw = np.clip(target_yaw, -np.pi, np.pi)
-
-                    target_pose = ee_pose.copy()
-                    target_pose[:3, 3] = target_pos
-
-                    # Build target orientation if pitch/yaw are set
-                    has_orientation_target = abs(target_pitch) > 0.01 or abs(target_yaw) > 0.01
-                    if has_orientation_target:
-                        target_rotation = euler_to_rotation_matrix(0.0, target_pitch, target_yaw)
-                        target_pose[:3, :3] = target_rotation
-                        orientation_weight = 0.1  # Low weight - strongly prioritize position
-                    else:
-                        orientation_weight = 0.0
+                    target_pose, _target_pos, target_flags = advance_cartesian_target(
+                        cartesian_state,
+                        ee_delta,
+                        dt=LOOP_PERIOD,
+                        clip_position=lambda pos: (
+                            np.array(
+                                [
+                                    np.clip(pos[0], -0.1, 0.5),
+                                    np.clip(pos[1], -0.3, 0.3),
+                                    np.clip(pos[2], 0.05, 0.45),
+                                ],
+                                dtype=float,
+                            ),
+                            {},
+                        ),
+                        pitch_limit_rad=np.pi / 2,
+                        yaw_limit_rad=np.pi,
+                    )
+                    orientation_weight = float(target_flags["orientation_weight"])
 
                     if use_jacobian:
                         # Jacobian-based control: EE velocity -> joint velocity -> integrate
                         # Use position + pitch mode (4 DOF) for optimal control with 4 joints
                         ee_vel = np.array([ee_delta.dx, ee_delta.dy, ee_delta.dz, ee_delta.dpitch])
                         joint_vel_deg = jacobian_ctrl.ee_vel_to_joint_vel(
-                            ee_vel, ik_joint_pos_deg, mode="position_pitch"
+                            ee_vel, cartesian_state.ik_joint_pos_deg, mode="position_pitch"
                         )
 
                         # Apply velocity limits
@@ -525,42 +456,40 @@ def run_dual_mode(
                         )
 
                         # Integrate to get new joint positions
-                        ik_joint_pos_deg = ik_joint_pos_deg + joint_vel_deg * LOOP_PERIOD
+                        candidate_joints = cartesian_state.ik_joint_pos_deg + joint_vel_deg * LOOP_PERIOD
 
                         # Apply joint limits
-                        ik_joint_pos_deg = np.clip(
-                            ik_joint_pos_deg, -joint_limits_deg, joint_limits_deg
-                        )
+                        candidate_joints = np.clip(candidate_joints, -joint_limits_deg, joint_limits_deg)
                     else:
                         # IK-based control: solve IK for target pose
                         new_joints = kinematics.inverse_kinematics(
-                            ik_joint_pos_deg,
+                            cartesian_state.ik_joint_pos_deg,
                             target_pose,
                             position_weight=1.0,
                             orientation_weight=orientation_weight,
                         )
-                        ik_joint_pos_deg = new_joints[:4]
+                        candidate_joints = new_joints[:4]
 
-                    # Apply wrist roll directly
-                    if abs(ee_delta.droll) > 0.001:
-                        roll_delta_deg = np.rad2deg(ee_delta.droll * LOOP_PERIOD)
-                        wrist_roll_deg += roll_delta_deg
-                        wrist_roll_deg = np.clip(wrist_roll_deg, -180.0, 180.0)
+                    next_wrist_roll_deg = step_wrist_roll(
+                        cartesian_state.wrist_roll_deg,
+                        ee_delta.droll,
+                        dt=LOOP_PERIOD,
+                    )
+                    apply_ik_solution(
+                        cartesian_state,
+                        kinematics,
+                        candidate_joints,
+                        wrist_roll_deg=next_wrist_roll_deg,
+                        target_pose=target_pose,
+                    )
 
-                    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-
-                full_joint_pos_deg = np.array(
-                    [
-                        ik_joint_pos_deg[0],
-                        ik_joint_pos_deg[1],
-                        ik_joint_pos_deg[2],
-                        ik_joint_pos_deg[3],
-                        wrist_roll_deg,
-                    ]
+                full_joint_pos_deg = full_joint_positions(
+                    cartesian_state.ik_joint_pos_deg,
+                    cartesian_state.wrist_roll_deg,
                 )
 
                 # Update simulation (digital twin)
-                sim.set_joint_positions(full_joint_pos_deg, gripper_pos)
+                sim.set_joint_positions(full_joint_pos_deg, cartesian_state.gripper_pos)
                 pos = sim.get_ee_position()
                 if routine_trace:
                     if not trace_points:
@@ -583,25 +512,25 @@ def run_dual_mode(
                 action = {}
                 for i, name in enumerate(JOINT_NAMES[:-1]):
                     action[f"{name}.pos"] = deg_to_normalized(full_joint_pos_deg[i], name)
-                action["gripper.pos"] = gripper_to_robot(gripper_pos)
+                action["gripper.pos"] = gripper_to_robot(cartesian_state.gripper_pos)
                 robot.send_action(action)
 
                 # Status
-                pitch_deg = np.rad2deg(target_pitch)
-                yaw_deg = np.rad2deg(target_yaw)
+                pitch_deg = np.rad2deg(cartesian_state.target_pitch)
+                yaw_deg = np.rad2deg(cartesian_state.target_yaw)
                 if challenge is not None:
                     n_targets = len(challenge.active_targets)
                     n_collected = len(challenge.collected_targets)
                     print(
                         f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
-                        f"Targets: {n_targets} | Collected: {n_collected} | Grip: {gripper_pos:.2f}   ",
+                        f"Targets: {n_targets} | Collected: {n_collected} | Grip: {cartesian_state.gripper_pos:.2f}   ",
                         end="\r",
                         flush=True,
                     )
                 else:
                     print(
                         f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
-                        f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {gripper_pos:.2f}   ",
+                        f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {cartesian_state.gripper_pos:.2f}   ",
                         end="\r",
                         flush=True,
                     )

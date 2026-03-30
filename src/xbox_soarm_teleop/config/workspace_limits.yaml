@@ -1,17 +1,29 @@
-# Workspace limits for SO-ARM100/101
+# Workspace limits for SO-ARM101
 # All values are in meters (position) or radians (orientation)
 
 # Cartesian position bounds (relative to robot base)
 position:
   x:
-    min: -0.3
-    max: 0.3
+    min: 0.05
+    max: 0.5
   y:
     min: -0.3
     max: 0.3
   z:
     min: 0.05  # Prevent ground collision
-    max: 0.4
+    max: 0.45
+
+# Conservative bounds used in strict safety mode
+strict_position:
+  x:
+    min: 0.10
+    max: 0.32
+  y:
+    min: -0.20
+    max: 0.20
+  z:
+    min: 0.05
+    max: 0.30
 
 # Orientation bounds (Euler angles)
 orientation:

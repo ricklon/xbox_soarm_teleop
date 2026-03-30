@@ -6,9 +6,9 @@ This script allows A/B testing between:
 - Jacobian mode: Compute joint velocities from EE velocity, integrate
 
 Usage:
-    uv run python examples/test_jacobian_control.py
-    uv run python examples/test_jacobian_control.py --mode jacobian
-    uv run python examples/test_jacobian_control.py --mode compare
+    uv run python examples/archive/test_jacobian_control.py
+    uv run python examples/archive/test_jacobian_control.py --mode jacobian
+    uv run python examples/archive/test_jacobian_control.py --mode compare
 
 Controls:
     - Standard Xbox controls (hold LB to move)

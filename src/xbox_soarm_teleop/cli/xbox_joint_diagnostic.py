@@ -1,27 +1,4 @@
-#!/usr/bin/env python3
-"""Direct joint diagnostic using Xbox controller (bypasses IK).
-
-This tool isolates controller->motor behavior by commanding joints directly,
-without any IK, workspace clipping, or kinematic model.
-
-Usage:
-    uv run python examples/xbox_joint_diagnostic.py
-    uv run python examples/xbox_joint_diagnostic.py --port /dev/ttyACM0 --max-vel 80
-    uv run python examples/xbox_joint_diagnostic.py --log /tmp/xbox_joint_diag.csv
-
-Controls:
-    Hold LB: enable joint motion (deadman)
-    Left stick X: selected joint velocity command
-        - stick right (+X): drive toward joint upper limit
-        - stick left (-X): drive toward joint lower limit
-    D-pad left/right: select previous/next joint
-        - D-pad left: previous joint in list
-        - D-pad right: next joint in list
-    Y (press): toggle auto-sweep for selected joint
-    A (press): reset selected joint to home position
-    Right trigger: direct gripper position (open->closed)
-    Ctrl+C: exit
-"""
+"""Direct joint diagnostic using an Xbox controller, bypassing IK."""
 
 from __future__ import annotations
 
@@ -29,7 +6,6 @@ import argparse
 import csv
 import glob
 import signal
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -103,7 +79,8 @@ def build_base_positions(joint_name: str, use_test_positions: bool = True) -> di
     return base
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser."""
     parser = argparse.ArgumentParser(description="Xbox direct-joint diagnostic for SO-ARM")
     parser.add_argument("--port", type=str, default=None, help="Serial port (auto-detect if omitted)")
     parser.add_argument("--deadzone", type=float, default=0.15, help="Controller deadzone")
@@ -141,13 +118,18 @@ def main() -> None:
         action="store_true",
         help="When gripper is selected, map trigger directly to gripper position.",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    """Run the Xbox joint-diagnostic CLI."""
+    args = build_parser().parse_args()
 
     if args.port is None:
         args.port = find_serial_port()
     if args.port is None:
         print("ERROR: No serial port found. Pass --port explicitly.")
-        sys.exit(1)
+        return 1
 
     loop_hz = max(5.0, float(args.hz))
     loop_dt = 1.0 / loop_hz
@@ -165,7 +147,7 @@ def main() -> None:
     except ImportError as exc:
         print(f"Import error: {exc}")
         print("Install dependencies with: uv pip install -e '.[dev]'")
-        sys.exit(1)
+        return 1
 
     print(f"Connecting to robot on {args.port}...")
     motors = {
@@ -178,9 +160,8 @@ def main() -> None:
         bus.connect()
     except Exception as exc:
         print(f"ERROR: Failed to connect to bus: {exc}")
-        sys.exit(1)
+        return 1
 
-    # Enable torque for all joints up front.
     for joint_name in JOINT_NAMES_WITH_GRIPPER:
         bus.write("Torque_Enable", str(MOTOR_IDS[joint_name]), 1, normalize=False)
 
@@ -189,7 +170,7 @@ def main() -> None:
     if not controller.connect():
         print("ERROR: Xbox controller not detected")
         bus.disconnect()
-        sys.exit(1)
+        return 1
 
     goals_deg: dict[str, float] = {}
     for joint_name in JOINT_NAMES_WITH_GRIPPER:
@@ -210,7 +191,6 @@ def main() -> None:
         base = build_base_positions(selected_joint, use_test_positions=use_test_positions)
         for joint_name, base_deg in base.items():
             goals_deg[joint_name] = base_deg
-        # Apply base pose once so selected joint sweep has proper clearance.
         for joint_name in JOINT_NAMES_WITH_GRIPPER:
             if gripper_faulted and joint_name == "gripper":
                 continue
@@ -229,7 +209,7 @@ def main() -> None:
     t0 = time.monotonic()
     running = True
 
-    def handle_signal(_sig, _frame):
+    def handle_signal(_sig, _frame) -> None:
         nonlocal running
         running = False
 
@@ -315,7 +295,6 @@ def main() -> None:
                     upper,
                 )
 
-            # Optional trigger control when gripper is the active joint.
             if args.gripper_trigger_control and selected_joint == "gripper" and not gripper_faulted:
                 g_lower, g_upper = JOINT_LIMITS_DEG["gripper"]
                 goals_deg["gripper"] = map_trigger_to_gripper_deg(state.right_trigger, g_lower, g_upper)
@@ -396,7 +375,8 @@ def main() -> None:
     controller.disconnect()
     bus.disconnect()
     print(f"Log written: {log_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

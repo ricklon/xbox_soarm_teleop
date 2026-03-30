@@ -11,7 +11,7 @@ import glob
 import sys
 import time
 
-from xbox_soarm_teleop.config.joints import MOTOR_IDS, raw_to_deg, deg_to_raw
+from xbox_soarm_teleop.config.joints import MOTOR_IDS, deg_to_raw, raw_to_deg
 
 
 def find_port():
@@ -30,8 +30,8 @@ def power_cycle_test():
     print("=" * 60)
     print()
 
-    from scservo_sdk import PortHandler, sms_sts
     import scservo_sdk as scs
+    from scservo_sdk import PortHandler, sms_sts
 
     ph = PortHandler(port)
     handler = sms_sts(ph)

@@ -47,6 +47,17 @@ from xbox_soarm_teleop.config.joints import (
     limits_rad_to_deg,
     parse_joint_limits,
 )
+from xbox_soarm_teleop.control.cartesian import (
+    advance_cartesian_target,
+    apply_ik_solution,
+    full_joint_positions,
+    make_cartesian_state,
+    step_gripper_toward,
+    step_wrist_roll,
+    sync_cartesian_state,
+)
+from xbox_soarm_teleop.control.routines import plane_offset
+from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 
 # Path to URDF
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
@@ -668,72 +679,6 @@ class _HeadlessViewer:
         pass
 
 
-def _print_controls(controller_type: str, mode: str) -> None:
-    """Print control instructions appropriate for the controller and mode."""
-    print("\nControls:", flush=True)
-
-    if controller_type == "keyboard":
-        if mode == "joint":
-            print("  A / D           shoulder_pan    (left / right)", flush=True)
-            print("  W / S           shoulder_lift   (up / down)", flush=True)
-            print("  R / F           elbow_flex      (flex / extend)", flush=True)
-            print("  Q / E           wrist_flex      (up / down)", flush=True)
-            print("  ↑ / ↓           wrist_roll      (+ / -)", flush=True)
-            print("  Space (hold)    gripper close", flush=True)
-            print("  H               home position", flush=True)
-            print("  1–5             speed level  (default 3 = 75%)", flush=True)
-            print("  Shift           2× speed multiplier", flush=True)
-        else:
-            print("  W / S           forward / back  (X)", flush=True)
-            print("  A / D           left / right    (Y)", flush=True)
-            print("  R / F           up / down       (Z)", flush=True)
-            print("  Q / E           wrist roll", flush=True)
-            print("  ↑ / ↓           pitch", flush=True)
-            print("  ← / →           yaw", flush=True)
-            print("  Space (hold)    gripper close", flush=True)
-            print("  H               home position", flush=True)
-            print("  Y               toggle coord frame (world/tool)", flush=True)
-            print("  1–5             speed level  (default 3 = 75%)", flush=True)
-            print("  Shift           2× speed multiplier", flush=True)
-        print("  Ctrl+C / close window  exit\n", flush=True)
-
-    elif controller_type == "joycon":
-        if mode == "joint":
-            print("  Stick left/right    drive selected joint", flush=True)
-            print("  (no joint cycle on Joy-Con — use cartesian mode)", flush=True)
-        elif mode == "puppet":
-            print("  Stick left/right    shoulder_pan  (base rotation)", flush=True)
-            print("  Stick up/down       reach         (extend/retract)", flush=True)
-            print("  SR (hold)           height up", flush=True)
-            print("  B face button       height down", flush=True)
-            print("  IMU pitch           wrist_flex    (tilt fwd/back)", flush=True)
-            print("  IMU roll            wrist_roll    (tilt left/right)", flush=True)
-            print("  ZR                  gripper (hold=close)", flush=True)
-        else:
-            print("  Stick              move arm (X/Y/Z/roll)", flush=True)
-            print("  ZR                 gripper (hold=close)", flush=True)
-        print("  SL (hold)          deadman switch", flush=True)
-        print("  + button           home position", flush=True)
-        print("  Close window       exit\n", flush=True)
-
-    else:  # xbox
-        if mode == "joint":
-            print("  Hold LB + Left stick X    drive selected joint", flush=True)
-            print("  D-pad left/right          cycle joint", flush=True)
-            print("  Right trigger             gripper", flush=True)
-            print("  A button                  home position", flush=True)
-        else:
-            print("  Hold LB + move sticks     control arm", flush=True)
-            print("  Left stick X/Y            left-right / up-down", flush=True)
-            print("  Right stick Y/X           forward-back / wrist roll", flush=True)
-            print("  D-pad up/down             pitch", flush=True)
-            print("  D-pad left/right          yaw", flush=True)
-            print("  Right trigger             gripper", flush=True)
-            print("  A button                  home position", flush=True)
-            print("  Y button                  toggle coord frame", flush=True)
-        print("  Close window              exit\n", flush=True)
-
-
 def run_with_controller(
     sim: MuJoCoSimulator,
     deadzone: float = 0.15,
@@ -769,82 +714,30 @@ def run_with_controller(
     rerun_save: str = "session.rrd",
 ) -> int:
     """Run with Xbox or Joy-Con controller and MuJoCo viewer (or headless physics loop)."""
-    from lerobot.model.kinematics import RobotKinematics
-
     from xbox_soarm_teleop.config.modes import ControlMode
-    from xbox_soarm_teleop.config.xbox_config import XboxConfig
-    from xbox_soarm_teleop.processors.factory import make_processor
-    from xbox_soarm_teleop.teleoperators.xbox import XboxController
 
-    control_mode = ControlMode(mode)
-    print(f"Control mode: {control_mode.value.upper()}", flush=True)
-
-    # IK joint names - include base, exclude wrist_roll (controlled directly)
-    ik_joint_names = IK_JOINT_NAMES
-
-    # Initialize kinematics only for modes that need IK
-    kinematics = None
-    if control_mode != ControlMode.JOINT:
-        kinematics = RobotKinematics(
-            urdf_path=str(URDF_PATH),
-            target_frame_name="gripper_frame_link",
-            joint_names=ik_joint_names,
-        )
-
-    if controller_type == "joycon":
-        from xbox_soarm_teleop.config.joycon_config import JoyConConfig
-        from xbox_soarm_teleop.teleoperators.joycon import JoyConController
-
-        config = JoyConConfig(deadzone=deadzone)
-        if linear_scale is not None:
-            config.linear_scale = linear_scale
-        controller = JoyConController(config)
-        _proc_cfg = config
-    elif controller_type == "keyboard":
-        from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
-        from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
-
-        config = KeyboardConfig(
-            grab=keyboard_grab,
-            record_path=keyboard_record,
-            playback_path=keyboard_playback,
-        )
-        if linear_scale is not None:
-            config.speed_levels = tuple(s * linear_scale / 0.1 for s in config.speed_levels)
-        if not keyboard_grab and not keyboard_playback:
-            print(
-                "WARNING: keyboard controller active without --keyboard-grab. "
-                "Keypresses will be detected even when this window is not focused. "
-                "Use --keyboard-grab for exclusive access.",
-                flush=True,
-            )
-        if keyboard_playback:
-            print(f"Keyboard playback mode: {keyboard_playback}", flush=True)
-        controller = KeyboardController(config)
-        # Processor scale values come from defaults; keyboard speed is internal to the controller
-        _proc_cfg = XboxConfig()
-        if linear_scale is not None:
-            _proc_cfg.linear_scale = linear_scale
-    else:
-        config = XboxConfig(deadzone=deadzone)
-        if linear_scale is not None:
-            config.linear_scale = linear_scale
-        controller = XboxController(config)
-        _proc_cfg = config
-    processor = make_processor(
-        control_mode,
-        linear_scale=_proc_cfg.linear_scale,
-        angular_scale=_proc_cfg.angular_scale,
-        orientation_scale=_proc_cfg.orientation_scale,
-        invert_pitch=_proc_cfg.invert_pitch,
-        invert_yaw=_proc_cfg.invert_yaw,
+    runtime = build_control_runtime(
+        controller_type=controller_type,
+        mode=mode,
+        deadzone=deadzone,
+        linear_scale=linear_scale,
+        keyboard_grab=keyboard_grab,
+        keyboard_record=keyboard_record,
+        keyboard_playback=keyboard_playback,
         loop_dt=LOOP_PERIOD,
         urdf_path=str(URDF_PATH),
-        multi_joint=(controller_type == "keyboard" and control_mode.value == "joint"),
+        keyboard_focus_target="this window",
     )
-    mapper = processor  # alias for cartesian/crane path compatibility
+    control_mode = runtime.control_mode
+    print(f"Control mode: {control_mode.value.upper()}", flush=True)
+    kinematics = runtime.kinematics
+    controller = runtime.controller
+    processor = runtime.processor
+    mapper = runtime.mapper
+    _proc_cfg = runtime.processor_config
+    controller_cfg = runtime.controller_config
 
-    print(f"Controller deadzone: {getattr(config, 'deadzone', 'n/a')}", flush=True)
+    print(f"Controller deadzone: {getattr(controller_cfg, 'deadzone', 'n/a')}", flush=True)
     print(f"Linear scale: {_proc_cfg.linear_scale} m/s", flush=True)
     print(f"Orientation scale: {_proc_cfg.orientation_scale} rad/s", flush=True)
 
@@ -852,9 +745,7 @@ def run_with_controller(
     ik_joint_vel_limits = IK_JOINT_VEL_LIMITS_ARRAY
 
     if not controller.connect():
-        labels = {"joycon": "Joy-Con", "keyboard": "keyboard", "xbox": "Xbox controller"}
-        label = labels.get(controller_type, controller_type)
-        print(f"ERROR: Failed to connect to {label}")
+        print(f"ERROR: Failed to connect to {runtime.controller_label}")
         if controller_type == "keyboard":
             try:
                 import evdev
@@ -898,16 +789,14 @@ def run_with_controller(
         print("  - Or use --no-controller for demo mode")
         sys.exit(1)
 
-    labels = {"joycon": "Joy-Con", "keyboard": "keyboard", "xbox": "Xbox controller"}
-    label = labels.get(controller_type, controller_type)
-    print(f"{label} connected", flush=True)
-    _print_controls(controller_type, mode)
+    print(f"{runtime.controller_label} connected", flush=True)
+    print_controls(controller_type, mode, exit_hint="Close window              exit")
 
 
     # Initialize challenge mode if enabled
     challenge: ChallengeManager | None = None
     if challenge_mode:
-        limits = parse_joint_limits(URDF_PATH, ik_joint_names)
+        limits = parse_joint_limits(URDF_PATH, IK_JOINT_NAMES)
         limits_deg = limits_rad_to_deg(limits)
         challenge = ChallengeManager(
             kinematics=kinematics,
@@ -922,36 +811,8 @@ def run_with_controller(
 
     # IK joint positions (4 joints: base, shoulder_lift, elbow_flex, wrist_flex)
     ik_joint_pos_deg = np.zeros(4)
-    wrist_roll_deg = 0.0
-
-    # Target orientation (euler angles in radians)
-    target_pitch = 0.0
-    target_yaw = 0.0
-
-    def euler_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
-        """Convert euler angles (ZYX convention) to rotation matrix."""
-        cr, sr = np.cos(roll), np.sin(roll)
-        cp, sp = np.cos(pitch), np.sin(pitch)
-        cy, sy = np.cos(yaw), np.sin(yaw)
-        return np.array(
-            [
-                [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-                [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-                [-sp, cp * sr, cp * cr],
-            ]
-        )
-
-    # Get initial EE pose (only needed for IK-based modes)
-    if kinematics is not None:
-        ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-        last_target_pose = ee_pose.copy()
-        last_ee_pose = ee_pose.copy()
-    else:
-        ee_pose = None
-        last_target_pose = None
-        last_ee_pose = None
-    gripper_pos = 0.0  # Current gripper position (smoothed)
-    gripper_rate = getattr(_proc_cfg, "gripper_rate", 2.0)  # Position change per second
+    cartesian_state = make_cartesian_state(kinematics, ik_joint_pos_deg) if kinematics is not None else None
+    gripper_rate = runtime.gripper_rate  # Position change per second
     trace_points: list[np.ndarray] = []
     trace_min_step_m = max(routine_trace_step_mm / 1000.0, 0.0005)
 
@@ -1016,7 +877,7 @@ def run_with_controller(
     workspace_bbox = None
     workspace_edges = None
     if workspace_draw:
-        limits = parse_joint_limits(URDF_PATH, ik_joint_names)
+        limits = parse_joint_limits(URDF_PATH, IK_JOINT_NAMES)
         limits_deg = limits_rad_to_deg(limits)
         workspace_points = sample_workspace_points(
             kinematics,
@@ -1128,63 +989,55 @@ def run_with_controller(
 
             if state.a_button_pressed:
                 print("\nGoing home...", flush=True)
-                ik_joint_pos_deg = np.zeros(4)
-                wrist_roll_deg = 0.0
-                target_pitch = 0.0
-                target_yaw = 0.0
-                ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-                last_ee_pose = ee_pose.copy()
-                last_target_pose = ee_pose.copy()
+                assert cartesian_state is not None
+                sync_cartesian_state(
+                    cartesian_state,
+                    kinematics,
+                    np.zeros(4, dtype=float),
+                    wrist_roll_deg=0.0,
+                    target_pitch=0.0,
+                    target_yaw=0.0,
+                    gripper_pos=0.0,
+                )
                 sim.go_home()
                 viewer.sync()
                 continue
 
             ee_delta = mapper(state)
             # Rate-limit gripper movement toward target
-            gripper_target = ee_delta.gripper
-            gripper_diff = gripper_target - gripper_pos
-            max_delta = gripper_rate * LOOP_PERIOD
-            if abs(gripper_diff) > max_delta:
-                gripper_pos += max_delta if gripper_diff > 0 else -max_delta
-            else:
-                gripper_pos = gripper_target
+            assert cartesian_state is not None
+            cartesian_state.gripper_pos = step_gripper_toward(
+                cartesian_state.gripper_pos,
+                ee_delta.gripper,
+                gripper_rate=gripper_rate,
+                dt=LOOP_PERIOD,
+            )
 
             if not ee_delta.is_zero_motion():
-                # Update target EE pose (X/Y/Z)
-                target_pos = ee_pose[:3, 3].copy()
-                target_pos[0] += ee_delta.dx * LOOP_PERIOD  # Forward/back in arm plane
-                target_pos[1] += ee_delta.dy * LOOP_PERIOD  # Left/right
-                target_pos[2] += ee_delta.dz * LOOP_PERIOD  # Up/down
-
-                # Workspace limits (X is reach, Z is height)
-                target_pos[0] = np.clip(target_pos[0], 0.05, 0.5)  # Min reach to avoid singularity
-                target_pos[2] = np.clip(target_pos[2], 0.05, 0.45)
-
-                # Update target orientation
-                if abs(ee_delta.dpitch) > 0.001:
-                    target_pitch += ee_delta.dpitch * LOOP_PERIOD
-                    target_pitch = np.clip(target_pitch, -np.pi / 2, np.pi / 2)
-
-                if abs(ee_delta.dyaw) > 0.001:
-                    target_yaw += ee_delta.dyaw * LOOP_PERIOD
-                    target_yaw = np.clip(target_yaw, -np.pi, np.pi)
-
-                target_pose = ee_pose.copy()
-                target_pose[:3, 3] = target_pos
-
-                # Build target orientation if pitch/yaw are set
-                has_orientation_target = abs(target_pitch) > 0.01 or abs(target_yaw) > 0.01
-                if has_orientation_target:
-                    target_rotation = euler_to_rotation_matrix(0.0, target_pitch, target_yaw)
-                    target_pose[:3, :3] = target_rotation
-                    orientation_weight = 0.1  # Low weight - strongly prioritize position
-                else:
-                    orientation_weight = 0.0
+                target_pose, target_pos, target_flags = advance_cartesian_target(
+                    cartesian_state,
+                    ee_delta,
+                    dt=LOOP_PERIOD,
+                    clip_position=lambda pos: (
+                        np.array(
+                            [
+                                np.clip(pos[0], 0.05, 0.5),
+                                pos[1],
+                                np.clip(pos[2], 0.05, 0.45),
+                            ],
+                            dtype=float,
+                        ),
+                        {},
+                    ),
+                    pitch_limit_rad=np.pi / 2,
+                    yaw_limit_rad=np.pi,
+                )
+                orientation_weight = float(target_flags["orientation_weight"])
 
                 # Solve IK for 4 joints
                 _t0 = time.perf_counter()
                 new_joints = kinematics.inverse_kinematics(
-                    ik_joint_pos_deg,
+                    cartesian_state.ik_joint_pos_deg,
                     target_pose,
                     position_weight=1.0,
                     orientation_weight=orientation_weight,
@@ -1194,45 +1047,40 @@ def run_with_controller(
 
                 # Apply joint velocity limiting to smooth IK output
                 max_delta = ik_joint_vel_limits * LOOP_PERIOD
-                joint_delta = ik_result - ik_joint_pos_deg
+                joint_delta = ik_result - cartesian_state.ik_joint_pos_deg
                 joint_delta = np.clip(joint_delta, -max_delta, max_delta)
-                ik_joint_pos_deg = ik_joint_pos_deg + joint_delta
-
-                # Apply wrist roll directly (not part of IK)
-                if abs(ee_delta.droll) > 0.001:
-                    roll_delta_deg = np.rad2deg(ee_delta.droll * LOOP_PERIOD)
-                    wrist_roll_deg += roll_delta_deg
-                    wrist_roll_deg = np.clip(wrist_roll_deg, -180.0, 180.0)
-
-                ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-                last_ee_pose = ee_pose.copy()
-                last_target_pose = target_pose.copy()
+                next_wrist_roll_deg = step_wrist_roll(
+                    cartesian_state.wrist_roll_deg,
+                    ee_delta.droll,
+                    dt=LOOP_PERIOD,
+                )
+                apply_ik_solution(
+                    cartesian_state,
+                    kinematics,
+                    cartesian_state.ik_joint_pos_deg + joint_delta,
+                    wrist_roll_deg=next_wrist_roll_deg,
+                    target_pose=target_pose,
+                )
 
                 if debug_ik and (loop_counter % max(debug_ik_every, 1) == 0):
-                    pos_error = np.linalg.norm(target_pose[:3, 3] - ee_pose[:3, 3])
+                    pos_error = np.linalg.norm(target_pose[:3, 3] - cartesian_state.ee_pose[:3, 3])
                     print(
                         f"\nIK: target=[{target_pos[0]:.3f}, {target_pos[1]:.3f}, "
-                        f"{target_pos[2]:.3f}] actual=[{ee_pose[0, 3]:.3f}, "
-                        f"{ee_pose[1, 3]:.3f}, {ee_pose[2, 3]:.3f}] "
+                        f"{target_pos[2]:.3f}] actual=[{cartesian_state.ee_pose[0, 3]:.3f}, "
+                        f"{cartesian_state.ee_pose[1, 3]:.3f}, {cartesian_state.ee_pose[2, 3]:.3f}] "
                         f"err={pos_error * 1000.0:.1f}mm",
                         flush=True,
                     )
 
             # Combine base + IK joints for full 5-joint position
-            # Order: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll
-            full_joint_pos_deg = np.array(
-                [
-                    ik_joint_pos_deg[0],  # shoulder_pan
-                    ik_joint_pos_deg[1],  # shoulder_lift
-                    ik_joint_pos_deg[2],  # elbow_flex
-                    ik_joint_pos_deg[3],  # wrist_flex
-                    wrist_roll_deg,  # wrist_roll
-                ]
+            full_joint_pos_deg = full_joint_positions(
+                cartesian_state.ik_joint_pos_deg,
+                cartesian_state.wrist_roll_deg,
             )
 
             # Update simulation
             sim.set_joint_targets(full_joint_pos_deg)
-            sim.set_gripper(gripper_pos)
+            sim.set_gripper(cartesian_state.gripper_pos)
             _t0 = time.perf_counter()
             sim.step()
             servo_ms = (time.perf_counter() - _t0) * 1000.0
@@ -1265,7 +1113,11 @@ def run_with_controller(
             viewer.sync()
 
             # Status - show position and orientation
-            pos_err = float(np.linalg.norm(last_ee_pose[:3, 3] - last_target_pose[:3, 3]))
+            pos_err = float(
+                np.linalg.norm(
+                    cartesian_state.last_ee_pose[:3, 3] - cartesian_state.last_target_pose[:3, 3]
+                )
+            )
             error_count += 1
             error_sum += pos_err
             error_max = max(error_max, pos_err)
@@ -1274,30 +1126,30 @@ def run_with_controller(
                 csv_writer.writerow(
                     [
                         f"{t_s:.3f}",
-                        f"{last_target_pose[0, 3]:.6f}",
-                        f"{last_target_pose[1, 3]:.6f}",
-                        f"{last_target_pose[2, 3]:.6f}",
-                        f"{last_ee_pose[0, 3]:.6f}",
-                        f"{last_ee_pose[1, 3]:.6f}",
-                        f"{last_ee_pose[2, 3]:.6f}",
+                        f"{cartesian_state.last_target_pose[0, 3]:.6f}",
+                        f"{cartesian_state.last_target_pose[1, 3]:.6f}",
+                        f"{cartesian_state.last_target_pose[2, 3]:.6f}",
+                        f"{cartesian_state.last_ee_pose[0, 3]:.6f}",
+                        f"{cartesian_state.last_ee_pose[1, 3]:.6f}",
+                        f"{cartesian_state.last_ee_pose[2, 3]:.6f}",
                         f"{pos_err * 1000.0:.3f}",
                     ]
                 )
-            pitch_deg = np.rad2deg(target_pitch)
-            yaw_deg = np.rad2deg(target_yaw)
+            pitch_deg = np.rad2deg(cartesian_state.target_pitch)
+            yaw_deg = np.rad2deg(cartesian_state.target_yaw)
             if challenge is not None:
                 n_targets = len(challenge.active_targets)
                 n_collected = len(challenge.collected_targets)
                 print(
                     f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
-                    f"Targets: {n_targets} | Collected: {n_collected} | Grip: {gripper_pos:.2f}   ",
+                    f"Targets: {n_targets} | Collected: {n_collected} | Grip: {cartesian_state.gripper_pos:.2f}   ",
                     end="\r",
                     flush=True,
                 )
             else:
                 print(
                     f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
-                    f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {gripper_pos:.2f}   ",
+                    f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {cartesian_state.gripper_pos:.2f}   ",
                     end="\r",
                     flush=True,
                 )
@@ -1376,38 +1228,13 @@ def run_demo_mode(
     print("\nDemo mode - automatic movement", flush=True)
     print("Close window to exit\n", flush=True)
 
-    wrist_roll_deg = 0.0
-    ik_joint_pos_deg = np.zeros(4)
-    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-    last_target_pose = ee_pose.copy()
-    last_ee_pose = ee_pose.copy()
+    cartesian_state = make_cartesian_state(kinematics, np.zeros(4, dtype=float))
     ik_joint_vel_limits = IK_JOINT_VEL_LIMITS_ARRAY
     t = 0.0
-    center_pos = ee_pose[:3, 3].copy()
+    center_pos = cartesian_state.ee_pose[:3, 3].copy()
     center_pos += np.array([routine_center_x, routine_center_y, routine_center_z], dtype=float)
     trace_points: list[np.ndarray] = []
     trace_min_step_m = max(routine_trace_step_mm / 1000.0, 0.0005)
-
-    def square_offset(u: float, size: float) -> tuple[float, float]:
-        half = size / 2.0
-        s = (u % 1.0) * 4.0
-        seg = int(s)
-        f = s - seg
-        if seg == 0:
-            return (-half + f * size, -half)
-        if seg == 1:
-            return (half, -half + f * size)
-        if seg == 2:
-            return (half - f * size, half)
-        return (-half, half - f * size)
-
-    def plane_offset(plane: str, u: float, size: float) -> np.ndarray:
-        a, b = square_offset(u, size)
-        if plane == "xy":
-            return np.array([a, b, 0.0])
-        if plane == "xz":
-            return np.array([a, 0.0, b])
-        return np.array([0.0, a, b])
 
     def demo_target_offset(t_s: float) -> np.ndarray:
         if routine_pattern == "lissajous":
@@ -1551,39 +1378,33 @@ def run_demo_mode(
             target_pos[1] = np.clip(target_pos[1], -0.3, 0.3)
             target_pos[2] = np.clip(target_pos[2], 0.05, 0.45)
 
-            target_pose = ee_pose.copy()
+            target_pose = cartesian_state.ee_pose.copy()
             target_pose[:3, 3] = target_pos
 
             # Solve IK for position only (4 joints)
             new_joints = kinematics.inverse_kinematics(
-                ik_joint_pos_deg, target_pose, position_weight=1.0, orientation_weight=0.0
+                cartesian_state.ik_joint_pos_deg,
+                target_pose,
+                position_weight=1.0,
+                orientation_weight=0.0,
             )
             ik_result = new_joints[:4]
 
             # Apply joint velocity limiting to smooth IK output
             max_delta = ik_joint_vel_limits * LOOP_PERIOD
-            joint_delta = ik_result - ik_joint_pos_deg
+            joint_delta = ik_result - cartesian_state.ik_joint_pos_deg
             joint_delta = np.clip(joint_delta, -max_delta, max_delta)
-            ik_joint_pos_deg = ik_joint_pos_deg + joint_delta
-
-            # Apply wrist roll directly
-            if abs(droll) > 0.001:
-                roll_delta_deg = np.rad2deg(droll * LOOP_PERIOD)
-                wrist_roll_deg += roll_delta_deg
-                wrist_roll_deg = np.clip(wrist_roll_deg, -180.0, 180.0)
-
-            ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-            last_ee_pose = ee_pose.copy()
-            last_target_pose = target_pose.copy()
-
-            full_joint_pos_deg = np.array(
-                [
-                    ik_joint_pos_deg[0],
-                    ik_joint_pos_deg[1],
-                    ik_joint_pos_deg[2],
-                    ik_joint_pos_deg[3],
-                    wrist_roll_deg,
-                ]
+            next_wrist_roll_deg = step_wrist_roll(cartesian_state.wrist_roll_deg, droll, dt=LOOP_PERIOD)
+            apply_ik_solution(
+                cartesian_state,
+                kinematics,
+                cartesian_state.ik_joint_pos_deg + joint_delta,
+                wrist_roll_deg=next_wrist_roll_deg,
+                target_pose=target_pose,
+            )
+            full_joint_pos_deg = full_joint_positions(
+                cartesian_state.ik_joint_pos_deg,
+                cartesian_state.wrist_roll_deg,
             )
 
             sim.set_joint_targets(full_joint_pos_deg)
@@ -1601,7 +1422,11 @@ def run_demo_mode(
                 draw_trace(viewer, trace_points, reset_scene=not redraw_workspace)
             viewer.sync()
 
-            pos_err = float(np.linalg.norm(last_ee_pose[:3, 3] - last_target_pose[:3, 3]))
+            pos_err = float(
+                np.linalg.norm(
+                    cartesian_state.last_ee_pose[:3, 3] - cartesian_state.last_target_pose[:3, 3]
+                )
+            )
             error_count += 1
             error_sum += pos_err
             error_max = max(error_max, pos_err)
@@ -1610,12 +1435,12 @@ def run_demo_mode(
                 csv_writer.writerow(
                     [
                         f"{t_s:.3f}",
-                        f"{last_target_pose[0, 3]:.6f}",
-                        f"{last_target_pose[1, 3]:.6f}",
-                        f"{last_target_pose[2, 3]:.6f}",
-                        f"{last_ee_pose[0, 3]:.6f}",
-                        f"{last_ee_pose[1, 3]:.6f}",
-                        f"{last_ee_pose[2, 3]:.6f}",
+                        f"{cartesian_state.last_target_pose[0, 3]:.6f}",
+                        f"{cartesian_state.last_target_pose[1, 3]:.6f}",
+                        f"{cartesian_state.last_target_pose[2, 3]:.6f}",
+                        f"{cartesian_state.last_ee_pose[0, 3]:.6f}",
+                        f"{cartesian_state.last_ee_pose[1, 3]:.6f}",
+                        f"{cartesian_state.last_ee_pose[2, 3]:.6f}",
                         f"{pos_err * 1000.0:.3f}",
                     ]
                 )

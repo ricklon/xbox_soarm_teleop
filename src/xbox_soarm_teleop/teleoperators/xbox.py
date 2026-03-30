@@ -169,7 +169,7 @@ class XboxController:
         # Buttons
         self._state.left_bumper = bool(raw_copy.get(self.config.deadman_button, 0))
         self._state.a_button = bool(raw_copy.get(self.config.home_button, 0))
-        self._state.y_button = bool(raw_copy.get(self.config.frame_toggle_button, 0))
+        self._state.y_button = bool(raw_copy.get(self.config.aux_button, 0))
 
         # D-pad (HAT switch) - values are -1, 0, or 1
         self._state.dpad_x = float(raw_copy.get(self.config.dpad_x_axis, 0))

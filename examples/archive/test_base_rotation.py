@@ -2,13 +2,16 @@
 
 import argparse
 import glob
+import sys
 import time
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 try:
     from lerobot.robots.so_follower import SOFollower
     from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
+
     from xbox_soarm_teleop.config.joints import JOINT_NAMES
 except ImportError as e:
     print(f"Import error: {e}")
@@ -78,7 +81,6 @@ def run_base_rotation_test(
     current_obs = robot.get_observation()
 
     # Setup starting position (keep other joints at current, only move shoulder_pan)
-    base_joint_idx = JOINT_NAMES.index("shoulder_pan")
     starting_joints = [current_obs.get(f"{name}.pos", 0.0) for name in JOINT_NAMES[:-1]]
 
     start_time = time.monotonic()
@@ -180,6 +182,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import sys
-
     main()

@@ -2,6 +2,11 @@
 
 A practical reference for teleoperating the SO-ARM101 across all four control modes and three controller types.
 
+See also:
+- [README](../README.md)
+- [Calibration Guide](CALIBRATION.md)
+- [LeRobot Cartesian Pipeline](lerobot_pipeline.md)
+
 ---
 
 ## Quick-start
@@ -72,7 +77,6 @@ elbow collisions, and the arm naturally folds inward as you retract.
 | D-pad up / down | Wrist flex — tilt gripper up / down |
 | Right trigger | Gripper — squeeze to close |
 | A button | Return to home position |
-| Y button | Toggle coordinate frame (world / tool) |
 
 ### Joy-Con (R) controls
 
@@ -119,15 +123,12 @@ Think of your controller as a **6-DOF joystick attached to the gripper tip**.
 Every stick motion moves the gripper tip through space in a straight line.
 The IK engine computes which joints to move — you never see them.
 
-There are two frames to choose from (toggle with Y):
+In the current implementation, cartesian commands are interpreted in a fixed,
+world-aligned frame. The input stack still exposes a frame-toggle button, but
+that mode switch is not wired into the real/sim control loops yet.
 
-- **World frame** — X is "into the scene", Y is left/right, Z is up.
-  Good for precise positioning relative to a fixed reference.
-- **Tool frame** — axes follow the gripper tip orientation.
-  Good for tasks like "push straight into the object" regardless of wrist angle.
-
-The trade-off: the arm has joint limits and singular configurations.  Near the
-limits the IK may slow down or refuse to move further.  If you get stuck, press
+The trade-off: the arm has joint limits and singular configurations. Near the
+limits the IK may slow down or refuse to move further. If you get stuck, press
 A to go home and start over.
 
 ### Xbox controls
@@ -143,7 +144,6 @@ A to go home and start over.
 | D-pad left / right | Yaw — rotate gripper heading |
 | Right trigger | Gripper close |
 | A button | Home |
-| Y button | Toggle world / tool frame |
 
 ### Joy-Con (R) controls
 
@@ -162,17 +162,16 @@ bound.  Cartesian mode is most useful with an Xbox controller.
 | ← / → | Yaw |
 | Space (hold) | Gripper close |
 | H | Home |
-| Y | Toggle frame |
 | 1–5 / Shift | Speed / boost |
 
 ### Tips
 
-- Use world frame to move to a target position, then switch to tool frame to
-  fine-tune approach angle.
 - Keep stick deflections small — linear_scale is 0.1 m/s at full deflection,
   which is fast enough to cover the workspace in a couple of seconds.
 - If the arm freezes mid-motion, the IK may have hit a joint limit.  Back off
   slightly in the direction you came from, or press A to home.
+- Treat the current mapping as world-frame cartesian control. If you want
+  tool-relative approach behavior, that still needs implementation work.
 
 ---
 
@@ -298,7 +297,7 @@ Right stick ─────────  reach / roll (crane) | X / roll (cartes
 D-pad  ───────────────  wrist flex (crane) | pitch + yaw (cartesian) | cycle joint (joint)
 
 [A]  home / reset IMU
-[Y]  toggle frame (cartesian) / unused (other modes)
+[Y]  currently unused in the control loop
 ```
 
 ### Joy-Con (R) — horizontal hold, SL on left
@@ -334,8 +333,8 @@ Ctrl-C       exit
 |-----------|-----------------|
 | Learning the system, first session | **crane** |
 | Picking up and placing objects | **crane** |
-| Following a precise 3-D path | **cartesian** (world frame) |
-| Approaching an object from a specific angle | **cartesian** (tool frame) |
+| Following a precise 3-D path | **cartesian** |
+| Approaching an object from a specific angle | **cartesian** |
 | Debugging a single servo | **joint** |
 | Calibration and ROM verification | **joint** |
 | Keyboard-only operation | **joint** (multi-key) or **crane** |

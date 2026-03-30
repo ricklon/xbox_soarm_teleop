@@ -36,6 +36,8 @@ from pathlib import Path
 import numpy as np
 
 from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES, JOINT_NAMES
+from xbox_soarm_teleop.config.workspace import load_workspace_limits
+from xbox_soarm_teleop.control.pose import euler_to_rotation_matrix
 
 # Path to URDF with absolute mesh paths
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
@@ -48,11 +50,7 @@ CONTROL_RATE = 30  # Hz
 LOOP_PERIOD = 1.0 / CONTROL_RATE
 
 # Workspace limits (meters)
-WORKSPACE_LIMITS = {
-    "x": (-0.1, 0.5),
-    "y": (-0.3, 0.3),
-    "z": (0.05, 0.45),
-}
+WORKSPACE_LIMITS, _STRICT_UNUSED = load_workspace_limits()
 
 
 class ArmSimulator:
@@ -165,17 +163,7 @@ class ArmSimulator:
         Returns:
             3x3 rotation matrix
         """
-        cr, sr = np.cos(roll), np.sin(roll)
-        cp, sp = np.cos(pitch), np.sin(pitch)
-        cy, sy = np.cos(yaw), np.sin(yaw)
-
-        # ZYX euler angles to rotation matrix
-        R = np.array([
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
-        ])
-        return R
+        return euler_to_rotation_matrix(roll, pitch, yaw)
 
     def apply_delta(
         self,
@@ -279,11 +267,14 @@ class ArmSimulator:
 
 
 def run_with_controller(
-    sim: ArmSimulator, deadzone: float = 0.15, linear_scale: float | None = None
+    sim: ArmSimulator,
+    deadzone: float = 0.15,
+    linear_scale: float | None = None,
+    swap_xy: bool = True,
 ):
     """Run simulation with Xbox controller input."""
     from xbox_soarm_teleop.config.xbox_config import XboxConfig
-    from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta
+    from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta, apply_axis_mapping
     from xbox_soarm_teleop.teleoperators.xbox import XboxController
 
     config = XboxConfig(deadzone=deadzone)
@@ -302,6 +293,7 @@ def run_with_controller(
     print(f"Controller deadzone: {config.deadzone}", flush=True)
     print(f"Linear scale: {config.linear_scale} m/s", flush=True)
     print(f"Orientation scale: {config.orientation_scale} rad/s", flush=True)
+    print(f"XY axis swap: {'ON' if swap_xy else 'OFF'}", flush=True)
 
     if not controller.connect():
         print("ERROR: Failed to connect to Xbox controller")
@@ -348,6 +340,7 @@ def run_with_controller(
                 continue
 
             ee_delta = mapper(state)
+            ee_delta = apply_axis_mapping(ee_delta, swap_xy=swap_xy)
             # Rate-limit gripper movement toward target
             gripper_target = ee_delta.gripper
             gripper_diff = gripper_target - sim.gripper_pos
@@ -470,6 +463,11 @@ def main():
         default=None,
         help="Linear velocity scale (m/s). Default from config.",
     )
+    parser.add_argument(
+        "--no-swap-xy",
+        action="store_true",
+        help="Disable XY swap for Cartesian mapping (match legacy sim behavior).",
+    )
     args = parser.parse_args()
 
     # Check URDF exists
@@ -488,7 +486,12 @@ def main():
     if args.no_controller:
         run_demo_mode(sim)
     else:
-        run_with_controller(sim, deadzone=args.deadzone, linear_scale=args.linear_scale)
+        run_with_controller(
+            sim,
+            deadzone=args.deadzone,
+            linear_scale=args.linear_scale,
+            swap_xy=not args.no_swap_xy,
+        )
 
 
 if __name__ == "__main__":

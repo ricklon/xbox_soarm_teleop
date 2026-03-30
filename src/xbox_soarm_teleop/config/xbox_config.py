@@ -38,7 +38,7 @@ class XboxConfig:
     # Button mappings (can be overridden for different controller types)
     deadman_button: str = "BTN_TL"  # Left bumper
     home_button: str = "BTN_SOUTH"  # A button
-    frame_toggle_button: str = "BTN_NORTH"  # Y button
+    aux_button: str = "BTN_NORTH"  # Y button, reserved for script-specific actions
 
     # Axis mappings
     left_stick_x_axis: str = "ABS_X"
@@ -52,3 +52,12 @@ class XboxConfig:
     # Axis ranges for normalization (typical Xbox controller values)
     stick_range: tuple[int, int] = field(default_factory=lambda: (-32768, 32767))
     trigger_range: tuple[int, int] = field(default_factory=lambda: (0, 255))
+
+    @property
+    def frame_toggle_button(self) -> str:
+        """Backward-compatible alias for the old frame-toggle naming."""
+        return self.aux_button
+
+    @frame_toggle_button.setter
+    def frame_toggle_button(self, value: str) -> None:
+        self.aux_button = value

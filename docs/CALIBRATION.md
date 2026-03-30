@@ -2,6 +2,10 @@
 
 This guide explains how calibration works for the SO-ARM101 and how to perform it correctly.
 
+See also:
+- [README](../README.md)
+- [Driving Guide](driving_guide.md)
+
 ## What Calibration Does
 
 Calibration maps the raw encoder values from each servo to a normalized position range. It records:
@@ -18,13 +22,13 @@ This allows:
 
 - Robot powered at **12V** (for Pro Edition follower arm)
 - USB connected to your computer
-- Know your serial port (run `lerobot-find-port` if unsure)
+- Know your serial port (run `uv run lerobot-find-port` if unsure)
 
 ## Calibration Command
 
 ```bash
 # For follower arm (the one you control via teleoperation)
-lerobot-calibrate \
+uv run lerobot-calibrate \
     --robot.type=so101_follower \
     --robot.port=/dev/ttyUSB0 \
     --robot.id=my_follower_arm
@@ -104,7 +108,7 @@ If you need to recalibrate (e.g., after reassembly or if something seems off):
 rm -rf ~/.cache/huggingface/lerobot/calibration/robots/my_follower_arm
 
 # Run calibration again
-lerobot-calibrate \
+uv run lerobot-calibrate \
     --robot.type=so101_follower \
     --robot.port=/dev/ttyUSB0 \
     --robot.id=my_follower_arm
@@ -139,13 +143,13 @@ Delete the existing calibration folder and try again (see Recalibration above).
 
 ```bash
 # Find your port
-lerobot-find-port
+uv run lerobot-find-port
 
 # Set permissions (Linux)
 sudo chmod 666 /dev/ttyUSB0
 
 # Calibrate follower
-lerobot-calibrate --robot.type=so101_follower --robot.port=/dev/ttyUSB0 --robot.id=my_arm
+uv run lerobot-calibrate --robot.type=so101_follower --robot.port=/dev/ttyUSB0 --robot.id=my_arm
 
 # Delete calibration to start fresh
 rm -rf ~/.cache/huggingface/lerobot/calibration/robots/my_arm

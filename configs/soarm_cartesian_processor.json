@@ -1,0 +1,16 @@
+{
+  "name": "soarm_cartesian_teleop",
+  "steps": [
+    {
+      "registry_name": "soarm_cartesian_ik",
+      "config": {
+        "urdf_path": "/home/ra/Projects/xbox_soarm_teleop/assets/so101_abs.urdf",
+        "dt": 0.0333333333,
+        "swap_xy": true,
+        "strict_safety": true,
+        "ik_vel_scale": 1.0,
+        "gripper_rate": 2.0
+      }
+    }
+  ]
+}

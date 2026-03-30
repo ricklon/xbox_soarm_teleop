@@ -2,7 +2,7 @@
 """Compare direct-joint diagnostic capability against IK run behavior.
 
 Usage:
-    uv run python examples/compare_direct_vs_ik.py \
+    uv run python examples/archive/compare_direct_vs_ik.py \
       --joint-log joint_diag_20260215_212931.csv \
       --ik-log ik_error.csv
 """

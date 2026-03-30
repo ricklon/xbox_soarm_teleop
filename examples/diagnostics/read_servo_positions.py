@@ -2,6 +2,7 @@
 
 import argparse
 import glob
+import sys
 import time
 
 try:
@@ -125,6 +126,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import sys
-
     main()

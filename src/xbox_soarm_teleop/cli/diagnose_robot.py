@@ -1,26 +1,8 @@
-#!/usr/bin/env python3
-"""Diagnose SO-ARM101 motors before teleoperation.
+"""Diagnose SO-ARM motors before teleoperation."""
 
-This script runs motor diagnostics to identify calibration issues
-before running teleoperation. Uses the diagnostic utilities from
-the ricklon/lerobot fork.
-
-Usage:
-    uv run python examples/diagnose_robot.py --port /dev/ttyUSB0
-
-This will:
-1. Connect to the robot
-2. Test communication with each motor
-3. Prompt you to move each motor through its range
-4. Report any issues that would affect teleoperation
-
-Prerequisites:
-    Install lerobot from the diagnostics-enabled fork:
-    uv pip install git+https://github.com/ricklon/lerobot.git
-"""
+from __future__ import annotations
 
 import argparse
-import sys
 
 
 def find_serial_port() -> str | None:
@@ -31,20 +13,15 @@ def find_serial_port() -> str | None:
     return ports[0] if ports else None
 
 
-def run_diagnostics(port: str, motors: list[str] | None = None):
-    """Run motor diagnostics.
-
-    Args:
-        port: Serial port for robot.
-        motors: List of motors to diagnose. If None, diagnose all.
-    """
+def run_diagnostics(port: str, motors: list[str] | None = None) -> None:
+    """Run full motor diagnostics."""
     try:
         from lerobot.motors import diagnose_motor_bus
     except ImportError:
         print("ERROR: Motor diagnostics not available.")
         print("Install from ricklon/lerobot fork:")
         print("  uv pip install git+https://github.com/ricklon/lerobot.git")
-        sys.exit(1)
+        raise SystemExit(1)
 
     from lerobot.robots.so_follower import SOFollower
     from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
@@ -54,7 +31,6 @@ def run_diagnostics(port: str, motors: list[str] | None = None):
     robot = SOFollower(config)
 
     try:
-        # Connect without calibration to run diagnostics first
         robot.bus.connect()
         print("Connected!", flush=True)
 
@@ -64,24 +40,18 @@ def run_diagnostics(port: str, motors: list[str] | None = None):
         print("\nThis will test each motor to ensure it's working correctly.")
         print("You'll be prompted to move each motor through its range.\n")
 
-        # Run diagnostics
         results = diagnose_motor_bus(robot.bus, motors=motors, interactive=True)
 
-        # Summary
         print("\n" + "=" * 60)
         print("RESULTS SUMMARY")
         print("=" * 60)
 
         all_healthy = True
         for motor_name, result in results.items():
-            status = "✓ PASS" if result.healthy else "✗ FAIL"
+            status = "PASS" if result.healthy else "FAIL"
             print(f"\n{motor_name}: {status}")
 
-            if result.position_readable:
-                print("  Position readable: Yes")
-            else:
-                print("  Position readable: No")
-
+            print(f"  Position readable: {'Yes' if result.position_readable else 'No'}")
             if result.zero_position is not None:
                 print(f"  Zero position: {result.zero_position}")
             if result.max_position is not None:
@@ -100,16 +70,16 @@ def run_diagnostics(port: str, motors: list[str] | None = None):
 
         print("\n" + "=" * 60)
         if all_healthy:
-            print("✓ All motors passed! Ready for teleoperation.")
+            print("All motors passed. Ready for teleoperation.")
             print("\nYou can now run:")
             print(f"  uv run python examples/teleoperate_real.py --port {port}")
             print(f"  uv run python examples/teleoperate_dual.py --port {port}")
         else:
-            print("✗ Some motors have issues. Please fix before teleoperation.")
+            print("Some motors have issues. Fix them before teleoperation.")
             print("\nSee DIAGNOSTIC_GUIDE.md in ricklon/lerobot for troubleshooting.")
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except Exception as exc:
+        print(f"Error: {exc}")
         import traceback
 
         traceback.print_exc()
@@ -121,11 +91,8 @@ def run_diagnostics(port: str, motors: list[str] | None = None):
         print("\nDisconnected.")
 
 
-def run_simple_diagnostics(port: str):
-    """Run simple diagnostics without the full diagnostic module.
-
-    This is a fallback when the diagnostic utilities aren't available.
-    """
+def run_simple_diagnostics(port: str) -> None:
+    """Run simple diagnostics without the full diagnostic module."""
     from lerobot.robots.so_follower import SOFollower
     from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
 
@@ -149,8 +116,8 @@ def run_simple_diagnostics(port: str):
             try:
                 pos = robot.bus.read("Present_Position", motor_name)
                 print(f"  {motor_name}: {pos}")
-            except Exception as e:
-                print(f"  {motor_name}: ERROR - {e}")
+            except Exception as exc:
+                print(f"  {motor_name}: ERROR - {exc}")
 
         print("\n" + "=" * 60)
         print("INTERACTIVE TEST")
@@ -170,20 +137,20 @@ def run_simple_diagnostics(port: str):
 
                 diff = abs(pos2 - pos1)
                 if diff > 10:
-                    print(f"  ✓ Motor responding (moved {diff:.1f} units)")
+                    print(f"  Motor responding (moved {diff:.1f} units)")
                 elif diff > 0:
-                    print(f"  ⚠ Small movement ({diff:.1f} units)")
+                    print(f"  Small movement ({diff:.1f} units)")
                 else:
-                    print("  ✗ No movement detected!")
+                    print("  No movement detected")
 
-            except Exception as e:
-                print(f"  ✗ Error: {e}")
+            except Exception as exc:
+                print(f"  Error: {exc}")
 
         print("\n" + "=" * 60)
         print("Done. If all motors responded, you're ready for teleoperation.")
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except Exception as exc:
+        print(f"Error: {exc}")
     finally:
         try:
             robot.bus.disconnect()
@@ -192,8 +159,9 @@ def run_simple_diagnostics(port: str):
         print("\nDisconnected.")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Diagnose SO-ARM101 motors")
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser."""
+    parser = argparse.ArgumentParser(description="Diagnose SO-ARM motors")
     parser.add_argument(
         "--port",
         type=str,
@@ -212,7 +180,12 @@ def main():
         action="store_true",
         help="Run simple diagnostics (no diagnostic module required)",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    """Run the robot-diagnostics CLI."""
+    args = build_parser().parse_args()
 
     port = args.port
     if port is None:
@@ -220,26 +193,26 @@ def main():
         if port is None:
             print("ERROR: No serial port found.")
             print("Connect the robot and try again, or specify: --port /dev/ttyUSB0")
-            sys.exit(1)
+            return 1
         print(f"Auto-detected port: {port}")
 
     if args.simple:
         run_simple_diagnostics(port)
-    else:
-        # Try full diagnostics, fall back to simple
-        try:
-            import lerobot.motors  # noqa: F401
+        return 0
 
-            # Check if diagnose_motor_bus is available
-            if hasattr(lerobot.motors, "diagnose_motor_bus"):
-                run_diagnostics(port, args.motors)
-            else:
-                print("Note: Full diagnostics not available, running simple test.\n")
-                run_simple_diagnostics(port)
-        except ImportError:
+    try:
+        import lerobot.motors  # noqa: F401
+
+        if hasattr(lerobot.motors, "diagnose_motor_bus"):
+            run_diagnostics(port, args.motors)
+        else:
             print("Note: Full diagnostics not available, running simple test.\n")
             run_simple_diagnostics(port)
+    except ImportError:
+        print("Note: Full diagnostics not available, running simple test.\n")
+        run_simple_diagnostics(port)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

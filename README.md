@@ -1,13 +1,16 @@
 # Xbox SO-ARM Teleop
 
-Xbox controller teleoperation for the SO-ARM100/101 robotic arm using inverse kinematics. Control the end effector in Cartesian space while IK computes joint angles in real-time.
+Teleoperation for the SO-ARM100/101 robotic arm with Xbox, Joy-Con, and keyboard input.
+The project supports cartesian IK, crane, joint-direct, and puppet control modes for
+simulation and real hardware.
 
 Built as an extension to the [HuggingFace LeRobot](https://github.com/huggingface/lerobot) framework.
 
 ## Features
 
-- Xbox controller input with deadzone filtering
-- Cartesian end-effector control (X, Y, Z, roll)
+- Xbox, Joy-Con, and keyboard teleoperation
+- Multiple control modes: cartesian, crane, joint, and puppet
+- Cartesian end-effector control (X, Y, Z, roll) with IK
 - Position-controlled gripper via right trigger
 - Deadman switch (LB) for safety
 - Home position button (A)
@@ -17,7 +20,7 @@ Built as an extension to the [HuggingFace LeRobot](https://github.com/huggingfac
 - **Real robot control** via LeRobot
 - **Digital twin mode** - simultaneous simulation and real robot
 
-## Control Mapping
+## Xbox Control Mapping
 
 | Input | Function |
 |-------|----------|
@@ -30,7 +33,9 @@ Built as an extension to the [HuggingFace LeRobot](https://github.com/huggingfac
 | Right Trigger | Gripper (released=open, pulled=closed) |
 | Left Bumper | Deadman switch (hold to enable) |
 | A Button | Return to home position |
-| Y Button | Toggle coordinate frame (world/tool) |
+
+This table reflects the current cartesian-style Xbox mapping. For mode-specific
+controls, see the [Driving Guide](docs/driving_guide.md).
 
 ## Installation
 
@@ -43,15 +48,24 @@ source .venv/bin/activate
 uv pip install -e ".[dev]"
 ```
 
+## Guides
+
+- [Driving Guide](docs/driving_guide.md) for controller mappings and mode-specific operating advice
+- [Calibration Guide](docs/CALIBRATION.md) for SO-ARM101 setup and recalibration
+- [LeRobot Cartesian Pipeline](docs/lerobot_pipeline.md) for the `soarm_cartesian_ik` processor step
+- [Dataset Schema](docs/dataset_schema.md) for recorded action/observation formats by mode
+- [Audit Response and Plan](docs/audit_plan.md) for the movement-model and safety follow-up work
+- [Examples Inventory](examples/README.md) for the supported-vs-diagnostic script split
+
 ## Quick Start
 
 ### 1. Test Controller Input (no robot needed)
 
 ```bash
-uv run python examples/teleoperate.py --sim
+uv run python examples/debug_controller.py
 ```
 
-Move sticks while holding LB to see EE delta values printed.
+Move sticks and triggers to inspect normalized controller values.
 
 ### 2. Run 3D Simulation (meshcat)
 
@@ -121,22 +135,29 @@ uv run python examples/teleoperate_dual.py --port /dev/ttyUSB0
 uv run python examples/teleoperate_dual.py --port /dev/ttyUSB0 --motion-routine --routine-pattern square-xyz
 ```
 
-## Examples
+## Supported Commands
 
-| Script | Description |
-|--------|-------------|
-| `examples/teleoperate.py --sim` | Test controller (terminal output only) |
-| `examples/simulate.py` | 3D visualization with meshcat |
-| `examples/simulate_mujoco.py` | MuJoCo simulation |
-| `examples/xbox_joint_diagnostic.py` | Direct joint drive + telemetry logging (no IK) |
-| `examples/diagnose_robot.py` | Pre-flight motor diagnostics |
-| `examples/teleoperate_real.py` | Control real robot |
-| `examples/teleoperate_dual.py` | Digital twin (real + simulation) |
+These are the primary commands to reach for first:
 
-Direct joint diagnostic (recommended when IK appears sluggish):
+| Command | Purpose |
+|--------|---------|
+| `uv run python examples/debug_controller.py` | Inspect normalized Xbox input without a robot |
+| `uv run python examples/simulate.py` | Meshcat visualization |
+| `uv run python examples/simulate_mujoco.py` | MuJoCo simulation |
+| `uv run python examples/teleoperate_real.py` | Main real-robot teleop entry point |
+| `uv run python examples/teleoperate_dual.py --port /dev/ttyUSB0` | Digital twin mode |
+| `uv run python examples/record_xbox.py --repo-id <user/dataset> --robot-port /dev/ttyUSB0 --task \"...\"` | Record project-native teleop demonstrations |
+| `uv run python examples/lerobot_record_cartesian.py --repo-id <user/dataset> --task \"...\" --robot-port /dev/ttyUSB0` | Convenience wrapper for cartesian recording |
+
+For the full script inventory, including diagnostics, compatibility shims, and
+one-off investigation tools, see [examples/README.md](examples/README.md).
+
+## Diagnostics And Utilities
+
+Direct joint diagnostic is still the recommended first step when IK appears sluggish:
 
 ```bash
-uv run python examples/xbox_joint_diagnostic.py --port /dev/ttyACM0
+uv run xbox-joint-diagnostic --port /dev/ttyACM0
 ```
 
 This bypasses IK and maps Xbox input directly to one selected servo at a time, with CSV logging of commanded velocity, goal, position, velocity, load, current, temperature, and voltage.
@@ -160,7 +181,16 @@ If needed:
 Analyze a captured diagnostic log:
 
 ```bash
-uv run python examples/analyze_joint_diag.py --input joint_diag_YYYYMMDD_HHMMSS.csv
+uv run analyze-joint-diag --input joint_diag_YYYYMMDD_HHMMSS.csv
+```
+
+Other maintenance and troubleshooting tools are cataloged in
+[examples/README.md](examples/README.md).
+
+Range-of-motion calibration helper:
+
+```bash
+uv run joint-rom-test --sim
 ```
 
 ## Testing
@@ -222,13 +252,14 @@ xbox_soarm_teleop/
 ├── src/xbox_soarm_teleop/
 │   ├── teleoperators/xbox.py    # Xbox controller input
 │   ├── processors/xbox_to_ee.py # EE delta mapping
+│   ├── runtime/session.py       # Shared controller/runtime setup
 │   └── config/                  # Configuration
 ├── examples/
-│   ├── teleoperate.py           # Basic teleoperation (terminal)
-│   ├── simulate.py              # Meshcat 3D visualization
-│   ├── simulate_mujoco.py       # MuJoCo physics simulation
+│   ├── README.md                # Supported vs diagnostic script inventory
+│   ├── simulate_mujoco.py       # MuJoCo simulation
 │   ├── teleoperate_real.py      # Real robot control
-│   └── teleoperate_dual.py      # Digital twin mode
+│   ├── teleoperate_dual.py      # Digital twin mode
+│   └── record_xbox.py           # Dataset recording
 ├── assets/                      # URDF and mesh files
 └── tests/                       # Unit tests
 ```
@@ -290,16 +321,14 @@ Before teleoperation, run diagnostics to check motor health:
 
 ```bash
 # Full diagnostics (requires ricklon/lerobot fork)
-uv run python examples/diagnose_robot.py --port /dev/ttyUSB0
+uv run diagnose-robot --port /dev/ttyUSB0
 
 # Simple motor test (works with standard lerobot)
-uv run python examples/diagnose_robot.py --port /dev/ttyUSB0 --simple
+uv run diagnose-robot --port /dev/ttyUSB0 --simple
 ```
 
 Or use lerobot's built-in calibration with diagnostics:
-```bash
-lerobot-calibrate --robot.type=so101_follower --robot.port=/dev/ttyUSB0 --diagnose
-```
+see the [Calibration Guide](docs/CALIBRATION.md).
 
 ### Firmware version mismatch
 
@@ -350,7 +379,7 @@ held sideways in single-controller mode.
 | SL (left rail button) | Deadman switch — hold to enable motion |
 | ZR (top shoulder) | Gripper (digital: open/closed) |
 | A face button | Home position |
-| Y face button | Toggle coordinate frame |
+| Y face button | Auxiliary action (script-defined) |
 | SR, B, X, +, Home | Available for future mapping |
 
 ### One-time System Setup (Ubuntu 22.04+, kernel 6.8+)

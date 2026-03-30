@@ -22,7 +22,7 @@ class KeyboardConfig:
         ← / →       → yaw / joint cycle  (dpad X)
         Space       → gripper            (right trigger, hold=closed)
         H           → home position      (a_button_pressed edge)
-        Y           → toggle frame       (y_button_pressed edge)
+        Y           → auxiliary action   (y_button_pressed edge)
         1–5         → speed level
         Shift       → 2× speed
         Ctrl+C      → exit
@@ -54,7 +54,7 @@ class KeyboardConfig:
     # Function keys
     key_gripper: str = "KEY_SPACE"
     key_home: str = "KEY_H"
-    key_frame_toggle: str = "KEY_Y"
+    key_aux: str = "KEY_Y"
 
     # Shift keys (either triggers the multiplier)
     key_shift_left: str = "KEY_LEFTSHIFT"
@@ -87,3 +87,12 @@ class KeyboardConfig:
     # Path to a previously saved recording to play back instead of live input.
     # When set, no physical keyboard device is opened.
     playback_path: str | None = None
+
+    @property
+    def key_frame_toggle(self) -> str:
+        """Backward-compatible alias for the old frame-toggle naming."""
+        return self.key_aux
+
+    @key_frame_toggle.setter
+    def key_frame_toggle(self, value: str) -> None:
+        self.key_aux = value

@@ -59,10 +59,7 @@ def test_controller():
         y_btn = joystick.get_button(3)
         lb = joystick.get_button(4)  # Left bumper
         rb = joystick.get_button(5)  # Right bumper
-        back = joystick.get_button(6)
         start = joystick.get_button(7)
-        l_stick = joystick.get_button(9)
-        r_stick = joystick.get_button(10)
 
         # Read hat (D-pad)
         hat = joystick.get_hat(0) if joystick.get_numhats() > 0 else (0, 0)

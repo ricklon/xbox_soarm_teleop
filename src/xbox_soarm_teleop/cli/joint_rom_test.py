@@ -14,14 +14,14 @@ Per-joint test positions:
 
 Usage:
     # Sweep (default subcommand, backward compatible)
-    uv run python examples/joint_rom_test.py --sim
-    uv run python examples/joint_rom_test.py sweep --sim --output /tmp/cal.json
-    uv run python examples/joint_rom_test.py --port /dev/ttyACM0 --skip-gripper
-    uv run python examples/joint_rom_test.py sweep --sim --no-telemetry
-    uv run python examples/joint_rom_test.py sweep --sim --no-test-positions
+    uv run joint-rom-test --sim
+    uv run joint-rom-test sweep --sim --output /tmp/cal.json
+    uv run joint-rom-test --port /dev/ttyACM0 --skip-gripper
+    uv run joint-rom-test sweep --sim --no-telemetry
+    uv run joint-rom-test sweep --sim --no-test-positions
 
     # Convert extended JSON to LeRobot calibration format
-    uv run python examples/joint_rom_test.py convert --input /tmp/cal.json --output /tmp/lerobot.json
+    uv run joint-rom-test convert --input /tmp/cal.json --output /tmp/lerobot.json
 """
 
 from __future__ import annotations
@@ -48,8 +48,9 @@ from xbox_soarm_teleop.config.joints import (
     raw_to_deg,
 )
 
-# Path to URDF
-URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+URDF_PATH = PROJECT_ROOT / "assets" / "so101_abs.urdf"
+CALIBRATION_DIR = PROJECT_ROOT / "calibration"
 
 # Control rate for ramping
 RAMP_RATE_HZ = 50
@@ -815,10 +816,9 @@ def cmd_sweep(args: argparse.Namespace) -> None:
         if args.output:
             output_path = Path(args.output)
         elif collect_telemetry:
-            cal_dir = Path(__file__).parent.parent / "calibration"
-            cal_dir.mkdir(exist_ok=True)
+            CALIBRATION_DIR.mkdir(exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_path = cal_dir / f"rom_{ts}.json"
+            output_path = CALIBRATION_DIR / f"rom_{ts}.json"
         else:
             output_path = None
 
@@ -906,4 +906,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

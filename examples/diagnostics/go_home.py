@@ -30,8 +30,8 @@ def go_home():
     print(f"Connecting to {port}...")
 
     # Use low-level Feetech SDK directly
-    from scservo_sdk import PortHandler, sms_sts
     import scservo_sdk as scs
+    from scservo_sdk import PortHandler, sms_sts
 
     port_handler = PortHandler(port)
     packet_handler = sms_sts(port_handler)
@@ -75,7 +75,6 @@ def go_home():
         from xbox_soarm_teleop.config.joints import raw_to_deg
 
         pos_deg = raw_to_deg(pos_raw)
-        vel_signed = vel_raw if vel_raw < 32768 else vel_raw - 65536
         voltage = volt_raw / 10.0
 
         status = "OK" if abs(pos_deg - HOME_POSITION_DEG[name]) < 5 else "CHECK"

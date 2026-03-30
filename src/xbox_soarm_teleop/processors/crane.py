@@ -206,19 +206,19 @@ class CraneProcessor:
                 position_weight=1.0,
                 orientation_weight=0.0,
             )
+            if ik_result is not None:
+                # Velocity-limit the IK output to prevent sudden jumps
+                max_step = _IK_MAX_VEL_DEG_S * dt
+                sl_raw = float(ik_result[0])
+                ef_raw = float(ik_result[1])
+                sl_new = float(np.clip(sl_raw, self._sl_deg - max_step, self._sl_deg + max_step))
+                ef_new = float(np.clip(ef_raw, self._ef_deg - max_step, self._ef_deg + max_step))
 
-            # Velocity-limit the IK output to prevent sudden jumps
-            max_step = _IK_MAX_VEL_DEG_S * dt
-            sl_raw = float(ik_result[0])
-            ef_raw = float(ik_result[1])
-            sl_new = float(np.clip(sl_raw, self._sl_deg - max_step, self._sl_deg + max_step))
-            ef_new = float(np.clip(ef_raw, self._ef_deg - max_step, self._ef_deg + max_step))
-
-            # Apply joint limits
-            sl_lo, sl_hi = JOINT_LIMITS_DEG["shoulder_lift"]
-            ef_lo, ef_hi = JOINT_LIMITS_DEG["elbow_flex"]
-            self._sl_deg = float(np.clip(sl_new, sl_lo, sl_hi))
-            self._ef_deg = float(np.clip(ef_new, ef_lo, ef_hi))
+                # Apply joint limits
+                sl_lo, sl_hi = JOINT_LIMITS_DEG["shoulder_lift"]
+                ef_lo, ef_hi = JOINT_LIMITS_DEG["elbow_flex"]
+                self._sl_deg = float(np.clip(sl_new, sl_lo, sl_hi))
+                self._ef_deg = float(np.clip(ef_new, ef_lo, ef_hi))
 
         return self._current_command()
 

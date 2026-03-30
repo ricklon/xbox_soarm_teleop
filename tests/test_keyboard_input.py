@@ -90,6 +90,7 @@ class TestKeyboardConfig:
         assert cfg.key_yaw_right == "KEY_RIGHT"
         assert cfg.key_gripper == "KEY_SPACE"
         assert cfg.key_home == "KEY_H"
+        assert cfg.key_aux == "KEY_Y"
         assert cfg.key_frame_toggle == "KEY_Y"
 
     def test_no_device_path_by_default(self):
@@ -297,9 +298,9 @@ class TestKeyboardEdgeDetection:
         state = ctrl.read()
         assert state.a_button_pressed is False
 
-    def test_frame_toggle_pressed_edge(self):
+    def test_aux_button_pressed_edge(self):
         ctrl = _connected_ctrl()
-        _press(ctrl, ctrl.config.key_frame_toggle)
+        _press(ctrl, ctrl.config.key_aux)
         state = ctrl.read()
         assert state.y_button_pressed is True
         state = ctrl.read()

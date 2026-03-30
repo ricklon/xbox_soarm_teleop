@@ -43,6 +43,29 @@ class EEDelta:
         )
 
 
+def apply_axis_mapping(delta: EEDelta, *, swap_xy: bool) -> EEDelta:
+    """Apply axis mapping corrections to an EE delta.
+
+    Args:
+        delta: Incoming EE delta.
+        swap_xy: If True, swap X and Y components.
+
+    Returns:
+        A new EEDelta with the mapping applied.
+    """
+    if not swap_xy:
+        return delta
+    return EEDelta(
+        dx=delta.dy,
+        dy=delta.dx,
+        dz=delta.dz,
+        droll=delta.droll,
+        dpitch=delta.dpitch,
+        dyaw=delta.dyaw,
+        gripper=delta.gripper,
+    )
+
+
 class MapXboxToEEDelta:
     """Maps Xbox controller state to end effector velocity commands.
 

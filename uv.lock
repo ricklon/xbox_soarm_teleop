@@ -2530,6 +2530,9 @@ joycon = [
 pygame = [
     { name = "pygame" },
 ]
+rerun = [
+    { name = "rerun-sdk" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2550,11 +2553,12 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rerun-sdk", marker = "extra == 'rerun'", specifier = ">=0.21" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
     { name = "scipy", specifier = ">=1.15.3" },
     { name = "scservo-sdk", editable = "third_party/ftservo_python" },
 ]
-provides-extras = ["dev", "joycon", "pygame"]
+provides-extras = ["dev", "joycon", "pygame", "rerun"]
 
 [package.metadata.requires-dev]
 dev = [

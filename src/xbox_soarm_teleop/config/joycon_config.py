@@ -43,7 +43,7 @@ class JoyConConfig:
     # Button mappings
     deadman_button: str = "BTN_TL"       # SL — hold to enable motion
     home_button: str = "BTN_START"       # + button — return to home
-    frame_toggle_button: str = "BTN_WEST"  # Y face button — toggle frame
+    aux_button: str = "BTN_WEST"  # Y face button — reserved for script-specific actions
 
     # Puppet mode height control buttons (used to synthesise dpad_y)
     height_up_button: str = "BTN_TR"     # SR — raise end effector
@@ -69,3 +69,12 @@ class JoyConConfig:
     device_name_patterns: list = field(
         default_factory=lambda: ["Nintendo Switch Right Joy-Con", "Joy-Con (R)"]
     )
+
+    @property
+    def frame_toggle_button(self) -> str:
+        """Backward-compatible alias for the old frame-toggle naming."""
+        return self.aux_button
+
+    @frame_toggle_button.setter
+    def frame_toggle_button(self, value: str) -> None:
+        self.aux_button = value

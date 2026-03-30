@@ -1,19 +1,14 @@
-#!/usr/bin/env python3
-"""Analyze direct-joint diagnostic CSV and print per-joint performance metrics.
-
-Usage:
-    uv run python examples/analyze_joint_diag.py --input joint_diag_20260216_120000.csv
-"""
+"""Analyze direct-joint diagnostic CSV and print per-joint performance metrics."""
 
 from __future__ import annotations
 
 import argparse
-import sys
 
 from xbox_soarm_teleop.diagnostics.joint_diag_analysis import analyze_joint_diagnostic_csv
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser."""
     parser = argparse.ArgumentParser(description="Analyze Xbox direct-joint diagnostic CSV")
     parser.add_argument("--input", required=True, help="Path to joint diagnostic CSV")
     parser.add_argument(
@@ -28,7 +23,12 @@ def main() -> None:
         default=1.0,
         help="Near-limit margin in degrees (default: 1)",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    """Run the diagnostic-log analysis CLI."""
+    args = build_parser().parse_args()
 
     summary = analyze_joint_diagnostic_csv(
         args.input,
@@ -38,11 +38,11 @@ def main() -> None:
 
     if summary.total_rows == 0:
         print("No rows found in CSV")
-        sys.exit(1)
+        return 1
 
     if not summary.per_joint:
         print("No valid joint rows found in CSV")
-        sys.exit(1)
+        return 1
 
     print(f"Source: {summary.source}")
     print(f"Rows:   {summary.total_rows}")
@@ -70,7 +70,8 @@ def main() -> None:
         )
     else:
         print("- No obvious low-range joint detected")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

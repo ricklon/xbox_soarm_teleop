@@ -5,7 +5,7 @@ This script moves the arm to various positions and tests wrist_flex range
 to identify mechanical interference.
 
 Usage:
-    uv run python examples/diagnose_wrist_flex.py --port /dev/ttyACM0
+    uv run python examples/archive/diagnose_wrist_flex.py --port /dev/ttyACM0
 """
 
 import argparse
@@ -13,12 +13,9 @@ import glob
 import sys
 import time
 
-import numpy as np
-
 from xbox_soarm_teleop.config.joints import (
     HOME_POSITION_DEG,
     JOINT_LIMITS_DEG,
-    JOINT_NAMES_WITH_GRIPPER,
     MOTOR_IDS,
     deg_to_raw,
     raw_to_deg,

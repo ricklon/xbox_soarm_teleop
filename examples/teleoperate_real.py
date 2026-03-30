@@ -39,6 +39,20 @@ from xbox_soarm_teleop.config.joints import (
     JOINT_LIMITS_DEG,
     JOINT_NAMES_WITH_GRIPPER,
 )
+from xbox_soarm_teleop.config.workspace import load_workspace_limits
+from xbox_soarm_teleop.control.cartesian import (
+    advance_cartesian_target,
+    apply_ik_solution,
+    full_joint_positions,
+    make_cartesian_state,
+    step_gripper_toward,
+    step_wrist_roll,
+    sync_cartesian_state,
+)
+from xbox_soarm_teleop.control.routines import plane_offset
+from xbox_soarm_teleop.control.safety import apply_strict_safety, clip_workspace
+from xbox_soarm_teleop.control.units import deg_to_normalized, normalized_to_deg
+from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 
 # Path to URDF
 URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
@@ -52,20 +66,6 @@ JOINT_NAMES = JOINT_NAMES_WITH_GRIPPER
 # Control loop rate
 CONTROL_RATE = 30  # Hz
 LOOP_PERIOD = 1.0 / CONTROL_RATE
-
-# Workspace limits (meters)
-WORKSPACE_LIMITS = {
-    "x": (0.05, 0.5),
-    "y": (-0.3, 0.3),
-    "z": (0.05, 0.45),
-}
-
-# Conservative workspace used by strict safety mode.
-STRICT_WORKSPACE_LIMITS = {
-    "x": (0.10, 0.32),
-    "y": (-0.20, 0.20),
-    "z": (0.05, 0.30),
-}
 
 
 def find_serial_port() -> str | None:
@@ -118,88 +118,6 @@ def warn_if_suspicious_pan_calibration(calibration_dir: Path, robot_id: str | No
         )
 
 
-def deg_to_normalized(deg: float, joint_name: str) -> float:
-    """Convert degrees to LeRobot normalized value [-100, 100]."""
-    # Approximate mapping: 180 deg = 100 normalized
-    if joint_name == "gripper":
-        # Gripper uses [0, 100] range
-        # Our gripper_pos is 0-1, map to 0-100
-        return deg  # Actually we pass 0-100 directly for gripper
-    lower, upper = JOINT_LIMITS_DEG[joint_name]
-    max_abs = max(abs(lower), abs(upper), 1e-6)
-    normalized = deg * (100.0 / max_abs)
-    return float(np.clip(normalized, -100.0, 100.0))
-
-
-def normalized_to_deg(normalized: float, joint_name: str) -> float:
-    """Convert LeRobot normalized value [-100, 100] to degrees."""
-    if joint_name == "gripper":
-        return normalized
-    lower, upper = JOINT_LIMITS_DEG[joint_name]
-    max_abs = max(abs(lower), abs(upper), 1e-6)
-    deg = normalized * (max_abs / 100.0)
-    return float(np.clip(deg, lower, upper))
-
-
-def _print_controls(controller_type: str, mode: str) -> None:
-    """Print control instructions appropriate for the controller and mode."""
-    print("\nControls:", flush=True)
-    if controller_type == "keyboard":
-        if mode == "joint":
-            print("  A / D           shoulder_pan    (left / right)", flush=True)
-            print("  W / S           shoulder_lift   (up / down)", flush=True)
-            print("  R / F           elbow_flex      (flex / extend)", flush=True)
-            print("  Q / E           wrist_flex      (up / down)", flush=True)
-            print("  ↑ / ↓           wrist_roll      (+ / -)", flush=True)
-            print("  Space (hold)    gripper close", flush=True)
-            print("  H               home position", flush=True)
-            print("  1–5             speed level  (default 3 = 75%)", flush=True)
-            print("  Shift           2× speed multiplier", flush=True)
-        else:
-            print("  W / S           forward / back  (X)", flush=True)
-            print("  A / D           left / right    (Y)", flush=True)
-            print("  R / F           up / down       (Z)", flush=True)
-            print("  Q / E           wrist roll", flush=True)
-            print("  ↑ / ↓           pitch", flush=True)
-            print("  ← / →           yaw", flush=True)
-            print("  Space (hold)    gripper close", flush=True)
-            print("  H               home  |  Y  toggle frame", flush=True)
-            print("  1–5             speed level  |  Shift  2× speed", flush=True)
-        print("  Ctrl+C          exit\n", flush=True)
-    elif controller_type == "joycon":
-        if mode == "joint":
-            print("  Stick left/right    drive selected joint", flush=True)
-        elif mode == "puppet":
-            print("  Stick left/right    shoulder_pan  (base rotation)", flush=True)
-            print("  Stick up/down       reach         (extend/retract)", flush=True)
-            print("  SR (hold)           height up", flush=True)
-            print("  B face button       height down", flush=True)
-            print("  IMU pitch           wrist_flex    (tilt fwd/back)", flush=True)
-            print("  IMU roll            wrist_roll    (tilt left/right)", flush=True)
-            print("  ZR                  gripper (hold=close)", flush=True)
-        else:
-            print("  Stick               move arm (X/Y/Z/roll)", flush=True)
-            print("  ZR                  gripper (hold=close)", flush=True)
-        print("  SL (hold)           deadman switch", flush=True)
-        print("  + button            home position", flush=True)
-        print("  Ctrl+C              exit\n", flush=True)
-    else:  # xbox
-        if mode == "joint":
-            print("  Hold LB + Left stick X    drive selected joint", flush=True)
-            print("  D-pad left/right          cycle joint", flush=True)
-            print("  Right trigger             gripper", flush=True)
-            print("  A button                  home position", flush=True)
-        else:
-            print("  Hold LB + move sticks     control arm", flush=True)
-            print("  Left stick X/Y            left-right / up-down", flush=True)
-            print("  Right stick Y/X           forward-back / wrist roll", flush=True)
-            print("  D-pad up/down             pitch", flush=True)
-            print("  D-pad left/right          yaw", flush=True)
-            print("  Right trigger             gripper", flush=True)
-            print("  A button                  home  |  Y  toggle frame", flush=True)
-        print("  Ctrl+C                    exit\n", flush=True)
-
-
 def run_teleoperation(
     port: str,
     calibration_dir: Path | None = None,
@@ -242,6 +160,8 @@ def run_teleoperation(
     strict_allow_orientation: bool = False,
     strict_wrist_min_deg: float = -60.0,
     strict_wrist_max_deg: float = 45.0,
+    ik_seed_from_feedback: bool = True,
+    ik_seed_every: int = 5,
     benchmark: bool = False,
     rerun_mode: str | None = None,
     rerun_addr: str = "0.0.0.0:9876",
@@ -285,20 +205,17 @@ def run_teleoperation(
         strict_allow_orientation: If False, disable pitch/yaw in strict mode.
         strict_wrist_min_deg: Extra strict lower bound for wrist_flex in strict mode.
         strict_wrist_max_deg: Extra strict upper bound for wrist_flex in strict mode.
+        ik_seed_from_feedback: If True, seed IK with measured joint positions.
+        ik_seed_every: Seed IK every N control loops (cartesian mode only).
     """
     import shutil
 
-    from lerobot.model.kinematics import RobotKinematics
     from lerobot.robots.so_follower import SOFollower
     from lerobot.robots.so_follower.config_so_follower import SOFollowerRobotConfig
 
     from xbox_soarm_teleop.config.modes import ControlMode
-    from xbox_soarm_teleop.config.xbox_config import XboxConfig
     from xbox_soarm_teleop.diagnostics.benchmark import LoopTimer
-    from xbox_soarm_teleop.kinematics.jacobian import JacobianController
-    from xbox_soarm_teleop.processors.factory import make_processor
-    from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta
-    from xbox_soarm_teleop.teleoperators.xbox import XboxController  # noqa: F401 (may be unused)
+    from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
 
     control_mode = ControlMode(mode)
     print(f"Control mode: {control_mode.value.upper()}", flush=True)
@@ -317,89 +234,43 @@ def run_teleoperation(
         calibration_dir.mkdir(parents=True, exist_ok=True)
         print("Calibration cleared.", flush=True)
 
-    # IK joint names - include base, exclude wrist_roll (controlled directly)
-    ik_joint_names = IK_JOINT_NAMES
+    runtime = build_control_runtime(
+        controller_type=controller_type,
+        mode=mode,
+        deadzone=deadzone,
+        linear_scale=linear_scale,
+        keyboard_grab=keyboard_grab,
+        keyboard_record=keyboard_record,
+        keyboard_playback=keyboard_playback,
+        loop_dt=LOOP_PERIOD,
+        urdf_path=str(URDF_PATH),
+        use_jacobian=use_jacobian,
+        jacobian_damping=jacobian_damping,
+        announce_kinematics=True,
+        keyboard_focus_target="this terminal",
+        enable_controller=not motion_routine,
+    )
+    kinematics = runtime.kinematics
+    jacobian_ctrl = runtime.jacobian_controller
+    controller = runtime.controller
+    processor = runtime.processor
+    mapper = runtime.mapper
+    _proc_cfg = runtime.processor_config
+    gripper_rate = runtime.gripper_rate
+    controller_cfg = runtime.controller_config
 
-    # Initialize kinematics for IK/Jacobian modes (not needed for joint-direct mode)
-    kinematics = None
-    jacobian_ctrl = None
-    if control_mode != ControlMode.JOINT:
-        print("Loading kinematics model...", flush=True)
-        kinematics = RobotKinematics(
-            urdf_path=str(URDF_PATH),
-            target_frame_name="gripper_frame_link",
-            joint_names=ik_joint_names,
-        )
+    if kinematics is not None:
         if use_jacobian:
-            jacobian_ctrl = JacobianController(kinematics, damping=jacobian_damping)
             print(f"Kinematics: JACOBIAN (damping={jacobian_damping})", flush=True)
         else:
             print("Kinematics: IK", flush=True)
-
-    # Initialize controller — xbox, joycon, or keyboard
-    if controller_type == "joycon":
-        from xbox_soarm_teleop.config.joycon_config import JoyConConfig
-        from xbox_soarm_teleop.teleoperators.joycon import JoyConController
-
-        config = JoyConConfig(deadzone=deadzone)
-        if linear_scale is not None:
-            config.linear_scale = linear_scale
-        _proc_cfg = config
-        _make_ctrl = lambda: JoyConController(config)  # noqa: E731
-    elif controller_type == "keyboard":
-        from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
-        from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
-
-        config = KeyboardConfig(
-            grab=keyboard_grab,
-            record_path=keyboard_record,
-            playback_path=keyboard_playback,
-        )
-        if linear_scale is not None:
-            config.speed_levels = tuple(s * linear_scale / 0.1 for s in config.speed_levels)
-        if not keyboard_grab and not keyboard_playback:
-            print(
-                "WARNING: keyboard controller active without --keyboard-grab. "
-                "Keypresses will be detected even when this terminal is not focused. "
-                "Use --keyboard-grab for exclusive access.",
-                flush=True,
-            )
-        if keyboard_playback:
-            print(f"Keyboard playback mode: {keyboard_playback}", flush=True)
-        _proc_cfg = XboxConfig()
-        if linear_scale is not None:
-            _proc_cfg.linear_scale = linear_scale
-        _make_ctrl = lambda: KeyboardController(config)  # noqa: E731
-    else:
-        config = XboxConfig(deadzone=deadzone)
-        if linear_scale is not None:
-            config.linear_scale = linear_scale
-        _proc_cfg = config
-        _make_ctrl = lambda: XboxController(config)  # noqa: E731
-
-    controller = None
-    processor = None
-    if not motion_routine:
-        controller = _make_ctrl()
-        processor = make_processor(
-            control_mode,
-            linear_scale=_proc_cfg.linear_scale,
-            angular_scale=_proc_cfg.angular_scale,
-            orientation_scale=_proc_cfg.orientation_scale,
-            invert_pitch=_proc_cfg.invert_pitch,
-            invert_yaw=_proc_cfg.invert_yaw,
-            loop_dt=LOOP_PERIOD,
-            urdf_path=str(URDF_PATH),
-            multi_joint=(controller_type == "keyboard" and control_mode.value == "joint"),
-        )
-    mapper = processor  # alias for cartesian/crane path compatibility
-    gripper_rate = getattr(_proc_cfg, "gripper_rate", 2.0)
 
     # Joint velocity limits for IK joints (4 joints, no wrist_roll)
     ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0]) * max(ik_vel_scale, 0.1)
     ik_joint_lower_limits = np.array([JOINT_LIMITS_DEG[name][0] for name in IK_JOINT_NAMES], dtype=float)
     ik_joint_upper_limits = np.array([JOINT_LIMITS_DEG[name][1] for name in IK_JOINT_NAMES], dtype=float)
-    workspace_limits = STRICT_WORKSPACE_LIMITS if strict_safety else WORKSPACE_LIMITS
+    base_limits, strict_limits = load_workspace_limits()
+    workspace_limits = strict_limits if strict_safety else base_limits
     safe_lower_limits = ik_joint_lower_limits + max(strict_joint_margin_deg, 0.0)
     safe_upper_limits = ik_joint_upper_limits - max(strict_joint_margin_deg, 0.0)
     # Hard override for wrist_flex envelope in strict mode (self-collision guard).
@@ -415,7 +286,7 @@ def run_teleoperation(
     pitch_limit_rad = np.deg2rad(25.0 if strict_safety else 90.0)
     yaw_limit_rad = np.deg2rad(45.0 if strict_safety else 180.0)
 
-    print(f"Controller deadzone: {getattr(config, 'deadzone', 'n/a')}", flush=True)
+    print(f"Controller deadzone: {getattr(controller_cfg, 'deadzone', 'n/a')}", flush=True)
     print(f"Linear scale: {_proc_cfg.linear_scale} m/s", flush=True)
     print(f"Orientation scale: {_proc_cfg.orientation_scale} rad/s", flush=True)
     print(f"XY axis swap (real frame fix): {'ON' if swap_xy else 'OFF'}", flush=True)
@@ -430,12 +301,14 @@ def run_teleoperation(
         )
     else:
         print("Strict safety: OFF", flush=True)
+    if control_mode == ControlMode.CARTESIAN and ik_seed_from_feedback:
+        print(f"IK feedback seeding: ON (every {max(1, ik_seed_every)} frames)", flush=True)
+    elif control_mode == ControlMode.CARTESIAN:
+        print("IK feedback seeding: OFF", flush=True)
 
-    _ctrl_labels = {"joycon": "Joy-Con", "keyboard": "keyboard", "xbox": "Xbox controller"}
-    _ctrl_label = _ctrl_labels.get(controller_type, controller_type)
     if not motion_routine:
         if not controller.connect():
-            print(f"ERROR: Failed to connect to {_ctrl_label}")
+            print(f"ERROR: Failed to connect to {runtime.controller_label}")
             if controller_type == "keyboard":
                 print("  Check 'input' group: groups $USER | grep input")
                 print("  Add with: sudo usermod -aG input $USER  (then re-login)")
@@ -445,8 +318,13 @@ def run_teleoperation(
             else:
                 print("  - Check that controller is connected")
             sys.exit(1)
-        print(f"{_ctrl_label} connected", flush=True)
-        _print_controls(controller_type, mode)
+        print(f"{runtime.controller_label} connected", flush=True)
+        print_controls(
+            controller_type,
+            mode,
+            use_jacobian=use_jacobian,
+            exit_hint="Ctrl+C                    exit",
+        )
     else:
         print("Motion routine enabled (no controller required).", flush=True)
         print("Ensure the arm is in home position and the area is clear.", flush=True)
@@ -481,6 +359,13 @@ def run_teleoperation(
             controller.disconnect()
         sys.exit(1)
 
+    if motion_routine and control_mode == ControlMode.JOINT:
+        print("ERROR: --motion-routine is not supported with --mode joint.", flush=True)
+        if controller is not None:
+            controller.disconnect()
+        robot.disconnect()
+        sys.exit(1)
+
     print("Robot connected!", flush=True)
     if motion_routine:
         print("\nMotion routine:", flush=True)
@@ -491,17 +376,7 @@ def run_teleoperation(
         )
         print("  Ctrl+C: Stop\n", flush=True)
     else:
-        print("\nControls:", flush=True)
-        print("  Hold LB + move sticks to control arm", flush=True)
-        print("  Left stick X: Move left/right (Y axis)", flush=True)
-        print("  Left stick Y: Move up/down", flush=True)
-        print("  Right stick Y: Move forward/back", flush=True)
-        print("  Right stick X: Wrist roll (direct)", flush=True)
-        print("  D-pad up/down: Pitch (tilt gripper)", flush=True)
-        print("  D-pad left/right: Yaw (rotate heading)", flush=True)
-        print("  Right trigger: Gripper", flush=True)
-        print("  A button: Go home", flush=True)
-        print("  Ctrl+C: Exit\n", flush=True)
+        print("Teleoperation active. Ctrl+C to exit.\n", flush=True)
 
     # IK joint positions (4 joints: base, shoulder_lift, elbow_flex, wrist_flex)
     home_ik_joint_pos_deg = np.array([HOME_POSITION_DEG[name] for name in IK_JOINT_NAMES], dtype=float)
@@ -515,54 +390,19 @@ def run_teleoperation(
                 flush=True,
             )
         home_ik_joint_pos_deg = clipped_home
-    ik_joint_pos_deg = home_ik_joint_pos_deg.copy()
-    wrist_roll_deg = float(HOME_POSITION_DEG["wrist_roll"])
-
-    # Target orientation (euler angles in radians)
-    target_pitch = 0.0
-    target_yaw = 0.0
-
-    def euler_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
-        """Convert euler angles (ZYX convention) to rotation matrix."""
-        cr, sr = np.cos(roll), np.sin(roll)
-        cp, sp = np.cos(pitch), np.sin(pitch)
-        cy, sy = np.cos(yaw), np.sin(yaw)
-        return np.array(
-            [
-                [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-                [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-                [-sp, cp * sr, cp * cr],
-            ]
+    cartesian_state = (
+        make_cartesian_state(
+            kinematics,
+            home_ik_joint_pos_deg,
+            wrist_roll_deg=float(HOME_POSITION_DEG["wrist_roll"]),
         )
-
-    # Get initial EE pose
-    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-    last_target_pose = ee_pose.copy()
-    last_ee_pose = ee_pose.copy()
-    gripper_pos = 0.0  # 0-1 range
-    routine_center = ee_pose[:3, 3].copy()
+        if kinematics is not None
+        else None
+    )
+    routine_center = (
+        cartesian_state.ee_pose[:3, 3].copy() if cartesian_state is not None else np.zeros(3, dtype=float)
+    )
     routine_center += np.array([routine_center_x, routine_center_y, routine_center_z], dtype=float)
-
-    def square_offset(u: float, size: float) -> tuple[float, float]:
-        half = size / 2.0
-        s = (u % 1.0) * 4.0
-        seg = int(s)
-        f = s - seg
-        if seg == 0:
-            return (-half + f * size, -half)
-        if seg == 1:
-            return (half, -half + f * size)
-        if seg == 2:
-            return (half - f * size, half)
-        return (-half, half - f * size)
-
-    def plane_offset(plane: str, u: float, size: float) -> np.ndarray:
-        a, b = square_offset(u, size)
-        if plane == "xy":
-            return np.array([a, b, 0.0])
-        if plane == "xz":
-            return np.array([a, 0.0, b])
-        return np.array([0.0, a, b])
 
     running = True
     loop_counter = 0
@@ -600,6 +440,13 @@ def run_teleoperation(
                 "actual_z",
                 "pos_err_mm",
                 "clipped",
+                "ws_clip_x",
+                "ws_clip_y",
+                "ws_clip_z",
+                "safety_speed_clip",
+                "safety_orient_clip",
+                "safety_joint_clip",
+                "safety_reject",
             ]
         )
 
@@ -631,8 +478,16 @@ def run_teleoperation(
                 bm_timer.start_frame()
             controller_ms = ik_ms = servo_ms = 0.0
             clipped_this = False
+            frame_ws_clip_x = 0
+            frame_ws_clip_y = 0
+            frame_ws_clip_z = 0
+            frame_safety_speed_clip = 0
+            frame_safety_orient_clip = 0
+            frame_safety_joint_clip = 0
+            frame_safety_reject = 0
 
             if motion_routine:
+                assert cartesian_state is not None
                 t = time.monotonic() - routine_start
                 if t >= routine_duration:
                     break
@@ -651,7 +506,7 @@ def run_teleoperation(
                         plane = routine_plane
                         u = (t / max(routine_duration, 0.1)) % 1.0
                     desired = routine_center + plane_offset(plane, u, size)
-                    delta = desired - ee_pose[:3, 3]
+                    delta = desired - cartesian_state.ee_pose[:3, 3]
                     dist = float(np.linalg.norm(delta))
                     if dist < 1e-6:
                         dx = dy = dz = 0.0
@@ -668,7 +523,7 @@ def run_teleoperation(
                     gripper = float(np.clip(gripper, 0.0, 1.0))
                 else:
                     droll = 0.0
-                    gripper = gripper_pos
+                    gripper = cartesian_state.gripper_pos
                 ee_delta = EEDelta(dx=dx, dy=dy, dz=dz, droll=droll, gripper=gripper)
             elif control_mode in (ControlMode.JOINT, ControlMode.CRANE, ControlMode.PUPPET):
                 _t0 = time.perf_counter()
@@ -706,21 +561,47 @@ def run_teleoperation(
                 state = controller.read()
                 controller_ms = (time.perf_counter() - _t0) * 1000.0
 
+                if ik_seed_from_feedback and (loop_counter % max(1, ik_seed_every) == 0):
+                    try:
+                        obs = robot.get_observation()
+                        for idx, name in enumerate(IK_JOINT_NAMES):
+                            key = f"{name}.pos"
+                            if key in obs:
+                                cartesian_state.ik_joint_pos_deg[idx] = normalized_to_deg(
+                                    float(obs[key]), name
+                                )
+                        wr_key = "wrist_roll.pos"
+                        if wr_key in obs:
+                            cartesian_state.wrist_roll_deg = normalized_to_deg(
+                                float(obs[wr_key]), "wrist_roll"
+                            )
+                        sync_cartesian_state(
+                            cartesian_state,
+                            kinematics,
+                            cartesian_state.ik_joint_pos_deg,
+                            wrist_roll_deg=cartesian_state.wrist_roll_deg,
+                        )
+                    except Exception:
+                        pass
+
                 if state.a_button_pressed:
                     print("\nGoing home...", flush=True)
-                    ik_joint_pos_deg = home_ik_joint_pos_deg.copy()
-                    wrist_roll_deg = float(HOME_POSITION_DEG["wrist_roll"])
-                    target_pitch = 0.0
-                    target_yaw = 0.0
-                    ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-                    gripper_pos = 0.0
+                    sync_cartesian_state(
+                        cartesian_state,
+                        kinematics,
+                        home_ik_joint_pos_deg,
+                        wrist_roll_deg=float(HOME_POSITION_DEG["wrist_roll"]),
+                        target_pitch=0.0,
+                        target_yaw=0.0,
+                        gripper_pos=0.0,
+                    )
 
                     # Send home position to robot
                     action = {}
                     home_deg = {name: HOME_POSITION_DEG[name] for name in JOINT_NAMES[:-1]}
                     for idx, name in enumerate(IK_JOINT_NAMES):
-                        home_deg[name] = float(ik_joint_pos_deg[idx])
-                    home_deg["wrist_roll"] = wrist_roll_deg
+                        home_deg[name] = float(cartesian_state.ik_joint_pos_deg[idx])
+                    home_deg["wrist_roll"] = cartesian_state.wrist_roll_deg
                     for name in JOINT_NAMES[:-1]:
                         action[f"{name}.pos"] = deg_to_normalized(home_deg[name], name)
                     action["gripper.pos"] = 0.0  # Open
@@ -728,110 +609,76 @@ def run_teleoperation(
                     continue
 
                 ee_delta = mapper(state)
-                if swap_xy:
+                ee_delta = apply_axis_mapping(ee_delta, swap_xy=swap_xy)
+                if strict_safety:
+                    ee_delta, safety_flags = apply_strict_safety(
+                        ee_delta,
+                        max_linear_speed=strict_max_linear_speed,
+                        max_angular_speed=strict_max_angular_speed,
+                        allow_orientation=strict_allow_orientation,
+                    )
+                    if safety_flags["speed_clip"]:
+                        safety_clip_speed_count += 1
+                        frame_safety_speed_clip = 1
+                    if safety_flags["orient_clip"]:
+                        safety_clip_orient_count += 1
+                        frame_safety_orient_clip = 1
+                if use_jacobian and abs(ee_delta.dyaw) > 1e-6:
                     ee_delta = EEDelta(
-                        dx=ee_delta.dy,
-                        dy=ee_delta.dx,
+                        dx=ee_delta.dx,
+                        dy=ee_delta.dy,
                         dz=ee_delta.dz,
                         droll=ee_delta.droll,
                         dpitch=ee_delta.dpitch,
-                        dyaw=ee_delta.dyaw,
-                        gripper=ee_delta.gripper,
-                    )
-                if strict_safety:
-                    lin = np.array([ee_delta.dx, ee_delta.dy, ee_delta.dz], dtype=float)
-                    lin_norm = float(np.linalg.norm(lin))
-                    max_lin = max(0.001, strict_max_linear_speed)
-                    if lin_norm > max_lin:
-                        lin *= max_lin / lin_norm
-                        safety_clip_speed_count += 1
-                    droll = float(np.clip(ee_delta.droll, -strict_max_angular_speed, strict_max_angular_speed))
-                    dpitch = float(ee_delta.dpitch)
-                    dyaw = float(ee_delta.dyaw)
-                    if not strict_allow_orientation:
-                        if abs(dpitch) > 1e-6 or abs(dyaw) > 1e-6:
-                            safety_clip_orient_count += 1
-                        dpitch = 0.0
-                        dyaw = 0.0
-                    else:
-                        old_dpitch, old_dyaw = dpitch, dyaw
-                        dpitch = float(np.clip(dpitch, -strict_max_angular_speed, strict_max_angular_speed))
-                        dyaw = float(np.clip(dyaw, -strict_max_angular_speed, strict_max_angular_speed))
-                        if old_dpitch != dpitch or old_dyaw != dyaw:
-                            safety_clip_orient_count += 1
-                    ee_delta = EEDelta(
-                        dx=float(lin[0]),
-                        dy=float(lin[1]),
-                        dz=float(lin[2]),
-                        droll=droll,
-                        dpitch=dpitch,
-                        dyaw=dyaw,
+                        dyaw=0.0,
                         gripper=ee_delta.gripper,
                     )
 
             # Rate-limit gripper movement
-            gripper_target = ee_delta.gripper
-            gripper_diff = gripper_target - gripper_pos
-            max_delta = gripper_rate * LOOP_PERIOD
-            if abs(gripper_diff) > max_delta:
-                gripper_pos += max_delta if gripper_diff > 0 else -max_delta
-            else:
-                gripper_pos = gripper_target
+            assert cartesian_state is not None
+            cartesian_state.gripper_pos = step_gripper_toward(
+                cartesian_state.gripper_pos,
+                ee_delta.gripper,
+                gripper_rate=gripper_rate,
+                dt=LOOP_PERIOD,
+            )
 
             if not ee_delta.is_zero_motion():
-                # Update target EE pose (X/Y/Z)
-                target_pos = ee_pose[:3, 3].copy()
-                target_pos[0] += ee_delta.dx * LOOP_PERIOD  # Forward/back
-                target_pos[1] += ee_delta.dy * LOOP_PERIOD  # Left/right
-                target_pos[2] += ee_delta.dz * LOOP_PERIOD  # Up/down
-
-                # Workspace limits
-                clipped_x = np.clip(target_pos[0], *workspace_limits["x"])
-                clipped_y = np.clip(target_pos[1], *workspace_limits["y"])
-                clipped_z = np.clip(target_pos[2], *workspace_limits["z"])
-                if clipped_x != target_pos[0]:
+                target_pose, target_pos, target_flags = advance_cartesian_target(
+                    cartesian_state,
+                    ee_delta,
+                    dt=LOOP_PERIOD,
+                    clip_position=lambda pos: clip_workspace(pos, workspace_limits),
+                    pitch_limit_rad=pitch_limit_rad,
+                    yaw_limit_rad=yaw_limit_rad,
+                )
+                ws_flags = {
+                    "ws_clip_x": bool(target_flags.get("ws_clip_x", False)),
+                    "ws_clip_y": bool(target_flags.get("ws_clip_y", False)),
+                    "ws_clip_z": bool(target_flags.get("ws_clip_z", False)),
+                }
+                if ws_flags["ws_clip_x"]:
                     workspace_clip_x += 1
-                if clipped_y != target_pos[1]:
+                    frame_ws_clip_x = 1
+                if ws_flags["ws_clip_y"]:
                     workspace_clip_y += 1
-                if clipped_z != target_pos[2]:
+                    frame_ws_clip_y = 1
+                if ws_flags["ws_clip_z"]:
                     workspace_clip_z += 1
-                target_pos[0] = clipped_x
-                target_pos[1] = clipped_y
-                target_pos[2] = clipped_z
+                    frame_ws_clip_z = 1
 
-                # Update target orientation
-                if abs(ee_delta.dpitch) > 0.001:
-                    next_pitch = target_pitch + ee_delta.dpitch * LOOP_PERIOD
-                    clipped_pitch = np.clip(next_pitch, -pitch_limit_rad, pitch_limit_rad)
-                    if clipped_pitch != next_pitch:
-                        pitch_sat_count += 1
-                    target_pitch = clipped_pitch
-
-                if abs(ee_delta.dyaw) > 0.001:
-                    next_yaw = target_yaw + ee_delta.dyaw * LOOP_PERIOD
-                    clipped_yaw = np.clip(next_yaw, -yaw_limit_rad, yaw_limit_rad)
-                    if clipped_yaw != next_yaw:
-                        yaw_sat_count += 1
-                    target_yaw = clipped_yaw
-
-                target_pose = ee_pose.copy()
-                target_pose[:3, 3] = target_pos
-
-                # Build target orientation if pitch/yaw are set
-                has_orientation_target = abs(target_pitch) > 0.01 or abs(target_yaw) > 0.01
-                if has_orientation_target:
-                    target_rotation = euler_to_rotation_matrix(0.0, target_pitch, target_yaw)
-                    target_pose[:3, :3] = target_rotation
-                    orientation_weight = 0.1  # Low weight - strongly prioritize position
-                else:
-                    orientation_weight = 0.0
+                if target_flags["pitch_clipped"]:
+                    pitch_sat_count += 1
+                if target_flags["yaw_clipped"]:
+                    yaw_sat_count += 1
+                orientation_weight = float(target_flags["orientation_weight"])
 
                 if use_jacobian:
                     # Jacobian-based control: EE velocity -> joint velocity -> integrate
                     # Use position + pitch mode (4 DOF) for optimal control with 4 joints
                     ee_vel = np.array([ee_delta.dx, ee_delta.dy, ee_delta.dz, ee_delta.dpitch])
                     joint_vel_deg = jacobian_ctrl.ee_vel_to_joint_vel(
-                        ee_vel, ik_joint_pos_deg, mode="position_pitch"
+                        ee_vel, cartesian_state.ik_joint_pos_deg, mode="position_pitch"
                     )
 
                     # Apply velocity limits
@@ -839,22 +686,26 @@ def run_teleoperation(
 
                     # Integrate to get new joint positions
                     joint_delta = joint_vel_deg * LOOP_PERIOD
-                    ik_joint_pos_deg = ik_joint_pos_deg + joint_delta
+                    clipped_delta = joint_delta.copy()
+                    candidate_joints = cartesian_state.ik_joint_pos_deg + joint_delta
 
                     # Apply conservative joint limits in strict mode.
                     if strict_safety:
-                        clipped_next = np.clip(ik_joint_pos_deg, safe_lower_limits, safe_upper_limits)
-                        if np.any(clipped_next != ik_joint_pos_deg):
+                        clipped_next = np.clip(candidate_joints, safe_lower_limits, safe_upper_limits)
+                        if np.any(clipped_next != candidate_joints):
                             safety_clip_joint_count += 1
-                        ik_joint_pos_deg = clipped_next
+                            frame_safety_joint_clip = 1
+                        candidate_joints = clipped_next
                     else:
                         joint_limits_deg = np.array([180.0, 90.0, 90.0, 90.0])
-                        ik_joint_pos_deg = np.clip(ik_joint_pos_deg, -joint_limits_deg, joint_limits_deg)
+                        candidate_joints = np.clip(
+                            candidate_joints, -joint_limits_deg, joint_limits_deg
+                        )
                 else:
                     # IK-based control: solve IK for target pose
                     _t0 = time.perf_counter()
                     new_joints = kinematics.inverse_kinematics(
-                        ik_joint_pos_deg,
+                        cartesian_state.ik_joint_pos_deg,
                         target_pose,
                         position_weight=1.0,
                         orientation_weight=orientation_weight,
@@ -864,24 +715,25 @@ def run_teleoperation(
 
                     # Apply joint velocity limiting to smooth IK output
                     max_delta = ik_joint_vel_limits * LOOP_PERIOD
-                    joint_delta = ik_result - ik_joint_pos_deg
+                    joint_delta = ik_result - cartesian_state.ik_joint_pos_deg
                     clipped_delta = np.clip(joint_delta, -max_delta, max_delta)
                     if np.any(np.abs(joint_delta) > max_delta):
                         clip_count += 1
                         clip_joints += int(np.sum(np.abs(joint_delta) > max_delta))
                         clipped_this = True
-                    candidate_joints = ik_joint_pos_deg + clipped_delta
+                    candidate_joints = cartesian_state.ik_joint_pos_deg + clipped_delta
                     if strict_safety:
                         candidate_joints = np.clip(candidate_joints, safe_lower_limits, safe_upper_limits)
-                        if np.any(candidate_joints != ik_joint_pos_deg + clipped_delta):
+                        if np.any(candidate_joints != cartesian_state.ik_joint_pos_deg + clipped_delta):
                             safety_clip_joint_count += 1
+                            frame_safety_joint_clip = 1
                         cand_margins = np.minimum(
                             candidate_joints - ik_joint_lower_limits,
                             ik_joint_upper_limits - candidate_joints,
                         )
                         current_margins = np.minimum(
-                            ik_joint_pos_deg - ik_joint_lower_limits,
-                            ik_joint_upper_limits - ik_joint_pos_deg,
+                            cartesian_state.ik_joint_pos_deg - ik_joint_lower_limits,
+                            ik_joint_upper_limits - cartesian_state.ik_joint_pos_deg,
                         )
                         cand_min_margin = float(np.min(cand_margins))
                         current_min_margin_local = float(np.min(current_margins))
@@ -890,46 +742,44 @@ def run_teleoperation(
                             and cand_min_margin < current_min_margin_local - 1e-6
                         ):
                             safety_reject_count += 1
+                            frame_safety_reject = 1
                             clipped_this = True
-                            candidate_joints = ik_joint_pos_deg.copy()
-                    ik_joint_pos_deg = candidate_joints
+                            candidate_joints = cartesian_state.ik_joint_pos_deg.copy()
 
-                # Apply wrist roll directly (not part of IK)
-                if abs(ee_delta.droll) > 0.001:
-                    roll_delta_deg = np.rad2deg(ee_delta.droll * LOOP_PERIOD)
-                    wrist_roll_deg += roll_delta_deg
-                    wrist_roll_deg = np.clip(wrist_roll_deg, -180.0, 180.0)
-
-                ee_pose = kinematics.forward_kinematics(ik_joint_pos_deg)
-                last_target_pose = target_pose.copy()
-                last_ee_pose = ee_pose.copy()
+                next_wrist_roll_deg = step_wrist_roll(
+                    cartesian_state.wrist_roll_deg,
+                    ee_delta.droll,
+                    dt=LOOP_PERIOD,
+                )
+                apply_ik_solution(
+                    cartesian_state,
+                    kinematics,
+                    candidate_joints,
+                    wrist_roll_deg=next_wrist_roll_deg,
+                    target_pose=target_pose,
+                )
 
                 if debug_ik and (loop_counter % max(debug_ik_every, 1) == 0):
-                    pos_error = np.linalg.norm(target_pose[:3, 3] - ee_pose[:3, 3])
+                    pos_error = np.linalg.norm(target_pose[:3, 3] - cartesian_state.ee_pose[:3, 3])
                     raw = np.array2string(joint_delta, precision=2, separator=",")
                     clipped = np.array2string(clipped_delta, precision=2, separator=",")
                     print(
                         f"\nIK: target=[{target_pos[0]:.3f}, {target_pos[1]:.3f}, "
-                        f"{target_pos[2]:.3f}] actual=[{ee_pose[0, 3]:.3f}, "
-                        f"{ee_pose[1, 3]:.3f}, {ee_pose[2, 3]:.3f}] "
+                        f"{target_pos[2]:.3f}] actual=[{cartesian_state.ee_pose[0, 3]:.3f}, "
+                        f"{cartesian_state.ee_pose[1, 3]:.3f}, {cartesian_state.ee_pose[2, 3]:.3f}] "
                         f"err={pos_error * 1000.0:.1f}mm "
                         f"raw_delta={raw} clipped={clipped}",
                         flush=True,
                     )
 
             # Combine base + IK joints for full 5-joint position
-            full_joint_pos_deg = np.array(
-                [
-                    ik_joint_pos_deg[0],  # shoulder_pan
-                    ik_joint_pos_deg[1],  # shoulder_lift
-                    ik_joint_pos_deg[2],  # elbow_flex
-                    ik_joint_pos_deg[3],  # wrist_flex
-                    wrist_roll_deg,  # wrist_roll
-                ]
+            full_joint_pos_deg = full_joint_positions(
+                cartesian_state.ik_joint_pos_deg,
+                cartesian_state.wrist_roll_deg,
             )
             joint_margins = np.minimum(
-                ik_joint_pos_deg - ik_joint_lower_limits,
-                ik_joint_upper_limits - ik_joint_pos_deg,
+                cartesian_state.ik_joint_pos_deg - ik_joint_lower_limits,
+                ik_joint_upper_limits - cartesian_state.ik_joint_pos_deg,
             )
             current_min_margin = float(np.min(joint_margins))
             if current_min_margin < min_joint_margin_deg:
@@ -942,7 +792,7 @@ def run_teleoperation(
             for i, name in enumerate(JOINT_NAMES[:-1]):
                 action[f"{name}.pos"] = deg_to_normalized(full_joint_pos_deg[i], name)
             # Gripper: 0-1 maps to 0-100
-            action["gripper.pos"] = gripper_pos * 100.0
+            action["gripper.pos"] = cartesian_state.gripper_pos * 100.0
 
             _t0 = time.perf_counter()
             robot.send_action(action)
@@ -955,13 +805,17 @@ def run_teleoperation(
                     loop_counter,
                     time.monotonic() - routine_start,
                     arm_joints,
-                    ee_pos=ee_pose[:3, 3],
+                    ee_pos=cartesian_state.ee_pose[:3, 3],
                     mode=mode,
                 )
 
             # Status - show position and orientation
-            pos = ee_pose[:3, 3]
-            pos_err = float(np.linalg.norm(last_ee_pose[:3, 3] - last_target_pose[:3, 3]))
+            pos = cartesian_state.ee_pose[:3, 3]
+            pos_err = float(
+                np.linalg.norm(
+                    cartesian_state.last_ee_pose[:3, 3] - cartesian_state.last_target_pose[:3, 3]
+                )
+            )
             error_count += 1
             error_sum += pos_err
             error_max = max(error_max, pos_err)
@@ -970,21 +824,28 @@ def run_teleoperation(
                 csv_writer.writerow(
                     [
                         f"{t_s:.3f}",
-                        f"{last_target_pose[0, 3]:.6f}",
-                        f"{last_target_pose[1, 3]:.6f}",
-                        f"{last_target_pose[2, 3]:.6f}",
-                        f"{last_ee_pose[0, 3]:.6f}",
-                        f"{last_ee_pose[1, 3]:.6f}",
-                        f"{last_ee_pose[2, 3]:.6f}",
+                        f"{cartesian_state.last_target_pose[0, 3]:.6f}",
+                        f"{cartesian_state.last_target_pose[1, 3]:.6f}",
+                        f"{cartesian_state.last_target_pose[2, 3]:.6f}",
+                        f"{cartesian_state.last_ee_pose[0, 3]:.6f}",
+                        f"{cartesian_state.last_ee_pose[1, 3]:.6f}",
+                        f"{cartesian_state.last_ee_pose[2, 3]:.6f}",
                         f"{pos_err * 1000.0:.3f}",
                         "1" if clipped_this else "0",
+                        str(frame_ws_clip_x),
+                        str(frame_ws_clip_y),
+                        str(frame_ws_clip_z),
+                        str(frame_safety_speed_clip),
+                        str(frame_safety_orient_clip),
+                        str(frame_safety_joint_clip),
+                        str(frame_safety_reject),
                     ]
                 )
-            pitch_deg = np.rad2deg(target_pitch)
-            yaw_deg = np.rad2deg(target_yaw)
+            pitch_deg = np.rad2deg(cartesian_state.target_pitch)
+            yaw_deg = np.rad2deg(cartesian_state.target_yaw)
             print(
                 f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
-                f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {gripper_pos:.2f}   ",
+                f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {cartesian_state.gripper_pos:.2f}   ",
                 end="\r",
                 flush=True,
             )
@@ -1001,10 +862,10 @@ def run_teleoperation(
                 )
                 print(
                     "JOINTS: "
-                    f"pan={ik_joint_pos_deg[0]:+6.1f} "
-                    f"lift={ik_joint_pos_deg[1]:+6.1f} "
-                    f"elbow={ik_joint_pos_deg[2]:+6.1f} "
-                    f"wrist={ik_joint_pos_deg[3]:+6.1f} "
+                    f"pan={cartesian_state.ik_joint_pos_deg[0]:+6.1f} "
+                    f"lift={cartesian_state.ik_joint_pos_deg[1]:+6.1f} "
+                    f"elbow={cartesian_state.ik_joint_pos_deg[2]:+6.1f} "
+                    f"wrist={cartesian_state.ik_joint_pos_deg[3]:+6.1f} "
                     f"| min_margin={current_min_margin:.1f}deg",
                     flush=True,
                 )
@@ -1335,6 +1196,22 @@ def main():
         help="Strict upper wrist_flex bound (deg). Default: 45.",
     )
     parser.add_argument(
+        "--ik-seed-from-feedback",
+        action="store_true",
+        help="Seed IK from measured joint positions (cartesian mode only).",
+    )
+    parser.add_argument(
+        "--no-ik-seed-from-feedback",
+        action="store_true",
+        help="Disable IK seeding from measured joints.",
+    )
+    parser.add_argument(
+        "--ik-seed-every",
+        type=int,
+        default=5,
+        help="Seed IK every N control loops (cartesian mode only). Default: 5.",
+    )
+    parser.add_argument(
         "--benchmark",
         action="store_true",
         help=(
@@ -1435,6 +1312,10 @@ def main():
         strict_allow_orientation=args.strict_allow_orientation,
         strict_wrist_min_deg=args.strict_wrist_min_deg,
         strict_wrist_max_deg=args.strict_wrist_max_deg,
+        ik_seed_from_feedback=(
+            args.ik_seed_from_feedback or not args.no_ik_seed_from_feedback
+        ),
+        ik_seed_every=args.ik_seed_every,
         benchmark=args.benchmark,
         rerun_mode=args.rerun_mode or ("spawn" if args.rerun else None),
         rerun_addr=args.rerun_addr,

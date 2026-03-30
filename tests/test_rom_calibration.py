@@ -7,14 +7,9 @@ and CLI subcommand parsing — all without hardware.
 from __future__ import annotations
 
 import json
-import sys
 from dataclasses import asdict
-from pathlib import Path
 
-# Add examples/ to path so we can import joint_rom_test
-sys.path.insert(0, str(Path(__file__).parent.parent / "examples"))
-
-from joint_rom_test import (  # noqa: E402
+from xbox_soarm_teleop.cli.joint_rom_test import (
     TelemetrySample,
     build_base_positions,
     build_extended_json,
@@ -23,8 +18,7 @@ from joint_rom_test import (  # noqa: E402
     compute_lerobot_fields,
     convert_to_lerobot,
 )
-
-from xbox_soarm_teleop.config.joints import (  # noqa: E402
+from xbox_soarm_teleop.config.joints import (
     HOME_POSITION_DEG,
     HOME_POSITION_RAW,
     JOINT_LIMITS_DEG,

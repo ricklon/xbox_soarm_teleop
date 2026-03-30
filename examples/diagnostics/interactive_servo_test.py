@@ -10,8 +10,8 @@ Features:
 6. Quick test all motors
 
 Usage:
-    uv run python examples/interactive_servo_test.py
-    uv run python examples/interactive_servo_test.py --port /dev/ttyACM0
+    uv run python examples/diagnostics/interactive_servo_test.py
+    uv run python examples/diagnostics/interactive_servo_test.py --port /dev/ttyACM0
 """
 
 import argparse

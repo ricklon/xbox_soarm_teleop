@@ -64,9 +64,9 @@ class KeyboardController:
 
         self._grabbed: bool = False
 
-        # Edge-detection state (home / frame-toggle)
+        # Edge-detection state (home / auxiliary Y button)
         self._prev_home: bool = False
-        self._prev_frame: bool = False
+        self._prev_aux: bool = False
 
         # Saved terminal attributes for restore on disconnect
         self._orig_term: list | None = None
@@ -253,11 +253,11 @@ class KeyboardController:
 
         # ── Buttons (edge detection) ──────────────────────────────────────────
         home_held = self._is_held(held, cfg.key_home)
-        frame_held = self._is_held(held, cfg.key_frame_toggle)
+        aux_held = self._is_held(held, cfg.key_aux)
         a_pressed = home_held and not self._prev_home
-        y_pressed = frame_held and not self._prev_frame
+        y_pressed = aux_held and not self._prev_aux
         self._prev_home = home_held
-        self._prev_frame = frame_held
+        self._prev_aux = aux_held
 
         return XboxState(
             left_stick_x=left_stick_x,
@@ -267,7 +267,7 @@ class KeyboardController:
             right_trigger=right_trigger,
             left_bumper=True,         # no deadman switch for keyboard
             a_button=home_held,
-            y_button=frame_held,
+            y_button=aux_held,
             dpad_x=dpad_x,
             dpad_y=dpad_y,
             a_button_pressed=a_pressed,
