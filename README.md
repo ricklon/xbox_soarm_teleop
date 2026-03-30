@@ -87,19 +87,19 @@ uv run python examples/simulate.py --no-controller
 uv pip install mujoco
 
 # Run simulation
-uv run python examples/simulate_mujoco.py
+uv run simulate-mujoco
 ```
 
 A window will open with the robot. Close window or Ctrl+C to exit.
 
 **Routine mode (no controller)**:
 ```bash
-uv run python examples/simulate_mujoco.py --motion-routine
+uv run simulate-mujoco --motion-routine
 ```
 
 **Routine square trace + pen trail (MuJoCo)**:
 ```bash
-uv run python examples/simulate_mujoco.py --motion-routine \
+uv run simulate-mujoco --motion-routine \
   --routine-pattern square --routine-plane xy \
   --routine-square-size 0.06 --routine-trace
 ```
@@ -115,13 +115,13 @@ Connect your SO-ARM101 via USB, then:
 
 ```bash
 # Auto-detect port
-uv run python examples/teleoperate_real.py
+uv run teleoperate-real
 
 # Or specify port manually
-uv run python examples/teleoperate_real.py --port /dev/ttyUSB0
+uv run teleoperate-real --port /dev/ttyUSB0
 
 # Routine mode (no controller)
-uv run python examples/teleoperate_real.py --motion-routine --routine-pattern square --routine-plane xy
+uv run teleoperate-real --motion-routine --routine-pattern square --routine-plane xy
 ```
 
 ### 5. Digital Twin Mode (Real Robot + Simulation)
@@ -129,10 +129,10 @@ uv run python examples/teleoperate_real.py --motion-routine --routine-pattern sq
 Run both the real robot and MuJoCo simulation simultaneously. The simulation shows a real-time preview of robot movements.
 
 ```bash
-uv run python examples/teleoperate_dual.py --port /dev/ttyUSB0
+uv run teleoperate-dual --port /dev/ttyUSB0
 
 # Routine mode (no controller)
-uv run python examples/teleoperate_dual.py --port /dev/ttyUSB0 --motion-routine --routine-pattern square-xyz
+uv run teleoperate-dual --port /dev/ttyUSB0 --motion-routine --routine-pattern square-xyz
 ```
 
 ## Supported Commands
@@ -143,10 +143,10 @@ These are the primary commands to reach for first:
 |--------|---------|
 | `uv run python examples/debug_controller.py` | Inspect normalized Xbox input without a robot |
 | `uv run python examples/simulate.py` | Meshcat visualization |
-| `uv run python examples/simulate_mujoco.py` | MuJoCo simulation |
-| `uv run python examples/teleoperate_real.py` | Main real-robot teleop entry point |
-| `uv run python examples/teleoperate_dual.py --port /dev/ttyUSB0` | Digital twin mode |
-| `uv run python examples/record_xbox.py --repo-id <user/dataset> --robot-port /dev/ttyUSB0 --task \"...\"` | Record project-native teleop demonstrations |
+| `uv run simulate-mujoco` | MuJoCo simulation |
+| `uv run teleoperate-real` | Main real-robot teleop entry point |
+| `uv run teleoperate-dual --port /dev/ttyUSB0` | Digital twin mode |
+| `uv run record-xbox --repo-id <user/dataset> --robot-port /dev/ttyUSB0 --task \"...\"` | Record project-native teleop demonstrations |
 | `uv run python examples/lerobot_record_cartesian.py --repo-id <user/dataset> --task \"...\" --robot-port /dev/ttyUSB0` | Convenience wrapper for cartesian recording |
 
 For the full script inventory, including diagnostics, compatibility shims, and

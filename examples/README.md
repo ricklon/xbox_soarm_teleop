@@ -8,15 +8,15 @@ one-off investigation scripts. They are not all equally supported.
 Use these first. They are the scripts the main docs and current cleanup work are
 optimizing around.
 
-| Script | Purpose |
-|--------|---------|
-| `debug_controller.py` | Inspect normalized Xbox controller input without a robot |
-| `simulate.py` | Meshcat visualization for lightweight simulation and demos |
-| `simulate_mujoco.py` | MuJoCo simulation for controller, mode, and routine testing |
-| `teleoperate_real.py` | Main real-robot teleoperation entry point |
-| `teleoperate_dual.py` | Digital twin mode: real robot plus MuJoCo |
-| `record_xbox.py` | Project-native dataset recording for joint, crane, and cartesian modes |
-| `lerobot_record_cartesian.py` | Convenience wrapper for cartesian recording |
+| Script | Preferred Command | Purpose |
+|--------|-------------------|---------|
+| `debug_controller.py` | `uv run python examples/debug_controller.py` | Inspect normalized Xbox controller input without a robot |
+| `simulate.py` | `uv run python examples/simulate.py` | Meshcat visualization for lightweight simulation and demos |
+| `simulate_mujoco.py` | `uv run simulate-mujoco` | MuJoCo simulation for controller, mode, and routine testing |
+| `teleoperate_real.py` | `uv run teleoperate-real` | Main real-robot teleoperation entry point |
+| `teleoperate_dual.py` | `uv run teleoperate-dual` | Digital twin mode: real robot plus MuJoCo |
+| `record_xbox.py` | `uv run record-xbox` | Project-native dataset recording for joint, crane, and cartesian modes |
+| `lerobot_record_cartesian.py` | `uv run python examples/lerobot_record_cartesian.py` | Convenience wrapper for cartesian recording |
 
 ## Diagnostics And Maintenance
 
@@ -48,7 +48,7 @@ preferred entry points.
 
 | Script | Preferred Command |
 |--------|-------------------|
-| `teleoperate.py` | `uv run python examples/teleoperate_real.py` |
+| `teleoperate.py` | `uv run teleoperate-real` |
 | `ik_smoke_test.py` | `uv run ik-smoke` |
 
 ## One-Off And Investigative Scripts
@@ -70,7 +70,8 @@ stable interfaces.
 
 - Scripts under `examples/` are not pytest tests, even if their filenames start
   with `test_`.
-- Prefer the packaged CLIs (`ik-smoke`, `mujoco-ik-check`, `xbox-joint-diagnostic`,
+- Prefer the packaged CLIs (`ik-smoke`, `mujoco-ik-check`, `simulate-mujoco`,
+  `teleoperate-real`, `teleoperate-dual`, `record-xbox`, `xbox-joint-diagnostic`,
   `analyze-joint-diag`, `diagnose-robot`, `joint-rom-test`) over wrapper scripts
   when both exist.
 - If a tool proves broadly useful, it should graduate into the supported entry

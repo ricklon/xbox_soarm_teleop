@@ -13,10 +13,10 @@ See also:
 
 ```bash
 # Simulation (safe place to practise)
-uv run python examples/simulate_mujoco.py --controller keyboard --mode crane
+uv run simulate-mujoco --controller keyboard --mode crane
 
 # Real robot
-uv run python examples/teleoperate_real.py --port /dev/ttyUSB0 --mode crane
+uv run teleoperate-real --port /dev/ttyUSB0 --mode crane
 ```
 
 **Safety rule for all modes:** keep one hand free to Ctrl-C or hit the physical e-stop.

@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from record_xbox import run_recording
+from xbox_soarm_teleop.cli.record_xbox import run_recording
 
 
 def main() -> None:

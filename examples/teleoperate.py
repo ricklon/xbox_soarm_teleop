@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Compatibility shim — use teleoperate_real.py instead.
+"""Compatibility shim for the packaged real-teleop CLI.
 
-This file is kept so existing bookmarks/docs don't break.
+Prefer ``uv run teleoperate-real`` for normal use.
 """
-import subprocess
-import sys
+
+from xbox_soarm_teleop.cli.teleoperate_real import main
 
 if __name__ == "__main__":
-    sys.exit(subprocess.call([sys.executable, "examples/teleoperate_real.py"] + sys.argv[1:]))
+    raise SystemExit(main())
