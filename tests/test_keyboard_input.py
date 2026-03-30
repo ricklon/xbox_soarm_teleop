@@ -91,7 +91,6 @@ class TestKeyboardConfig:
         assert cfg.key_gripper == "KEY_SPACE"
         assert cfg.key_home == "KEY_H"
         assert cfg.key_aux == "KEY_Y"
-        assert cfg.key_frame_toggle == "KEY_Y"
 
     def test_no_device_path_by_default(self):
         assert KeyboardConfig().device_path is None

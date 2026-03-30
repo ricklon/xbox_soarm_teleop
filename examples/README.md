@@ -40,16 +40,6 @@ Preferred packaged commands for the documented diagnostics:
 - `uv run diagnose-robot`
 - `uv run joint-rom-test`
 
-## Compatibility Shims
-
-These exist so older commands or bookmarks still work, but they are not the
-preferred entry points.
-
-| Script | Preferred Command |
-|--------|-------------------|
-| `teleoperate.py` | `uv run teleoperate-real` |
-| `ik_smoke_test.py` | `uv run ik-smoke` |
-
 ## Legacy Demo Paths
 
 These still work, but they are no longer treated as maintained primary workflows.

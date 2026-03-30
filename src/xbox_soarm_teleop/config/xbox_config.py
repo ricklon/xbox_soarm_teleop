@@ -52,12 +52,3 @@ class XboxConfig:
     # Axis ranges for normalization (typical Xbox controller values)
     stick_range: tuple[int, int] = field(default_factory=lambda: (-32768, 32767))
     trigger_range: tuple[int, int] = field(default_factory=lambda: (0, 255))
-
-    @property
-    def frame_toggle_button(self) -> str:
-        """Backward-compatible alias for the old frame-toggle naming."""
-        return self.aux_button
-
-    @frame_toggle_button.setter
-    def frame_toggle_button(self, value: str) -> None:
-        self.aux_button = value

@@ -87,12 +87,3 @@ class KeyboardConfig:
     # Path to a previously saved recording to play back instead of live input.
     # When set, no physical keyboard device is opened.
     playback_path: str | None = None
-
-    @property
-    def key_frame_toggle(self) -> str:
-        """Backward-compatible alias for the old frame-toggle naming."""
-        return self.key_aux
-
-    @key_frame_toggle.setter
-    def key_frame_toggle(self, value: str) -> None:
-        self.key_aux = value

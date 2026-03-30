@@ -69,12 +69,3 @@ class JoyConConfig:
     device_name_patterns: list = field(
         default_factory=lambda: ["Nintendo Switch Right Joy-Con", "Joy-Con (R)"]
     )
-
-    @property
-    def frame_toggle_button(self) -> str:
-        """Backward-compatible alias for the old frame-toggle naming."""
-        return self.aux_button
-
-    @frame_toggle_button.setter
-    def frame_toggle_button(self, value: str) -> None:
-        self.aux_button = value
