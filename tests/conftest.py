@@ -54,12 +54,12 @@ def default_state() -> XboxState:
 
 @pytest.fixture
 def full_forward_state() -> XboxState:
-    """Xbox state with full forward on right stick Y."""
+    """Xbox state with full forward on left stick Y."""
     return XboxState(
         left_stick_x=0.0,
-        left_stick_y=0.0,
+        left_stick_y=1.0,
         right_stick_x=0.0,
-        right_stick_y=1.0,  # Forward/back is now right stick Y
+        right_stick_y=0.0,
         right_trigger=0.0,
         left_bumper=True,  # Deadman held
     )

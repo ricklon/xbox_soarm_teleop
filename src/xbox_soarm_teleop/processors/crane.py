@@ -3,8 +3,8 @@
 In crane mode the arm operates in a natural cylindrical geometry:
 
 - Left stick X  → shoulder_pan (base rotation, direct joint)
-- Left stick Y  → height (raise/lower, 2-DOF planar IK with elbow)
-- Right stick Y → reach (extend/retract, 2-DOF planar IK with elbow)
+- Left stick Y  → reach (extend/retract, 2-DOF planar IK with elbow)
+- Right stick Y → height (raise/lower, 2-DOF planar IK with elbow)
 - Right stick X → wrist_roll (direct joint)
 - D-pad Y       → wrist_flex (direct joint)
 - Right trigger → gripper (direct position)
@@ -22,8 +22,8 @@ import numpy as np
 from xbox_soarm_teleop.config.joints import (
     HOME_POSITION_DEG,
     JOINT_LIMITS_DEG,
-    JOINT_NAMES_WITH_GRIPPER,
 )
+from xbox_soarm_teleop.control.home import scalar_reached, step_scalar_toward
 from xbox_soarm_teleop.diagnostics.xbox_joint_drive import map_trigger_to_gripper_deg
 from xbox_soarm_teleop.processors.joint_direct import JointCommand
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
@@ -42,6 +42,12 @@ _REACH_MIN: float = 0.06
 _REACH_MAX: float = 0.30
 _HEIGHT_MIN: float = 0.04
 _HEIGHT_MAX: float = 0.40
+
+# Neutral crane home used for teleoperation. This is intentionally different
+# from the folded parked pose in HOME_POSITION_DEG.
+_CRANE_HOME_REACH_M: float = 0.16
+_CRANE_HOME_HEIGHT_M: float = 0.12
+_CRANE_HOME_WRIST_FLEX_DEG: float = 13.0
 
 
 class CraneProcessor:
@@ -79,21 +85,23 @@ class CraneProcessor:
 
         # Direct-joint state
         self._pan_deg = float(HOME_POSITION_DEG["shoulder_pan"])
-        self._wrist_flex_deg = float(HOME_POSITION_DEG["wrist_flex"])
+        self._wrist_flex_deg = float(_CRANE_HOME_WRIST_FLEX_DEG)
         self._wrist_roll_deg = float(HOME_POSITION_DEG["wrist_roll"])
         self._gripper_deg = float(HOME_POSITION_DEG["gripper"])
 
-        # IK joint state (warm-started from home)
+        # IK joint state (warm-started from parked home until crane home is solved)
         self._sl_deg = float(HOME_POSITION_DEG["shoulder_lift"])
         self._ef_deg = float(HOME_POSITION_DEG["elbow_flex"])
 
         # Planar IK solver (shoulder_lift + elbow_flex only)
         self._planar_ik = None
-        self._reach_m: float = 0.15
-        self._height_m: float = 0.15
+        self._reach_m: float = _CRANE_HOME_REACH_M
+        self._height_m: float = _CRANE_HOME_HEIGHT_M
+        self._homing_active: bool = False
 
         if urdf_path is not None:
             self._init_kinematics(urdf_path)
+        self.reset()
 
     def _init_kinematics(self, urdf_path: str) -> None:
         """Load the 2-joint planar IK solver and initialise reach/height."""
@@ -107,29 +115,6 @@ class CraneProcessor:
                 joint_names=["shoulder_lift", "elbow_flex"],
             )
 
-            # Full 4-joint solver — used only to compute the home EE position
-            full_ik = RobotKinematics(
-                urdf_path=urdf_path,
-                target_frame_name="gripper_frame_link",
-                joint_names=["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"],
-            )
-            home_4j = np.array(
-                [
-                    HOME_POSITION_DEG["shoulder_pan"],
-                    HOME_POSITION_DEG["shoulder_lift"],
-                    HOME_POSITION_DEG["elbow_flex"],
-                    HOME_POSITION_DEG["wrist_flex"],
-                ],
-                dtype=float,
-            )
-            ee_home = full_ik.forward_kinematics(home_4j)[:3, 3]
-            # Initialise crane targets from actual home EE position
-            self._reach_m = float(np.clip(
-                np.sqrt(float(ee_home[0]) ** 2 + float(ee_home[1]) ** 2),
-                _REACH_MIN,
-                _REACH_MAX,
-            ))
-            self._height_m = float(np.clip(float(ee_home[2]), _HEIGHT_MIN, _HEIGHT_MAX))
         except Exception as exc:
             print(f"CraneProcessor: kinematics init failed ({exc}), using defaults.", flush=True)
             self._planar_ik = None
@@ -143,17 +128,17 @@ class CraneProcessor:
         Returns:
             JointCommand with updated goal positions.
         """
+        # A button: start a smooth return to the neutral crane pose.
+        if state.a_button_pressed:
+            self._homing_active = True
+
+        if self._homing_active:
+            self._step_home()
+            return self._current_command()
+
         # Gripper is always active (position control via trigger)
         g_lower, g_upper = JOINT_LIMITS_DEG["gripper"]
         self._gripper_deg = map_trigger_to_gripper_deg(state.right_trigger, g_lower, g_upper)
-
-        # A button: return to home
-        if state.a_button_pressed:
-            self.reset()
-            return JointCommand(
-                goals_deg={name: HOME_POSITION_DEG[name] for name in JOINT_NAMES_WITH_GRIPPER},
-                selected_joint="",
-            )
 
         # Deadman — hold current position if LB is released
         if not state.left_bumper:
@@ -168,10 +153,10 @@ class CraneProcessor:
             pan_lo, pan_hi,
         ))
 
-        # D-pad Y: -1 = up → tilt wrist up (positive wrist_flex delta)
+        # D-pad Y: -1 = up → tilt wrist up
         wf_lo, wf_hi = JOINT_LIMITS_DEG["wrist_flex"]
         self._wrist_flex_deg = float(np.clip(
-            self._wrist_flex_deg + (-state.dpad_y) * self.wrist_vel_deg_s * dt,
+            self._wrist_flex_deg + state.dpad_y * self.wrist_vel_deg_s * dt,
             wf_lo, wf_hi,
         ))
 
@@ -182,14 +167,14 @@ class CraneProcessor:
         ))
 
         # --- Cylindrical targets ---
-        # Right stick Y forward (negative raw) → extend reach
+        # Left stick Y forward (negative raw) → extend reach
         self._reach_m = float(np.clip(
-            self._reach_m + (-state.right_stick_y) * self.reach_vel_m_s * dt,
+            self._reach_m + (-state.left_stick_y) * self.reach_vel_m_s * dt,
             _REACH_MIN, _REACH_MAX,
         ))
-        # Left stick Y up (negative raw) → raise height
+        # Right stick Y up (negative raw) → raise height
         self._height_m = float(np.clip(
-            self._height_m + (-state.left_stick_y) * self.height_vel_m_s * dt,
+            self._height_m + (-state.right_stick_y) * self.height_vel_m_s * dt,
             _HEIGHT_MIN, _HEIGHT_MAX,
         ))
 
@@ -235,12 +220,112 @@ class CraneProcessor:
             selected_joint="",
         )
 
+    def _step_home(self) -> None:
+        """Move crane state toward its neutral teleoperation pose."""
+        self._pan_deg = step_scalar_toward(
+            self._pan_deg,
+            HOME_POSITION_DEG["shoulder_pan"],
+            self.pan_vel_deg_s * self.loop_dt,
+        )
+        self._wrist_flex_deg = step_scalar_toward(
+            self._wrist_flex_deg,
+            _CRANE_HOME_WRIST_FLEX_DEG,
+            self.wrist_vel_deg_s * self.loop_dt,
+        )
+        self._wrist_roll_deg = step_scalar_toward(
+            self._wrist_roll_deg,
+            HOME_POSITION_DEG["wrist_roll"],
+            self.wrist_vel_deg_s * self.loop_dt,
+        )
+        self._gripper_deg = step_scalar_toward(
+            self._gripper_deg,
+            HOME_POSITION_DEG["gripper"],
+            _IK_MAX_VEL_DEG_S * self.loop_dt,
+        )
+        self._reach_m = step_scalar_toward(
+            self._reach_m,
+            _CRANE_HOME_REACH_M,
+            self.reach_vel_m_s * self.loop_dt,
+        )
+        self._height_m = step_scalar_toward(
+            self._height_m,
+            _CRANE_HOME_HEIGHT_M,
+            self.height_vel_m_s * self.loop_dt,
+        )
+
+        solved = self._solve_planar_target(self._reach_m, self._height_m)
+        if solved is not None:
+            self._sl_deg = step_scalar_toward(
+                self._sl_deg,
+                solved[0],
+                _IK_MAX_VEL_DEG_S * self.loop_dt,
+            )
+            self._ef_deg = step_scalar_toward(
+                self._ef_deg,
+                solved[1],
+                _IK_MAX_VEL_DEG_S * self.loop_dt,
+            )
+
+        done = (
+            scalar_reached(self._pan_deg, HOME_POSITION_DEG["shoulder_pan"])
+            and scalar_reached(self._wrist_flex_deg, _CRANE_HOME_WRIST_FLEX_DEG)
+            and scalar_reached(self._wrist_roll_deg, HOME_POSITION_DEG["wrist_roll"])
+            and scalar_reached(self._gripper_deg, HOME_POSITION_DEG["gripper"])
+            and scalar_reached(self._reach_m, _CRANE_HOME_REACH_M)
+            and scalar_reached(self._height_m, _CRANE_HOME_HEIGHT_M)
+        )
+        if solved is not None:
+            done = (
+                done
+                and scalar_reached(self._sl_deg, solved[0])
+                and scalar_reached(self._ef_deg, solved[1])
+            )
+        self._homing_active = not done
+
+    def _solve_planar_target(self, reach_m: float, height_m: float) -> tuple[float, float] | None:
+        """Solve the 2-DOF planar IK for a cylindrical target."""
+        if self._planar_ik is None:
+            return None
+
+        target = np.eye(4)
+        target[0, 3] = float(np.clip(reach_m, _REACH_MIN, _REACH_MAX))
+        target[2, 3] = float(np.clip(height_m, _HEIGHT_MIN, _HEIGHT_MAX))
+
+        ik_result = self._planar_ik.inverse_kinematics(
+            np.array([self._sl_deg, self._ef_deg], dtype=float),
+            target,
+            position_weight=1.0,
+            orientation_weight=0.0,
+        )
+        if ik_result is None:
+            return None
+
+        sl_lo, sl_hi = JOINT_LIMITS_DEG["shoulder_lift"]
+        ef_lo, ef_hi = JOINT_LIMITS_DEG["elbow_flex"]
+        return (
+            float(np.clip(float(ik_result[0]), sl_lo, sl_hi)),
+            float(np.clip(float(ik_result[1]), ef_lo, ef_hi)),
+        )
+
     def reset(self) -> None:
-        """Reset all joints and cylindrical targets to home."""
+        """Reset crane mode to a neutral teleoperation pose."""
         self._pan_deg = float(HOME_POSITION_DEG["shoulder_pan"])
-        self._sl_deg = float(HOME_POSITION_DEG["shoulder_lift"])
-        self._ef_deg = float(HOME_POSITION_DEG["elbow_flex"])
-        self._wrist_flex_deg = float(HOME_POSITION_DEG["wrist_flex"])
+        self._wrist_flex_deg = float(
+            np.clip(
+                _CRANE_HOME_WRIST_FLEX_DEG,
+                JOINT_LIMITS_DEG["wrist_flex"][0],
+                JOINT_LIMITS_DEG["wrist_flex"][1],
+            )
+        )
         self._wrist_roll_deg = float(HOME_POSITION_DEG["wrist_roll"])
         self._gripper_deg = float(HOME_POSITION_DEG["gripper"])
-        # Leave reach/height — user can continue from current position
+        self._reach_m = _CRANE_HOME_REACH_M
+        self._height_m = _CRANE_HOME_HEIGHT_M
+        self._homing_active = False
+
+        solved = self._solve_planar_target(self._reach_m, self._height_m)
+        if solved is None:
+            self._sl_deg = float(HOME_POSITION_DEG["shoulder_lift"])
+            self._ef_deg = float(HOME_POSITION_DEG["elbow_flex"])
+        else:
+            self._sl_deg, self._ef_deg = solved

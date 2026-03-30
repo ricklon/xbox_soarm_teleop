@@ -94,7 +94,10 @@ class XboxController:
         """Disconnect from the controller."""
         self._stop_event.set()
         if self._reader_thread is not None:
-            self._reader_thread.join(timeout=1.0)
+            try:
+                self._reader_thread.join(timeout=1.0)
+            except KeyboardInterrupt:
+                pass
             self._reader_thread = None
         self._gamepad = None
         self._connected = False
@@ -252,7 +255,25 @@ class XboxController:
         new_x = (x / magnitude) * scale
         new_y = (y / magnitude) * scale
 
-        return new_x, new_y
+        return self._attenuate_minor_axis(new_x, new_y)
+
+    def _attenuate_minor_axis(self, x: float, y: float) -> tuple[float, float]:
+        """Reduce small cross-axis bleed when one stick axis is clearly dominant.
+
+        This preserves intentional diagonals while making strong cardinal motions
+        less likely to leak a small amount of the orthogonal axis.
+        """
+        abs_x = abs(x)
+        abs_y = abs(y)
+        dominant_min = self.config.dominant_axis_min
+        ratio = self.config.dominant_axis_ratio
+        attenuation = self.config.cross_axis_attenuation
+
+        if abs_x >= dominant_min and abs_y > 0.0 and abs_x / abs_y >= ratio:
+            return x, y * attenuation
+        if abs_y >= dominant_min and abs_x > 0.0 and abs_y / abs_x >= ratio:
+            return x * attenuation, y
+        return x, y
 
     def _normalize_trigger(self, value: int) -> float:
         """Normalize trigger value to [0, 1].

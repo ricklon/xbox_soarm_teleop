@@ -133,23 +133,23 @@ class TestKeyboardControllerRead:
         assert state.right_stick_x == 0.0
         assert state.right_stick_y == 0.0
 
-    def test_forward_key_sets_right_stick_y_negative(self):
+    def test_forward_key_sets_left_stick_y_negative(self):
         ctrl = _connected_ctrl()
         _press(ctrl, ctrl.config.key_forward)
         state = ctrl.read()
-        assert state.right_stick_y < 0.0
+        assert state.left_stick_y < 0.0
 
-    def test_back_key_sets_right_stick_y_positive(self):
+    def test_back_key_sets_left_stick_y_positive(self):
         ctrl = _connected_ctrl()
         _press(ctrl, ctrl.config.key_back)
         state = ctrl.read()
-        assert state.right_stick_y > 0.0
+        assert state.left_stick_y > 0.0
 
     def test_forward_back_cancel(self):
         ctrl = _connected_ctrl()
         _press(ctrl, ctrl.config.key_forward, ctrl.config.key_back)
         state = ctrl.read()
-        assert state.right_stick_y == pytest.approx(0.0)
+        assert state.left_stick_y == pytest.approx(0.0)
 
     def test_right_key_sets_left_stick_x_positive(self):
         ctrl = _connected_ctrl()
@@ -163,17 +163,17 @@ class TestKeyboardControllerRead:
         state = ctrl.read()
         assert state.left_stick_x < 0.0
 
-    def test_up_key_sets_left_stick_y_negative(self):
+    def test_up_key_sets_right_stick_y_negative(self):
         ctrl = _connected_ctrl()
         _press(ctrl, ctrl.config.key_up)
         state = ctrl.read()
-        assert state.left_stick_y < 0.0
+        assert state.right_stick_y < 0.0
 
-    def test_down_key_sets_left_stick_y_positive(self):
+    def test_down_key_sets_right_stick_y_positive(self):
         ctrl = _connected_ctrl()
         _press(ctrl, ctrl.config.key_down)
         state = ctrl.read()
-        assert state.left_stick_y > 0.0
+        assert state.right_stick_y > 0.0
 
     def test_roll_right_positive(self):
         ctrl = _connected_ctrl()
@@ -232,7 +232,7 @@ class TestKeyboardControllerRead:
         ctrl = _connected_ctrl()
         _press(ctrl, ctrl.config.key_forward, ctrl.config.key_right)
         state = ctrl.read()
-        assert state.right_stick_y < 0.0  # forward
+        assert state.left_stick_y < 0.0  # forward
         assert state.left_stick_x > 0.0  # right
 
 
@@ -246,10 +246,10 @@ class TestKeyboardSpeedLevels:
         _press(ctrl, ctrl.config.key_forward)
 
         ctrl._speed_level = 0  # 25%
-        s1 = ctrl.read().right_stick_y
+        s1 = ctrl.read().left_stick_y
 
         ctrl._speed_level = 3  # 100%
-        s2 = ctrl.read().right_stick_y
+        s2 = ctrl.read().left_stick_y
 
         assert abs(s2) > abs(s1)
 
@@ -267,10 +267,10 @@ class TestKeyboardSpeedLevels:
         ctrl._speed_level = 2  # 0.75
 
         _press(ctrl, ctrl.config.key_forward)
-        no_shift = ctrl.read().right_stick_y
+        no_shift = ctrl.read().left_stick_y
 
         _press(ctrl, ctrl.config.key_shift_left)
-        with_shift = ctrl.read().right_stick_y
+        with_shift = ctrl.read().left_stick_y
 
         assert abs(with_shift) > abs(no_shift)
 
@@ -279,7 +279,7 @@ class TestKeyboardSpeedLevels:
         ctrl._speed_level = 4  # 1.5 × 2 = 3.0 → capped at 2.0 → clamp to 1.0 on stick
         _press(ctrl, ctrl.config.key_forward, ctrl.config.key_shift_left)
         state = ctrl.read()
-        assert abs(state.right_stick_y) == pytest.approx(1.0)
+        assert abs(state.left_stick_y) == pytest.approx(1.0)
 
 
 class TestKeyboardEdgeDetection:

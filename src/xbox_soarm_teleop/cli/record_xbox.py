@@ -44,11 +44,7 @@ from pathlib import Path
 
 import numpy as np
 
-from xbox_soarm_teleop.config.joints import (
-    HOME_POSITION_DEG,
-    JOINT_NAMES_WITH_GRIPPER,
-)
-from xbox_soarm_teleop.control.units import deg_to_normalized
+from xbox_soarm_teleop.config.joints import JOINT_NAMES_WITH_GRIPPER
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta
 from xbox_soarm_teleop.recording.features import build_dataset_features, build_schema_metadata
 
@@ -179,9 +175,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to robot URDF (required for crane IK; auto-detected if omitted).",
     )
     p.add_argument(
-        "--no-swap-xy",
+        "--swap-xy",
         action="store_true",
-        help="Disable XY swap for Cartesian mapping (cartesian mode only).",
+        dest="swap_xy",
+        help="Enable legacy XY swap for Cartesian mapping (cartesian mode only).",
+    )
+    p.add_argument(
+        "--no-swap-xy",
+        action="store_false",
+        dest="swap_xy",
+        help=argparse.SUPPRESS,
     )
     p.add_argument(
         "--no-strict-safety",
@@ -234,7 +237,7 @@ def run_recording(
     max_episodes: int = 10,
     root: str | None = None,
     push_to_hub: bool = False,
-    swap_xy: bool = True,
+    swap_xy: bool = False,
     strict_safety: bool = True,
     ik_vel_scale: float = 1.0,
 ) -> None:
@@ -251,7 +254,7 @@ def run_recording(
         max_episodes: Stop after this many episodes.
         root: Local dataset root directory.
         push_to_hub: Push to HuggingFace Hub when done.
-        swap_xy: Swap Cartesian X/Y axes (cartesian mode only).
+        swap_xy: Enable legacy Cartesian X/Y swap (cartesian mode only).
         strict_safety: Use strict workspace bounds (cartesian mode only).
         ik_vel_scale: Scale IK joint velocity limits (cartesian mode only).
     """
@@ -398,15 +401,9 @@ def run_recording(
                         break
                 else:
                     state = controller.read()
+                    ik_step = teleop_action_processor.steps[0]
                     if state.a_button_pressed:
-                        home_action = {
-                            f"{name}.pos": deg_to_normalized(HOME_POSITION_DEG[name], name)
-                            for name in JOINT_NAMES_WITH_GRIPPER[:-1]
-                        }
-                        home_action["gripper.pos"] = 0.0
-                        robot.send_action(home_action)
-                        teleop_action_processor.reset()
-                        continue
+                        ik_step.start_homing()
 
                     ee_delta = mapper(state)
                     action_input = _ee_delta_to_action_dict(ee_delta)
@@ -415,7 +412,6 @@ def run_recording(
                     robot.send_action(action)
                     obs = robot.get_observation()
 
-                    ik_step = teleop_action_processor.steps[0]
                     ee_target_pose = ik_step.last_target_pose
                     ee_obs_pose = ik_step.last_obs_pose
                     if ee_target_pose is None:
@@ -509,7 +505,7 @@ def main() -> None:
         max_episodes=args.episodes,
         root=args.root,
         push_to_hub=args.push_to_hub,
-        swap_xy=not args.no_swap_xy,
+        swap_xy=args.swap_xy,
         strict_safety=not args.no_strict_safety,
         ik_vel_scale=args.ik_vel_scale,
     )

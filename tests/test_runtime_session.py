@@ -63,7 +63,7 @@ def test_build_control_runtime_cartesian_with_jacobian():
 def test_control_help_lines_keyboard_cartesian_jacobian():
     lines = control_help_lines("keyboard", "cartesian", use_jacobian=True)
     assert lines[0] == "Controls:"
-    assert "  ← / →           yaw (not available in Jacobian mode)" in lines
+    assert "  Arrow keys      orientation disabled in touch mode" in lines
     assert "  H               home position" in lines
 
 
@@ -72,3 +72,16 @@ def test_control_help_lines_joycon_joint():
     assert "  Stick left/right    drive selected joint" in lines
     assert "  (no joint cycle on Joy-Con — use cartesian mode)" in lines
     assert lines[-1] == "  Close window       exit"
+
+
+def test_control_help_lines_xbox_crane():
+    lines = control_help_lines("xbox", "crane")
+    assert "  Left stick X/Y            left-right / forward-back" in lines
+    assert "  Right stick Y/X           up-down / wrist roll" in lines
+    assert "  D-pad up/down             wrist up / down" in lines
+    assert "  A button                  neutral crane pose" in lines
+
+
+def test_control_help_lines_xbox_cartesian():
+    lines = control_help_lines("xbox", "cartesian")
+    assert "  D-pad                   orientation disabled in touch mode" in lines

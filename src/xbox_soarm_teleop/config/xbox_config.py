@@ -23,6 +23,9 @@ class XboxConfig:
     """
 
     deadzone: float = 0.1
+    dominant_axis_min: float = 0.55  # minimum stick magnitude before cross-axis suppression
+    dominant_axis_ratio: float = 2.5  # dominant axis must exceed minor axis by this ratio
+    cross_axis_attenuation: float = 0.2  # scale factor applied to minor axis when suppressed
     linear_scale: float = 0.1  # m/s at full stick
     angular_scale: float = 2.0  # rad/s at full stick (wrist rotation)
     orientation_scale: float = 0.5  # rad/s for pitch/yaw (D-pad) - slower for digital input

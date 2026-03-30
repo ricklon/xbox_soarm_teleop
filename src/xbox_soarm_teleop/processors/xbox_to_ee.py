@@ -91,6 +91,8 @@ class MapXboxToEEDelta:
         wrist_roll_threshold: float = 0.25,  # Extra threshold for wrist roll to prevent drift
         invert_pitch: bool = False,
         invert_yaw: bool = False,
+        enable_pitch: bool = False,
+        enable_yaw: bool = False,
     ):
         self.linear_scale = linear_scale
         self.angular_scale = angular_scale
@@ -98,6 +100,8 @@ class MapXboxToEEDelta:
         self.wrist_roll_threshold = wrist_roll_threshold
         self.invert_pitch = invert_pitch
         self.invert_yaw = invert_yaw
+        self.enable_pitch = enable_pitch
+        self.enable_yaw = enable_yaw
 
     def __call__(self, state: XboxState) -> EEDelta:
         """Map controller state to end effector delta.
@@ -120,23 +124,24 @@ class MapXboxToEEDelta:
         if abs(wrist_roll_input) < self.wrist_roll_threshold:
             wrist_roll_input = 0.0
 
-        # D-pad for pitch/yaw
-        # D-pad Y: -1 = up, 1 = down (HAT convention)
-        # We want up = pitch up (positive), so negate
-        pitch_input = -state.dpad_y
-        if self.invert_pitch:
-            pitch_input = -pitch_input
+        pitch_input = 0.0
+        if self.enable_pitch:
+            # D-pad Y: -1 = up, 1 = down (HAT convention)
+            pitch_input = -state.dpad_y
+            if self.invert_pitch:
+                pitch_input = -pitch_input
 
-        # D-pad X: -1 = left, 1 = right
-        # We want right = yaw right (positive)
-        yaw_input = state.dpad_x
-        if self.invert_yaw:
-            yaw_input = -yaw_input
+        yaw_input = 0.0
+        if self.enable_yaw:
+            # D-pad X: -1 = left, 1 = right
+            yaw_input = state.dpad_x
+            if self.invert_yaw:
+                yaw_input = -yaw_input
 
         return EEDelta(
-            dx=-state.right_stick_y * self.linear_scale,  # Forward/back (right stick Y)
+            dx=-state.left_stick_y * self.linear_scale,  # Forward/back (left stick Y)
             dy=-state.left_stick_x * self.linear_scale,  # Left/right (left stick X)
-            dz=-state.left_stick_y * self.linear_scale,  # Up/down (left stick Y)
+            dz=-state.right_stick_y * self.linear_scale,  # Up/down (right stick Y)
             droll=wrist_roll_input * self.angular_scale,  # Wrist roll (right stick X)
             dpitch=pitch_input * self.orientation_scale,  # Pitch (D-pad up/down)
             dyaw=yaw_input * self.orientation_scale,  # Yaw (D-pad left/right)

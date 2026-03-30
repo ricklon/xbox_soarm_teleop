@@ -14,8 +14,8 @@ Usage:
 Controls:
     - Hold LB (left bumper) to enable arm movement
     - Left stick X: Move left/right (Y axis)
-    - Left stick Y: Up/down (Z axis)
-    - Right stick Y: Forward/back (X axis)
+    - Left stick Y: Forward/back (X axis)
+    - Right stick Y: Up/down (Z axis)
     - Right stick X: Wrist roll rotation (direct, not IK)
     - Right trigger: Gripper (released=open, pulled=closed)
     - A button: Return to home position
@@ -53,9 +53,9 @@ from xbox_soarm_teleop.control.cartesian import (
     apply_ik_solution,
     full_joint_positions,
     make_cartesian_state,
+    step_cartesian_home,
     step_gripper_toward,
     step_wrist_roll,
-    sync_cartesian_state,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
 from xbox_soarm_teleop.control.units import deg_to_normalized
@@ -64,7 +64,6 @@ from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 # Project paths
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 URDF_PATH = PROJECT_ROOT / "assets" / "so101_abs.urdf"
-MUJOCO_XML_PATH = PROJECT_ROOT / "assets" / "so101_with_cameras.xml"
 
 # Default calibration directory (project-local)
 DEFAULT_CALIBRATION_DIR = PROJECT_ROOT / "calibration"
@@ -92,9 +91,7 @@ def find_serial_port() -> str | None:
 
 
 def load_model_with_cameras(urdf_path: str) -> mujoco.MjModel:
-    """Load URDF and add preset camera views."""
-    if MUJOCO_XML_PATH.exists():
-        return mujoco.MjModel.from_xml_path(str(MUJOCO_XML_PATH))
+    """Load the MuJoCo model."""
     return mujoco.MjModel.from_xml_path(urdf_path)
 
 
@@ -329,6 +326,7 @@ def run_dual_mode(
     routine_start = time.monotonic()
     trace_points: list[np.ndarray] = []
     trace_min_step_m = max(routine_trace_step_mm / 1000.0, 0.0005)
+    homing_active = False
 
     def signal_handler(sig, frame):
         nonlocal running
@@ -385,15 +383,7 @@ def run_dual_mode(
 
                     if state.a_button_pressed:
                         print("\\nGoing home...", flush=True)
-                        sync_cartesian_state(
-                            cartesian_state,
-                            kinematics,
-                            np.zeros(4, dtype=float),
-                            wrist_roll_deg=0.0,
-                            target_pitch=0.0,
-                            target_yaw=0.0,
-                            gripper_pos=GRIPPER_DEFAULT,
-                        )
+                        homing_active = True
 
                 # Debug: print joint angles when in motion routine
                 if motion_routine:
@@ -410,15 +400,28 @@ def run_dual_mode(
                 else:
                     ee_delta = mapper(state)
 
-                # Rate-limit gripper
-                cartesian_state.gripper_pos = step_gripper_toward(
-                    cartesian_state.gripper_pos,
-                    ee_delta.gripper,
-                    gripper_rate=gripper_rate,
-                    dt=LOOP_PERIOD,
-                )
+                if homing_active:
+                    homing_active = not step_cartesian_home(
+                        cartesian_state,
+                        kinematics,
+                        np.zeros(4, dtype=float),
+                        home_wrist_roll_deg=0.0,
+                        home_gripper_pos=GRIPPER_DEFAULT,
+                        ik_joint_max_step_deg=ik_joint_vel_limits,
+                        wrist_roll_vel_deg_s=90.0,
+                        gripper_rate=gripper_rate,
+                        dt=LOOP_PERIOD,
+                    )
+                    ee_delta = EEDelta(gripper=cartesian_state.gripper_pos)
+                else:
+                    cartesian_state.gripper_pos = step_gripper_toward(
+                        cartesian_state.gripper_pos,
+                        ee_delta.gripper,
+                        gripper_rate=gripper_rate,
+                        dt=LOOP_PERIOD,
+                    )
 
-                if not ee_delta.is_zero_motion():
+                if not homing_active and not ee_delta.is_zero_motion():
                     target_pose, _target_pos, target_flags = advance_cartesian_target(
                         cartesian_state,
                         ee_delta,

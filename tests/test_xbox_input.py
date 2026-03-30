@@ -84,6 +84,20 @@ class TestXboxController:
         assert abs(x - 1.0) < 0.01
         assert y == 0.0
 
+    def test_minor_axis_attenuated_for_dominant_cardinal_motion(
+        self, xbox_controller: XboxController
+    ):
+        """Small orthogonal bleed should be suppressed for strong cardinal input."""
+        x, y = xbox_controller._apply_radial_deadzone(0.08, 0.9)
+        assert y > 0.8
+        assert abs(x) < 0.03
+
+    def test_intentional_diagonal_motion_is_preserved(self, xbox_controller: XboxController):
+        """Real diagonal motion should not be collapsed into a cardinal direction."""
+        x, y = xbox_controller._apply_radial_deadzone(0.7, 0.6)
+        assert x > 0.4
+        assert y > 0.4
+
     def test_normalize_stick_raw_center(self, xbox_controller: XboxController):
         """Center position should normalize to ~0."""
         # Center of default range (-32768, 32767) is approximately 0
@@ -189,7 +203,7 @@ class TestMapXboxToEEDelta:
         mapper = MapXboxToEEDelta(linear_scale=0.1)
         delta = mapper(full_forward_state)
 
-        # Forward motion from right_stick_y = 1.0 (negated)
+        # Forward motion from left_stick_y = 1.0 (negated)
         assert delta.dx == -0.1
         assert delta.dy == 0.0
         assert delta.dz == 0.0
@@ -222,8 +236,20 @@ class TestMapXboxToEEDelta:
         )
         delta = mapper(state)
 
-        assert delta.dx == -0.1  # -right_stick_y * linear_scale (forward/back, negated)
+        assert delta.dx == -0.1  # -left_stick_y * linear_scale (forward/back, negated)
         assert delta.dy == -0.1  # -left_stick_x * linear_scale (left/right, negated)
-        assert delta.dz == -0.1  # -left_stick_y * linear_scale (up/down, negated)
+        assert delta.dz == -0.1  # -right_stick_y * linear_scale (up/down, negated)
         assert delta.droll == 0.5  # right_stick_x * angular_scale (roll)
         assert delta.gripper == 1.0
+
+    def test_dpad_up_maps_to_positive_pitch(self):
+        """Cartesian/recording path should interpret D-pad up as pitch up."""
+        mapper = MapXboxToEEDelta(orientation_scale=1.0, enable_pitch=True)
+        delta = mapper(XboxState(left_bumper=True, dpad_y=-1.0))
+        assert delta.dpitch == 1.0
+
+    def test_dpad_orientation_disabled_by_default(self):
+        mapper = MapXboxToEEDelta(orientation_scale=1.0)
+        delta = mapper(XboxState(left_bumper=True, dpad_y=-1.0, dpad_x=1.0))
+        assert delta.dpitch == 0.0
+        assert delta.dyaw == 0.0

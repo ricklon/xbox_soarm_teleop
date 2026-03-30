@@ -29,19 +29,13 @@ def control_help_lines(
                 ]
             )
         else:
-            yaw_line = (
-                "  ← / →           yaw (not available in Jacobian mode)"
-                if use_jacobian
-                else "  ← / →           yaw"
-            )
             lines.extend(
                 [
                     "  W / S           forward / back  (X)",
                     "  A / D           left / right    (Y)",
                     "  R / F           up / down       (Z)",
                     "  Q / E           wrist roll",
-                    "  ↑ / ↓           pitch",
-                    yaw_line,
+                    "  Arrow keys      orientation disabled in touch mode",
                     "  Space (hold)    gripper close",
                     "  H               home position",
                     "  1–5             speed level  (default 3 = 75%)",
@@ -91,19 +85,24 @@ def control_help_lines(
                     "  A button                  home position",
                 ]
             )
-        else:
-            yaw_line = (
-                "  D-pad left/right          yaw (not available in Jacobian mode)"
-                if use_jacobian
-                else "  D-pad left/right          yaw"
-            )
+        elif mode == "crane":
             lines.extend(
                 [
                     "  Hold LB + move sticks     control arm",
-                    "  Left stick X/Y            left-right / up-down",
-                    "  Right stick Y/X           forward-back / wrist roll",
-                    "  D-pad up/down             pitch",
-                    yaw_line,
+                    "  Left stick X/Y            left-right / forward-back",
+                    "  Right stick Y/X           up-down / wrist roll",
+                    "  D-pad up/down             wrist up / down",
+                    "  Right trigger             gripper",
+                    "  A button                  neutral crane pose",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "  Hold LB + move sticks     control arm",
+                    "  Left stick X/Y            left-right / forward-back",
+                    "  Right stick Y/X           up-down / wrist roll",
+                    "  D-pad                   orientation disabled in touch mode",
                     "  Right trigger             gripper",
                     "  A button                  home position",
                 ]

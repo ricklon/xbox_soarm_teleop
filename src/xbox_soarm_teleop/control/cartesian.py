@@ -7,6 +7,12 @@ from typing import Callable
 
 import numpy as np
 
+from xbox_soarm_teleop.control.home import (
+    array_reached,
+    scalar_reached,
+    step_array_toward,
+    step_scalar_toward,
+)
 from xbox_soarm_teleop.control.pose import euler_to_rotation_matrix
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta
 
@@ -165,3 +171,51 @@ def full_joint_positions(ik_joint_pos_deg: np.ndarray, wrist_roll_deg: float) ->
     """Combine IK joints plus wrist roll into the 5-joint arm vector."""
     joints = np.asarray(ik_joint_pos_deg, dtype=float)
     return np.array([joints[0], joints[1], joints[2], joints[3], float(wrist_roll_deg)])
+
+
+def step_cartesian_home(
+    state: CartesianControlState,
+    kinematics,
+    home_ik_joint_pos_deg: np.ndarray,
+    *,
+    home_wrist_roll_deg: float,
+    home_gripper_pos: float,
+    ik_joint_max_step_deg: np.ndarray,
+    wrist_roll_vel_deg_s: float,
+    gripper_rate: float,
+    dt: float,
+    target_pitch: float = 0.0,
+    target_yaw: float = 0.0,
+) -> bool:
+    """Advance cartesian control state toward a home pose without snapping."""
+    home_joints = np.asarray(home_ik_joint_pos_deg, dtype=float)
+    next_joints = step_array_toward(state.ik_joint_pos_deg, home_joints, ik_joint_max_step_deg * dt)
+    next_wrist_roll = step_scalar_toward(
+        state.wrist_roll_deg,
+        home_wrist_roll_deg,
+        wrist_roll_vel_deg_s * dt,
+    )
+    state.gripper_pos = step_gripper_toward(
+        state.gripper_pos,
+        home_gripper_pos,
+        gripper_rate=gripper_rate,
+        dt=dt,
+    )
+    state.target_pitch = step_scalar_toward(state.target_pitch, target_pitch, np.pi * dt)
+    state.target_yaw = step_scalar_toward(state.target_yaw, target_yaw, np.pi * dt)
+
+    home_pose = kinematics.forward_kinematics(home_joints)
+    apply_ik_solution(
+        state,
+        kinematics,
+        next_joints,
+        wrist_roll_deg=next_wrist_roll,
+        target_pose=home_pose,
+    )
+    return (
+        array_reached(state.ik_joint_pos_deg, home_joints)
+        and scalar_reached(state.wrist_roll_deg, home_wrist_roll_deg)
+        and scalar_reached(state.gripper_pos, home_gripper_pos)
+        and scalar_reached(state.target_pitch, target_pitch)
+        and scalar_reached(state.target_yaw, target_yaw)
+    )

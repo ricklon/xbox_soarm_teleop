@@ -9,6 +9,7 @@ from xbox_soarm_teleop.control.cartesian import (
     apply_ik_solution,
     full_joint_positions,
     make_cartesian_state,
+    step_cartesian_home,
     step_gripper_toward,
     step_wrist_roll,
     sync_cartesian_state,
@@ -90,3 +91,34 @@ def test_advance_cartesian_target_and_apply_solution() -> None:
 def test_full_joint_positions() -> None:
     joints = full_joint_positions(np.array([1.0, 2.0, 3.0, 4.0]), 5.0)
     assert np.allclose(joints, np.array([1.0, 2.0, 3.0, 4.0, 5.0]))
+
+
+def test_step_cartesian_home_is_rate_limited() -> None:
+    kin = _FakeKinematics()
+    state = make_cartesian_state(
+        kin,
+        np.array([1.0, 2.0, 3.0, 4.0]),
+        wrist_roll_deg=30.0,
+        target_pitch=1.0,
+        target_yaw=-1.0,
+        gripper_pos=1.0,
+    )
+
+    done = step_cartesian_home(
+        state,
+        kin,
+        np.zeros(4, dtype=float),
+        home_wrist_roll_deg=0.0,
+        home_gripper_pos=0.0,
+        ik_joint_max_step_deg=np.array([1.0, 1.0, 1.0, 1.0]),
+        wrist_roll_vel_deg_s=10.0,
+        gripper_rate=2.0,
+        dt=0.1,
+    )
+
+    assert done is False
+    assert np.allclose(state.ik_joint_pos_deg, np.array([0.9, 1.9, 2.9, 3.9]))
+    assert state.wrist_roll_deg == 29.0
+    assert state.gripper_pos == 0.8
+    assert state.target_pitch < 1.0
+    assert state.target_yaw > -1.0

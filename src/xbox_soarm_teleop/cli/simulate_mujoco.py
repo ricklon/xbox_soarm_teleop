@@ -32,6 +32,7 @@ import csv
 import json
 import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -52,11 +53,12 @@ from xbox_soarm_teleop.control.cartesian import (
     apply_ik_solution,
     full_joint_positions,
     make_cartesian_state,
+    step_cartesian_home,
     step_gripper_toward,
     step_wrist_roll,
-    sync_cartesian_state,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
+from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
 from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 
 # Project paths
@@ -65,36 +67,126 @@ URDF_PATH = PROJECT_ROOT / "assets" / "so101_abs.urdf"
 
 # Joint names (order matters - matches URDF joint order)
 JOINT_NAMES = JOINT_NAMES_WITH_GRIPPER
+CAMERA_PRESET_NAMES = ["front_right", "left", "top", "back", "isometric"]
+CAMERA_PRESETS = {
+    "front_right": {
+        "lookat": np.array([0.18, 0.0, 0.16], dtype=float),
+        "distance": 0.70,
+        "azimuth": 135.0,
+        "elevation": -22.0,
+    },
+    "left": {
+        "lookat": np.array([0.18, 0.0, 0.16], dtype=float),
+        "distance": 0.65,
+        "azimuth": 90.0,
+        "elevation": -18.0,
+    },
+    "top": {
+        "lookat": np.array([0.18, 0.0, 0.16], dtype=float),
+        "distance": 0.60,
+        "azimuth": 180.0,
+        "elevation": -89.0,
+    },
+    "back": {
+        "lookat": np.array([0.18, 0.0, 0.16], dtype=float),
+        "distance": 0.70,
+        "azimuth": 0.0,
+        "elevation": -18.0,
+    },
+    "isometric": {
+        "lookat": np.array([0.18, 0.0, 0.16], dtype=float),
+        "distance": 0.75,
+        "azimuth": 45.0,
+        "elevation": -28.0,
+    },
+}
+GRIPPER_FRAME_LOCAL_OFFSET = np.array([-0.0079, -0.000218121, -0.0981274], dtype=float)
+GRIPPER_JAW_LATERAL_OFFSET = 0.018
 
 # Control loop rate
 CONTROL_RATE = 50  # Hz
 LOOP_PERIOD = 1.0 / CONTROL_RATE
+STACK_CUBE_COUNT = 3
+STACK_CUBE_HALF_EXTENT = 0.02
+STACK_CUBE_MASS = 0.05
+STACK_BASE_CENTER = np.array([0.355, 0.0, STACK_CUBE_HALF_EXTENT], dtype=float)
+STACK_LAYOUT_OFFSETS = [
+    np.array([0.0, -0.028, 0.0], dtype=float),
+    np.array([0.0, 0.028, 0.0], dtype=float),
+    np.array([0.0, 0.0, 2.15 * STACK_CUBE_HALF_EXTENT], dtype=float),
+]
+STACK_COLORS = [
+    (0.82, 0.14, 0.74, 1.0),
+    (0.65, 0.65, 0.12, 1.0),
+    (0.12, 0.12, 0.65, 1.0),
+]
+
+
+class StackChallenge:
+    """Physical cube stack diagnostic scored by cube displacement."""
+
+    def __init__(self, sim: "MuJoCoSimulator", move_threshold: float = 0.025):
+        self.sim = sim
+        self.move_threshold = move_threshold
+        self.completed: set[str] = set()
+
+    def start(self) -> None:
+        print("\n=== STACK CHALLENGE ===", flush=True)
+        print("Touch or push the physical cube stack until each cube moves.", flush=True)
+        print(f"Success threshold: {self.move_threshold * 100:.1f}cm displacement from rest\n", flush=True)
+
+    def update(self) -> list[str]:
+        moved_now: list[str] = []
+        for name, displacement in self.sim.get_stack_cube_displacements().items():
+            if displacement >= self.move_threshold and name not in self.completed:
+                self.completed.add(name)
+                moved_now.append(name)
+        return moved_now
+
+    def print_summary(self) -> None:
+        print("\n=== STACK SUMMARY ===", flush=True)
+        print(f"Cubes moved: {len(self.completed)} / {STACK_CUBE_COUNT}", flush=True)
+        if self.completed:
+            print("Moved cubes:", ", ".join(sorted(self.completed)), flush=True)
+
+    def status_text(self) -> str:
+        moved = len(self.completed)
+        return f"Stack moved: {moved}/{STACK_CUBE_COUNT}"
 
 
 class MuJoCoSimulator:
     """MuJoCo-based SO-ARM101 simulator."""
 
-    def __init__(self, urdf_path: str):
+    def __init__(self, urdf_path: str, scene: str = "default"):
         """Initialize MuJoCo simulator.
 
         Args:
             urdf_path: Path to robot URDF file.
+            scene: Scene variant to augment on top of the robot model.
         """
-        self.model = mujoco.MjModel.from_xml_path(urdf_path)
+        self.scene = scene
+        self.model = load_model_with_cameras(urdf_path, scene=scene)
         self.data = mujoco.MjData(self.model)
+        self.physics_scene_active = scene == "stack"
 
         # Get joint indices
         self.joint_ids = {}
+        self.joint_qvel_adrs = {}
         for name in JOINT_NAMES:
             jnt_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
             if jnt_id >= 0:
                 self.joint_ids[name] = jnt_id
+                self.joint_qvel_adrs[name] = self.model.jnt_dofadr[jnt_id]
 
         # Target joint positions (radians)
         self.target_pos = np.zeros(len(JOINT_NAMES))
+        self.stack_cube_body_ids: dict[str, int] = {}
+        self.stack_initial_positions: dict[str, np.ndarray] = {}
 
         # Initialize to home position
         self.go_home()
+        if self.physics_scene_active:
+            self._settle_stack_scene()
 
     def go_home(self) -> None:
         """Reset to home position."""
@@ -105,6 +197,9 @@ class MuJoCoSimulator:
                 jnt_id = self.joint_ids[name]
                 qpos_adr = self.model.jnt_qposadr[jnt_id]
                 self.data.qpos[qpos_adr] = 0.0
+                qvel_adr = self.joint_qvel_adrs[name]
+                if qvel_adr >= 0:
+                    self.data.qvel[qvel_adr] = 0.0
         mujoco.mj_forward(self.model, self.data)
 
     def set_joint_targets(self, positions_deg: np.ndarray) -> None:
@@ -119,6 +214,9 @@ class MuJoCoSimulator:
                 jnt_id = self.joint_ids[name]
                 qpos_adr = self.model.jnt_qposadr[jnt_id]
                 self.data.qpos[qpos_adr] = positions_rad[i]
+                qvel_adr = self.joint_qvel_adrs[name]
+                if qvel_adr >= 0:
+                    self.data.qvel[qvel_adr] = 0.0
 
     def set_gripper(self, position: float) -> None:
         """Set gripper position (0=open, 1=closed).
@@ -133,6 +231,9 @@ class MuJoCoSimulator:
             gripper_open = 1.74533
             gripper_closed = -0.174533
             self.data.qpos[qpos_adr] = gripper_open - position * (gripper_open - gripper_closed)
+            qvel_adr = self.joint_qvel_adrs["gripper"]
+            if qvel_adr >= 0:
+                self.data.qvel[qvel_adr] = 0.0
 
     def get_joint_positions_deg(self) -> np.ndarray:
         """Get current joint positions in degrees."""
@@ -146,24 +247,140 @@ class MuJoCoSimulator:
 
     def get_ee_position(self) -> np.ndarray:
         """Get end effector position."""
-        # Find gripper body/site
-        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "gripper_frame_link")
-        if body_id >= 0:
-            return self.data.xpos[body_id].copy()
-        # Fallback to last body
-        return self.data.xpos[-1].copy()
+        return self.get_gripper_touch_points()[0]
+
+    def get_gripper_touch_points(self) -> list[np.ndarray]:
+        """Return contact proxy points for the gripper center and both jaws."""
+        gripper_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "gripper_link")
+        moving_jaw_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "moving_jaw_so101_v1_link"
+        )
+        if gripper_body_id < 0:
+            return [self.data.xpos[-1].copy()]
+
+        gripper_origin = self.data.xpos[gripper_body_id].copy()
+        gripper_rot = self.data.xmat[gripper_body_id].reshape(3, 3).copy()
+        center_point = gripper_origin + gripper_rot @ GRIPPER_FRAME_LOCAL_OFFSET
+        lateral_axis = gripper_rot[:, 1]
+
+        touch_points = [
+            center_point,
+            center_point + lateral_axis * GRIPPER_JAW_LATERAL_OFFSET,
+            center_point - lateral_axis * GRIPPER_JAW_LATERAL_OFFSET,
+        ]
+        if moving_jaw_body_id >= 0:
+            touch_points.append(self.data.xpos[moving_jaw_body_id].copy())
+        return touch_points
 
     def step(self) -> None:
-        """Update kinematics (no physics simulation)."""
-        mujoco.mj_forward(self.model, self.data)
+        """Advance the simulator."""
+        if self.physics_scene_active:
+            mujoco.mj_step(self.model, self.data)
+        else:
+            mujoco.mj_forward(self.model, self.data)
+
+    def has_stack_scene(self) -> bool:
+        return self.physics_scene_active
+
+    def _settle_stack_scene(self, steps: int = 200) -> None:
+        """Let the stack fall onto the plane and record resting positions."""
+        self.stack_cube_body_ids = {}
+        for idx in range(STACK_CUBE_COUNT):
+            body_name = f"stack_cube_{idx}"
+            body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+            if body_id >= 0:
+                self.stack_cube_body_ids[body_name] = body_id
+        for _ in range(steps):
+            self.step()
+        self.stack_initial_positions = {
+            name: self.data.xpos[body_id].copy() for name, body_id in self.stack_cube_body_ids.items()
+        }
+
+    def get_stack_cube_displacements(self) -> dict[str, float]:
+        """Return displacement-from-rest for each stack cube."""
+        if not self.stack_cube_body_ids:
+            return {}
+        return {
+            name: float(np.linalg.norm(self.data.xpos[body_id] - self.stack_initial_positions[name]))
+            for name, body_id in self.stack_cube_body_ids.items()
+        }
+
+
+def build_stack_scene_model(urdf_path: str) -> mujoco.MjModel:
+    """Compile a physical stack scene on top of the robot model."""
+    base_model = mujoco.MjModel.from_xml_path(urdf_path)
+    with tempfile.NamedTemporaryFile(
+        suffix=".xml",
+        dir=str(PROJECT_ROOT / "assets"),
+        delete=False,
+    ) as tmp:
+        tmp_path = tmp.name
+    try:
+        mujoco.mj_saveLastXML(tmp_path, base_model)
+        spec = mujoco.MjSpec.from_file(tmp_path)
+
+        plane = spec.worldbody.add_geom()
+        plane.name = "stack_ground"
+        plane.type = mujoco.mjtGeom.mjGEOM_PLANE
+        plane.size = [0.6, 0.6, 0.05]
+        plane.pos = [0.2, 0.0, 0.0]
+        plane.rgba = [0.45, 0.45, 0.45, 1.0]
+
+        for idx, offset in enumerate(STACK_LAYOUT_OFFSETS):
+            body = spec.worldbody.add_body()
+            body.name = f"stack_cube_{idx}"
+            body.pos = (STACK_BASE_CENTER + offset).tolist()
+            body.add_freejoint()
+
+            geom = body.add_geom()
+            geom.name = f"stack_cube_{idx}_geom"
+            geom.type = mujoco.mjtGeom.mjGEOM_BOX
+            geom.size = [STACK_CUBE_HALF_EXTENT, STACK_CUBE_HALF_EXTENT, STACK_CUBE_HALF_EXTENT]
+            geom.mass = STACK_CUBE_MASS
+            geom.rgba = STACK_COLORS[idx % len(STACK_COLORS)]
+            geom.friction = [1.1, 0.02, 0.001]
+        return spec.compile()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+def load_model_with_cameras(urdf_path: str, scene: str = "default") -> mujoco.MjModel:
+    """Load the simulator model, optionally augmenting it with a physical scene."""
+    if scene == "stack":
+        return build_stack_scene_model(urdf_path)
+    return mujoco.MjModel.from_xml_path(urdf_path)
+
+
+def available_camera_presets() -> list[str]:
+    """Return the available named viewer presets."""
+    return [name for name in CAMERA_PRESET_NAMES if name in CAMERA_PRESETS]
+
+
+def set_viewer_camera(viewer: mujoco.viewer.Handle, camera_name: str) -> bool:
+    """Apply a named preset to the free camera."""
+    preset = CAMERA_PRESETS.get(camera_name)
+    if preset is None:
+        return False
+    viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    viewer.cam.lookat[:] = preset["lookat"]
+    viewer.cam.distance = preset["distance"]
+    viewer.cam.azimuth = preset["azimuth"]
+    viewer.cam.elevation = preset["elevation"]
+    return True
+
+
+def set_viewer_free_camera(viewer: mujoco.viewer.Handle) -> None:
+    """Return the viewer to the standard free camera."""
+    viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
 
 
 class ChallengeTarget:
     """A single target in the challenge mode."""
 
-    def __init__(self, position: np.ndarray, target_id: int):
+    def __init__(self, position: np.ndarray, target_id: int, label: str | None = None):
         self.position = position.copy()
         self.target_id = target_id
+        self.label = label or f"target_{target_id}"
         self.spawn_time = time.monotonic()
         self.collected = False
         self.collect_time: float | None = None
@@ -204,6 +421,28 @@ class ChallengeManager:
         (0.2, 1.0, 1.0, 0.9),  # Cyan
     ]
 
+    @staticmethod
+    def box_to_box_distance(
+        center_a: np.ndarray,
+        half_extents_a: np.ndarray,
+        center_b: np.ndarray,
+        half_extents_b: np.ndarray,
+    ) -> float:
+        """Return Euclidean distance between two axis-aligned boxes."""
+        delta = np.abs(center_a - center_b) - (half_extents_a + half_extents_b)
+        outside = np.maximum(delta, 0.0)
+        return float(np.linalg.norm(outside))
+
+    @staticmethod
+    def boxes_overlap(
+        center_a: np.ndarray,
+        half_extents_a: np.ndarray,
+        center_b: np.ndarray,
+        half_extents_b: np.ndarray,
+    ) -> bool:
+        """Return True when two axis-aligned boxes overlap or touch."""
+        return bool(np.all(np.abs(center_a - center_b) <= (half_extents_a + half_extents_b)))
+
     def __init__(
         self,
         kinematics,
@@ -216,20 +455,25 @@ class ChallengeManager:
         seed: int | None = None,
         workspace_margin: float = 0.05,
         initial_ee_position: np.ndarray | None = None,
+        layout: str = "random",
     ):
         self.kinematics = kinematics
         self.joint_limits_deg = joint_limits_deg
         self.collect_radius = collect_radius
         self.target_size = target_size
+        touch_half_extent = max(self.collect_radius * 0.5, self.target_size)
+        self.gripper_touch_half_extents = np.full(3, touch_half_extent, dtype=float)
         self.initial_targets = initial_targets
         self.targets_per_level = targets_per_level
         self.max_targets = max_targets
         self.workspace_margin = workspace_margin
         self.initial_ee_position = initial_ee_position
+        self.layout = layout
 
         self.rng = np.random.default_rng(seed)
         self.active_targets: list[ChallengeTarget] = []
         self.collected_targets: list[ChallengeTarget] = []
+        self.diagnostic_targets: list[tuple[str, np.ndarray]] = []
         self.total_spawned = 0
         self.current_level = 1
         self.level_collected = 0
@@ -288,6 +532,44 @@ class ChallengeManager:
                     self.verified_positions.append(candidate.copy())
 
         print(f"  Challenge: {len(self.verified_positions)} target positions available", flush=True)
+        self._build_diagnostic_targets()
+
+    def _nearest_verified_position(self, desired: np.ndarray, used_indices: set[int]) -> np.ndarray:
+        """Pick the nearest verified target position that has not been used yet."""
+        if not self.verified_positions:
+            return desired.copy()
+
+        best_idx = None
+        best_dist = float("inf")
+        for idx, pos in enumerate(self.verified_positions):
+            if idx in used_indices:
+                continue
+            dist = float(np.linalg.norm(pos - desired))
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+
+        if best_idx is None:
+            return desired.copy()
+
+        used_indices.add(best_idx)
+        return self.verified_positions[best_idx].copy()
+
+    def _build_diagnostic_targets(self) -> None:
+        """Build fixed targets around home for controller diagnostics."""
+        used_indices: set[int] = set()
+        desired_specs = [
+            ("forward", np.array([-0.06, 0.00, 0.00])),
+            ("back", np.array([0.03, 0.00, 0.00])),
+            ("left", np.array([0.00, -0.06, 0.00])),
+            ("right", np.array([0.00, 0.06, 0.00])),
+            ("up", np.array([0.00, 0.00, 0.08])),
+            ("down", np.array([0.00, 0.00, -0.04])),
+        ]
+        self.diagnostic_targets = [
+            (label, self._nearest_verified_position(self.home_pos + offset, used_indices))
+            for label, offset in desired_specs
+        ]
 
     def _sample_reachable_position(self, avoid_positions: list[np.ndarray] | None = None) -> np.ndarray:
         """Sample a random position from verified reachable positions."""
@@ -328,18 +610,56 @@ class ChallengeManager:
             )
             self.total_spawned += 1
 
+    def spawn_diagnostic_targets(self) -> None:
+        """Spawn one fixed target for each main diagnostic direction."""
+        self.active_targets.clear()
+        for label, pos in self.diagnostic_targets:
+            target = ChallengeTarget(pos, self.total_spawned, label=label)
+            self.active_targets.append(target)
+            print(
+                f"  Spawned {label:>7} target {self.total_spawned} at "
+                f"[{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]",
+                flush=True,
+            )
+            self.total_spawned += 1
+
     def start(self) -> None:
         """Start the challenge with initial targets."""
-        self.spawn_targets(self.initial_targets)
+        if self.layout == "diagnostic":
+            self.spawn_diagnostic_targets()
+        else:
+            self.spawn_targets(self.initial_targets)
         print("\n=== CHALLENGE MODE ===", flush=True)
-        print(f"Collect targets by moving gripper within {self.collect_radius * 100:.1f}cm", flush=True)
-        print(f"Starting with {self.initial_targets} target(s)", flush=True)
-        print(f"Difficulty increases every {self.targets_per_level} collections\n", flush=True)
+        print(
+            f"Collect targets by touching the target box with the gripper zone "
+            f"(target {self.target_size * 200:.1f}cm wide, touch box {self.gripper_touch_half_extents[0] * 200:.1f}cm)",
+            flush=True,
+        )
+        if self.layout == "diagnostic":
+            print("Diagnostic layout: fixed targets in forward/back/left/right/up/down\n", flush=True)
+            print("Suggested camera views:", flush=True)
+            print("  front_right  general piloting / gripper visibility", flush=True)
+            print("  top          XY direction check", flush=True)
+            print("  left         height / down target check", flush=True)
+            print("  Use ] and [  cycle cameras, ESC for free camera\n", flush=True)
+        else:
+            print(f"Starting with {self.initial_targets} target(s)", flush=True)
+            print(f"Difficulty increases every {self.targets_per_level} collections\n", flush=True)
 
     def update(self, ee_position: np.ndarray, dt: float) -> list[ChallengeTarget]:
         """Update challenge state, return newly collected targets."""
+        return self.update_with_touch_points(ee_position, dt, touch_points=None)
+
+    def update_with_touch_points(
+        self,
+        ee_position: np.ndarray,
+        dt: float,
+        touch_points: list[np.ndarray] | None,
+    ) -> list[ChallengeTarget]:
+        """Update challenge state with optional gripper touch proxies."""
         now = time.monotonic()
         collected_this_frame: list[ChallengeTarget] = []
+        candidate_points = touch_points or [ee_position]
 
         # Compute velocity and jerk for smoothness tracking
         ee_vel = np.zeros(3)
@@ -364,11 +684,29 @@ class ChallengeManager:
 
         # Check for collections
         for target in self.active_targets[:]:  # Copy list for safe removal
-            dist = np.linalg.norm(ee_position - target.position)
-            if dist <= self.collect_radius:
+            target_half_extents = np.full(3, self.target_size, dtype=float)
+            distances = [
+                self.box_to_box_distance(
+                    point,
+                    self.gripper_touch_half_extents,
+                    target.position,
+                    target_half_extents,
+                )
+                for point in candidate_points
+            ]
+            box_error = min(distances)
+            if any(
+                self.boxes_overlap(
+                    point,
+                    self.gripper_touch_half_extents,
+                    target.position,
+                    target_half_extents,
+                )
+                for point in candidate_points
+            ):
                 target.collected = True
                 target.collect_time = now
-                target.final_error = dist
+                target.final_error = box_error
                 self.active_targets.remove(target)
                 self.collected_targets.append(target)
                 collected_this_frame.append(target)
@@ -378,13 +716,19 @@ class ChallengeManager:
                 ttc = target.time_to_collect()
                 eff = target.path_efficiency()
                 jerk = target.mean_jerk()
-                print(f"\n  Target {target.target_id} collected!", flush=True)
+                print(f"\n  Target {target.target_id} ({target.label}) collected!", flush=True)
                 eff_str = f"{eff:.0%}" if eff is not None else "N/A"
                 err_str = f"{target.final_error * 1000:.1f}mm" if target.final_error else "N/A"
                 ttc_str = f"{ttc:.1f}s" if ttc is not None else "N/A"
                 print(f"    Time: {ttc_str} | Efficiency: {eff_str} | Error: {err_str}", flush=True)
                 if jerk is not None:
                     print(f"    Mean jerk: {jerk:.1f} m/s³", flush=True)
+
+        if self.layout == "diagnostic":
+            self.last_ee_pos = ee_position.copy()
+            self.last_ee_vel = ee_vel.copy()
+            self.last_update_time = now
+            return collected_this_frame
 
         # Level up check
         if self.level_collected >= self.targets_per_level:
@@ -708,6 +1052,8 @@ def run_with_controller(
     challenge_targets_per_level: int = 5,
     challenge_max_targets: int = 3,
     challenge_seed: int | None = None,
+    challenge_layout: str = "random",
+    camera_view: str = "front_right",
     headless: bool = False,
     benchmark: bool = False,
     rerun_mode: str | None = None,
@@ -740,7 +1086,16 @@ def run_with_controller(
 
     print(f"Controller deadzone: {getattr(controller_cfg, 'deadzone', 'n/a')}", flush=True)
     print(f"Linear scale: {_proc_cfg.linear_scale} m/s", flush=True)
-    print(f"Orientation scale: {_proc_cfg.orientation_scale} rad/s", flush=True)
+    orientation_enabled = bool(getattr(mapper, "enable_pitch", False) or getattr(mapper, "enable_yaw", False))
+    if orientation_enabled:
+        print(f"Orientation scale: {_proc_cfg.orientation_scale} rad/s", flush=True)
+    else:
+        print("Orientation controls: OFF (touch mode)", flush=True)
+    if not headless:
+        print(
+            f"Camera view: {camera_view} | cycle with [ and ] | ESC for free camera",
+            flush=True,
+        )
 
     # Joint velocity limits for IK joints (4 joints, no wrist_roll)
     ik_joint_vel_limits = IK_JOINT_VEL_LIMITS_ARRAY
@@ -796,7 +1151,14 @@ def run_with_controller(
 
     # Initialize challenge mode if enabled
     challenge: ChallengeManager | None = None
-    if challenge_mode:
+    stack_challenge: StackChallenge | None = None
+    if challenge_mode and challenge_layout == "stack":
+        if not sim.has_stack_scene():
+            print("ERROR: stack challenge requested without stack scene.", flush=True)
+            return 2
+        stack_challenge = StackChallenge(sim)
+        stack_challenge.start()
+    elif challenge_mode:
         limits = parse_joint_limits(URDF_PATH, IK_JOINT_NAMES)
         limits_deg = limits_rad_to_deg(limits)
         challenge = ChallengeManager(
@@ -807,6 +1169,7 @@ def run_with_controller(
             targets_per_level=challenge_targets_per_level,
             max_targets=challenge_max_targets,
             seed=challenge_seed,
+            layout=challenge_layout,
         )
         challenge.start()
 
@@ -816,6 +1179,7 @@ def run_with_controller(
     gripper_rate = runtime.gripper_rate  # Position change per second
     trace_points: list[np.ndarray] = []
     trace_min_step_m = max(routine_trace_step_mm / 1000.0, 0.0005)
+    homing_active = False
 
     running = True
     loop_counter = 0
@@ -927,11 +1291,53 @@ def run_with_controller(
             )
             scene.ngeom += 1
 
+    camera_presets = available_camera_presets()
+    initial_camera_name = camera_view if camera_view in camera_presets else None
+    active_camera_name = initial_camera_name
+    if not headless and camera_view not in camera_presets:
+        print(
+            f"WARNING: Camera preset '{camera_view}' not found. Available: "
+            f"{', '.join(camera_presets) if camera_presets else '(none)'}",
+            flush=True,
+        )
+
+    def key_callback(keycode: int) -> None:
+        nonlocal active_camera_name
+        if not camera_presets:
+            return
+        if keycode == 256:  # ESC
+            active_camera_name = None
+            return
+        if keycode not in (ord("["), ord("]")):
+            return
+        if active_camera_name is None:
+            next_index = 0 if keycode == ord("]") else len(camera_presets) - 1
+        else:
+            current_index = camera_presets.index(active_camera_name)
+            step = 1 if keycode == ord("]") else -1
+            next_index = (current_index + step) % len(camera_presets)
+        active_camera_name = camera_presets[next_index]
+        print(f"\nCamera: {active_camera_name}", flush=True)
+
     # Launch viewer (or use headless stub)
-    _viewer_ctx = _HeadlessViewer() if headless else mujoco.viewer.launch_passive(sim.model, sim.data)
+    _viewer_ctx = (
+        _HeadlessViewer()
+        if headless
+        else mujoco.viewer.launch_passive(sim.model, sim.data, key_callback=key_callback)
+    )
     with _viewer_ctx as viewer:
+        if not headless:
+            if active_camera_name is None:
+                set_viewer_free_camera(viewer)
+            else:
+                set_viewer_camera(viewer, active_camera_name)
         workspace_drawn = False
         while viewer.is_running() and running:
+            if not headless:
+                if active_camera_name is None:
+                    set_viewer_free_camera(viewer)
+                else:
+                    set_viewer_camera(viewer, active_camera_name)
             redraw_workspace = workspace_draw and (
                 not workspace_drawn
                 or (routine_trace and not hasattr(viewer, "add_marker") and hasattr(viewer, "user_scn"))
@@ -970,6 +1376,11 @@ def run_with_controller(
                 sim.set_gripper(gripper_norm)
                 _t0 = time.perf_counter()
                 sim.step()
+                pos = sim.get_ee_position()
+                if stack_challenge is not None:
+                    moved_now = stack_challenge.update()
+                    for cube_name in moved_now:
+                        print(f"\n  {cube_name} moved!", flush=True)
                 viewer.sync()
                 servo_ms = (time.perf_counter() - _t0) * 1000.0
                 if bm_timer is not None:
@@ -979,8 +1390,15 @@ def run_with_controller(
                         loop_counter,
                         time.monotonic() - error_start,
                         joint_cmd.goals_deg,
-                        ee_pos=sim.get_ee_position(),
+                        ee_pos=pos,
                         mode=mode,
+                    )
+                if stack_challenge is not None:
+                    print(
+                        f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
+                        f"{stack_challenge.status_text()} | Grip: {gripper_norm:.2f}   ",
+                        end="\r",
+                        flush=True,
                     )
                 elapsed = time.monotonic() - loop_start
                 if elapsed < LOOP_PERIOD:
@@ -990,31 +1408,33 @@ def run_with_controller(
 
             if state.a_button_pressed:
                 print("\nGoing home...", flush=True)
-                assert cartesian_state is not None
-                sync_cartesian_state(
+                homing_active = True
+
+            ee_delta = mapper(state)
+            ee_delta = apply_axis_mapping(ee_delta, swap_xy=False)
+            assert cartesian_state is not None
+            if homing_active:
+                homing_active = not step_cartesian_home(
                     cartesian_state,
                     kinematics,
                     np.zeros(4, dtype=float),
-                    wrist_roll_deg=0.0,
-                    target_pitch=0.0,
-                    target_yaw=0.0,
-                    gripper_pos=0.0,
+                    home_wrist_roll_deg=0.0,
+                    home_gripper_pos=0.0,
+                    ik_joint_max_step_deg=ik_joint_vel_limits,
+                    wrist_roll_vel_deg_s=90.0,
+                    gripper_rate=gripper_rate,
+                    dt=LOOP_PERIOD,
                 )
-                sim.go_home()
-                viewer.sync()
-                continue
+                ee_delta = EEDelta(gripper=cartesian_state.gripper_pos)
+            else:
+                cartesian_state.gripper_pos = step_gripper_toward(
+                    cartesian_state.gripper_pos,
+                    ee_delta.gripper,
+                    gripper_rate=gripper_rate,
+                    dt=LOOP_PERIOD,
+                )
 
-            ee_delta = mapper(state)
-            # Rate-limit gripper movement toward target
-            assert cartesian_state is not None
-            cartesian_state.gripper_pos = step_gripper_toward(
-                cartesian_state.gripper_pos,
-                ee_delta.gripper,
-                gripper_rate=gripper_rate,
-                dt=LOOP_PERIOD,
-            )
-
-            if not ee_delta.is_zero_motion():
+            if not homing_active and not ee_delta.is_zero_motion():
                 target_pose, target_pos, target_flags = advance_cartesian_target(
                     cartesian_state,
                     ee_delta,
@@ -1107,8 +1527,16 @@ def run_with_controller(
                 draw_trace(viewer, trace_points, reset_scene=not redraw_workspace)
 
             # Challenge mode update
+            if stack_challenge is not None:
+                moved_now = stack_challenge.update()
+                for cube_name in moved_now:
+                    print(f"\n  {cube_name} moved!", flush=True)
             if challenge is not None:
-                challenge.update(pos, LOOP_PERIOD)
+                challenge.update_with_touch_points(
+                    pos,
+                    LOOP_PERIOD,
+                    touch_points=sim.get_gripper_touch_points(),
+                )
                 challenge.draw_targets(viewer)
 
             viewer.sync()
@@ -1138,7 +1566,14 @@ def run_with_controller(
                 )
             pitch_deg = np.rad2deg(cartesian_state.target_pitch)
             yaw_deg = np.rad2deg(cartesian_state.target_yaw)
-            if challenge is not None:
+            if stack_challenge is not None:
+                print(
+                    f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
+                    f"{stack_challenge.status_text()} | Grip: {cartesian_state.gripper_pos:.2f}   ",
+                    end="\r",
+                    flush=True,
+                )
+            elif challenge is not None:
                 n_targets = len(challenge.active_targets)
                 n_collected = len(challenge.collected_targets)
                 print(
@@ -1173,6 +1608,8 @@ def run_with_controller(
     print("\nDisconnected.", flush=True)
 
     # Print challenge summary if in challenge mode
+    if stack_challenge is not None:
+        stack_challenge.print_summary()
     if challenge is not None:
         challenge.print_summary()
 
@@ -1213,6 +1650,7 @@ def run_demo_mode(
     workspace_samples: int = 2000,
     workspace_point_max: int = 1200,
     workspace_seed: int | None = 0,
+    camera_view: str = "front_right",
     ik_log_path: str | None = None,
     ik_max_err_mm: float = 30.0,
     ik_mean_err_mm: float = 10.0,
@@ -1342,9 +1780,44 @@ def run_demo_mode(
         if workspace_mode in ("hull", "all"):
             workspace_edges = workspace_hull_edges(workspace_points)
 
-    with mujoco.viewer.launch_passive(sim.model, sim.data) as viewer:
+    camera_presets = available_camera_presets()
+    active_camera_name = camera_view if camera_view in camera_presets else None
+    if camera_view not in camera_presets:
+        print(
+            f"WARNING: Camera preset '{camera_view}' not found. Available: "
+            f"{', '.join(camera_presets) if camera_presets else '(none)'}",
+            flush=True,
+        )
+
+    def key_callback(keycode: int) -> None:
+        nonlocal active_camera_name
+        if not camera_presets:
+            return
+        if keycode == 256:  # ESC
+            active_camera_name = None
+            return
+        if keycode not in (ord("["), ord("]")):
+            return
+        if active_camera_name is None:
+            next_index = 0 if keycode == ord("]") else len(camera_presets) - 1
+        else:
+            current_index = camera_presets.index(active_camera_name)
+            step = 1 if keycode == ord("]") else -1
+            next_index = (current_index + step) % len(camera_presets)
+        active_camera_name = camera_presets[next_index]
+        print(f"\nCamera: {active_camera_name}", flush=True)
+
+    with mujoco.viewer.launch_passive(sim.model, sim.data, key_callback=key_callback) as viewer:
+        if active_camera_name is None:
+            set_viewer_free_camera(viewer)
+        else:
+            set_viewer_camera(viewer, active_camera_name)
         workspace_drawn = False
         while viewer.is_running() and running:
+            if active_camera_name is None:
+                set_viewer_free_camera(viewer)
+            else:
+                set_viewer_camera(viewer, active_camera_name)
             redraw_workspace = workspace_draw and (
                 not workspace_drawn
                 or (routine_trace and not hasattr(viewer, "add_marker") and hasattr(viewer, "user_scn"))
@@ -1673,6 +2146,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Random seed for target placement. Default: random.",
     )
     parser.add_argument(
+        "--challenge-layout",
+        choices=["random", "diagnostic", "stack"],
+        default="random",
+        help="Challenge target layout. 'diagnostic' spawns fixed targets in main test directions. 'stack' loads a physical cube stack.",
+    )
+    parser.add_argument(
+        "--camera-view",
+        choices=CAMERA_PRESET_NAMES,
+        default="front_right",
+        help="Initial viewer camera preset. Use [ and ] to cycle, ESC for free camera.",
+    )
+    parser.add_argument(
         "--deadzone",
         type=float,
         default=0.15,
@@ -1971,8 +2456,9 @@ def main() -> None:
             print(f"  {plane}: {size:.3f} m")
         return
 
+    scene = "stack" if args.challenge and args.challenge_layout == "stack" else "default"
     print("Loading MuJoCo model...", flush=True)
-    sim = MuJoCoSimulator(str(URDF_PATH))
+    sim = MuJoCoSimulator(str(URDF_PATH), scene=scene)
     print("Model loaded!", flush=True)
 
     if args.routine_square_period is not None:
@@ -2006,6 +2492,7 @@ def main() -> None:
             workspace_samples=args.workspace_samples,
             workspace_point_max=args.workspace_point_max,
             workspace_seed=workspace_seed,
+            camera_view=args.camera_view,
             ik_log_path=args.ik_log,
             ik_max_err_mm=args.ik_max_err_mm,
             ik_mean_err_mm=args.ik_mean_err_mm,
@@ -2039,6 +2526,8 @@ def main() -> None:
             challenge_targets_per_level=args.challenge_targets_per_level,
             challenge_max_targets=args.challenge_max_targets,
             challenge_seed=args.challenge_seed,
+            challenge_layout=args.challenge_layout,
+            camera_view=args.camera_view,
             headless=args.headless,
             benchmark=args.benchmark,
             rerun_mode=args.rerun_mode or ("spawn" if args.rerun else None),

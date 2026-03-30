@@ -96,11 +96,13 @@ def test_joint_processor_deadman_on_moves_selected_joint():
 
 
 def test_joint_processor_a_button_resets_home():
-    proc = JointDirectProcessor()
+    proc = JointDirectProcessor(max_vel_deg_s=10.0, dt=0.1)
     proc._goals_deg["shoulder_pan"] = 50.0
     state = _state(a_button_pressed=True)
     cmd = proc(state)
-    assert abs(cmd.goals_deg["shoulder_pan"] - HOME_POSITION_DEG["shoulder_pan"]) < 0.01
+    home = HOME_POSITION_DEG["shoulder_pan"]
+    assert abs(cmd.goals_deg["shoulder_pan"] - home) < abs(50.0 - home)
+    assert abs(cmd.goals_deg["shoulder_pan"] - home) > 0.01
 
 
 def test_joint_processor_dpad_selects_next_joint():
@@ -177,31 +179,44 @@ def test_crane_processor_gripper_passthrough():
 
 
 def test_crane_processor_a_button_resets_home():
-    proc = CraneProcessor()
+    proc = CraneProcessor(pan_vel_deg_s=10.0, loop_dt=0.1)
     proc._pan_deg = 50.0
     result = proc(_state(a_button_pressed=True))
-    assert abs(result.goals_deg["shoulder_pan"] - HOME_POSITION_DEG["shoulder_pan"]) < 0.1
+    home = HOME_POSITION_DEG["shoulder_pan"]
+    assert abs(result.goals_deg["shoulder_pan"] - home) < abs(50.0 - home)
+    assert abs(result.goals_deg["shoulder_pan"] - home) > 0.1
 
 
 def test_crane_processor_reach_integrates():
     proc = CraneProcessor()
     initial_reach = proc._reach_m
-    proc(_state(left_bumper=True, right_stick_y=-1.0))
+    proc(_state(left_bumper=True, left_stick_y=-1.0))
     assert proc._reach_m > initial_reach
 
 
 def test_crane_processor_height_integrates():
     proc = CraneProcessor()
     initial_height = proc._height_m
-    proc(_state(left_bumper=True, left_stick_y=-1.0))
+    proc(_state(left_bumper=True, right_stick_y=-1.0))
     assert proc._height_m > initial_height
+
+
+def test_crane_processor_dpad_up_moves_wrist_up():
+    proc = CraneProcessor()
+    initial_wrist = proc._wrist_flex_deg
+    proc(_state(left_bumper=True, dpad_y=-1.0))
+    assert proc._wrist_flex_deg < initial_wrist
 
 
 def test_crane_processor_reset():
     proc = CraneProcessor()
     proc._pan_deg = 99.0
+    proc._reach_m = 0.30
+    proc._height_m = 0.40
     proc.reset()
     assert abs(proc._pan_deg - HOME_POSITION_DEG["shoulder_pan"]) < 0.1
+    assert proc._reach_m < 0.30
+    assert proc._height_m < 0.40
 
 
 def test_crane_processor_handles_ik_none():
@@ -212,5 +227,5 @@ def test_crane_processor_handles_ik_none():
     proc = CraneProcessor()
     proc._planar_ik = _DummyIK()
     # Force the IK path with deadman held
-    result = proc(_state(left_bumper=True, right_stick_y=-1.0, left_stick_y=-1.0))
+    result = proc(_state(left_bumper=True, left_stick_y=-1.0, right_stick_y=-1.0))
     assert isinstance(result, JointCommand)

@@ -9,6 +9,7 @@ from xbox_soarm_teleop.config.joints import (
     JOINT_LIMITS_DEG,
     JOINT_NAMES_WITH_GRIPPER,
 )
+from xbox_soarm_teleop.control.home import scalar_reached, step_scalar_toward
 from xbox_soarm_teleop.diagnostics.xbox_joint_drive import (
     advance_goal,
     dpad_edge,
@@ -92,6 +93,7 @@ class JointDirectProcessor:
             name: HOME_POSITION_DEG[name] for name in JOINT_NAMES_WITH_GRIPPER
         }
         self._prev_dpad_x: float = 0.0
+        self._homing_active: bool = False
 
     @property
     def selected_joint(self) -> str:
@@ -107,9 +109,28 @@ class JointDirectProcessor:
         Returns:
             JointCommand with updated goal positions and metadata.
         """
-        # A button press: go home (both modes)
+        # A button press: start a smooth return to home.
         if state.a_button_pressed:
-            self._goals_deg = {name: HOME_POSITION_DEG[name] for name in JOINT_NAMES_WITH_GRIPPER}
+            self._homing_active = True
+
+        if self._homing_active:
+            max_step = self.max_vel_deg_s * self.dt
+            for name in JOINT_NAMES_WITH_GRIPPER:
+                self._goals_deg[name] = step_scalar_toward(
+                    self._goals_deg[name],
+                    HOME_POSITION_DEG[name],
+                    max_step,
+                )
+            if all(
+                scalar_reached(self._goals_deg[name], HOME_POSITION_DEG[name])
+                for name in JOINT_NAMES_WITH_GRIPPER
+            ):
+                self._homing_active = False
+            return JointCommand(
+                goals_deg=dict(self._goals_deg),
+                selected_joint=self.selected_joint,
+                cmd_vel_deg_s=0.0,
+            )
 
         # Gripper: always active via trigger (position control)
         g_lower, g_upper = JOINT_LIMITS_DEG["gripper"]
@@ -155,3 +176,4 @@ class JointDirectProcessor:
         self._selected_idx = 0
         self._goals_deg = {name: HOME_POSITION_DEG[name] for name in JOINT_NAMES_WITH_GRIPPER}
         self._prev_dpad_x = 0.0
+        self._homing_active = False

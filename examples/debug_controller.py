@@ -60,23 +60,26 @@ def main():
             left_mag = math.sqrt(state.left_stick_x**2 + state.left_stick_y**2)
             right_mag = math.sqrt(state.right_stick_x**2 + state.right_stick_y**2)
 
-            print(
-                f"LEFT  raw:({raw_lx:6d},{raw_ly:6d}) "
-                f"norm:({state.left_stick_x:+.3f},{state.left_stick_y:+.3f}) "
-                f"mag:{left_mag:.3f} | "
-                f"RIGHT raw:({raw_rx:6d},{raw_ry:6d}) "
-                f"norm:({state.right_stick_x:+.3f},{state.right_stick_y:+.3f}) "
-                f"mag:{right_mag:.3f} | "
-                f"LB:{int(state.left_bumper)} RT:{state.right_trigger:.2f}",
-                end="\r",
+            line = (
+                f"L({raw_lx:6d},{raw_ly:6d}) "
+                f"n=({state.left_stick_x:+.3f},{state.left_stick_y:+.3f}) "
+                f"m={left_mag:.3f} | "
+                f"R({raw_rx:6d},{raw_ry:6d}) "
+                f"n=({state.right_stick_x:+.3f},{state.right_stick_y:+.3f}) "
+                f"m={right_mag:.3f} | "
+                f"LB:{int(state.left_bumper)} RT:{state.right_trigger:.2f}"
             )
+            print(f"\r\033[2K{line}", end="", flush=True)
 
             time.sleep(0.05)
 
     except KeyboardInterrupt:
         print("\n\nExiting...")
     finally:
-        controller.disconnect()
+        try:
+            controller.disconnect()
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":

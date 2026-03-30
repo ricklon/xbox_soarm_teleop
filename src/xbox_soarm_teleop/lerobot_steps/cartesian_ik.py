@@ -17,6 +17,7 @@ from xbox_soarm_teleop.config.joints import (
     JOINT_NAMES_WITH_GRIPPER,
 )
 from xbox_soarm_teleop.config.workspace import load_workspace_limits
+from xbox_soarm_teleop.control.cartesian import make_cartesian_state, step_cartesian_home
 from xbox_soarm_teleop.control.pose import euler_to_rotation_matrix
 from xbox_soarm_teleop.control.safety import apply_strict_safety, clip_workspace
 from xbox_soarm_teleop.control.units import deg_to_normalized, normalized_to_deg
@@ -30,7 +31,7 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
 
     urdf_path: str
     dt: float = 1.0 / 30.0
-    swap_xy: bool = True
+    swap_xy: bool = False
     strict_safety: bool = True
     max_linear_speed: float = 0.02
     max_angular_speed: float = 0.25
@@ -50,6 +51,7 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
     _target_pitch: float = field(init=False, default=0.0, repr=False)
     _target_yaw: float = field(init=False, default=0.0, repr=False)
     _gripper_pos: float = field(init=False, default=0.0, repr=False)
+    _homing_active: bool = field(init=False, default=False, repr=False)
 
     last_target_pose: np.ndarray | None = field(init=False, default=None)
     last_obs_pose: np.ndarray | None = field(init=False, default=None)
@@ -90,6 +92,11 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
         self._target_pitch = 0.0
         self._target_yaw = 0.0
         self._gripper_pos = 0.0
+        self._homing_active = False
+
+    def start_homing(self) -> None:
+        """Begin a rate-limited return to the processor home pose."""
+        self._homing_active = True
 
     def _seed_from_observation(self, obs: dict[str, Any]) -> None:
         ik_joints = np.array(
@@ -144,26 +151,55 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
             "reject": 0,
         }
 
-        if self.strict_safety:
-            delta, safety_flags = apply_strict_safety(
-                delta,
-                max_linear_speed=self.max_linear_speed,
-                max_angular_speed=self.max_angular_speed,
-                allow_orientation=self.allow_orientation,
+        if self._homing_active:
+            home_state = make_cartesian_state(
+                self._kinematics,
+                ik_joint_pos_deg,
+                wrist_roll_deg=self._wrist_roll_deg,
+                target_pitch=self._target_pitch,
+                target_yaw=self._target_yaw,
+                gripper_pos=self._gripper_pos,
             )
-            flags["speed_clip"] = safety_flags["speed_clip"]
-            flags["orient_clip"] = safety_flags["orient_clip"]
-
-        # Rate-limit gripper toward target
-        gripper_target = float(np.clip(delta.gripper, 0.0, 1.0))
-        gripper_diff = gripper_target - self._gripper_pos
-        max_delta = max(self.gripper_rate, 0.0) * self.dt
-        if abs(gripper_diff) > max_delta:
-            self._gripper_pos += max_delta if gripper_diff > 0 else -max_delta
+            done = step_cartesian_home(
+                home_state,
+                self._kinematics,
+                np.array([HOME_POSITION_DEG[name] for name in IK_JOINT_NAMES], dtype=float),
+                home_wrist_roll_deg=float(HOME_POSITION_DEG["wrist_roll"]),
+                home_gripper_pos=0.0,
+                ik_joint_max_step_deg=self._ik_joint_vel_limits,
+                wrist_roll_vel_deg_s=90.0,
+                gripper_rate=self.gripper_rate,
+                dt=self.dt,
+            )
+            ik_joint_pos_deg = home_state.ik_joint_pos_deg.copy()
+            self._wrist_roll_deg = float(home_state.wrist_roll_deg)
+            self._target_pitch = float(home_state.target_pitch)
+            self._target_yaw = float(home_state.target_yaw)
+            self._gripper_pos = float(home_state.gripper_pos)
+            target_pose = home_state.last_target_pose.copy()
+            delta = EEDelta(gripper=self._gripper_pos)
+            self._homing_active = not done
         else:
-            self._gripper_pos = gripper_target
+            if self.strict_safety:
+                delta, safety_flags = apply_strict_safety(
+                    delta,
+                    max_linear_speed=self.max_linear_speed,
+                    max_angular_speed=self.max_angular_speed,
+                    allow_orientation=self.allow_orientation,
+                )
+                flags["speed_clip"] = safety_flags["speed_clip"]
+                flags["orient_clip"] = safety_flags["orient_clip"]
 
-        if not delta.is_zero_motion():
+            # Rate-limit gripper toward target
+            gripper_target = float(np.clip(delta.gripper, 0.0, 1.0))
+            gripper_diff = gripper_target - self._gripper_pos
+            max_delta = max(self.gripper_rate, 0.0) * self.dt
+            if abs(gripper_diff) > max_delta:
+                self._gripper_pos += max_delta if gripper_diff > 0 else -max_delta
+            else:
+                self._gripper_pos = gripper_target
+
+        if not self._homing_active and not delta.is_zero_motion():
             target_pos = ee_pose[:3, 3].copy()
             target_pos[0] += delta.dx * self.dt
             target_pos[1] += delta.dy * self.dt
@@ -210,10 +246,10 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
                 if clipped != ik_joint_pos_deg[idx]:
                     flags["joint_clip"] = 1
                 ik_joint_pos_deg[idx] = clipped
-        else:
+        elif not self._homing_active:
             target_pose = ee_pose.copy()
 
-        if abs(delta.droll) > 0.001:
+        if not self._homing_active and abs(delta.droll) > 0.001:
             roll_delta_deg = np.rad2deg(delta.droll * self.dt)
             self._wrist_roll_deg += roll_delta_deg
             wr_lo, wr_hi = JOINT_LIMITS_DEG["wrist_roll"]

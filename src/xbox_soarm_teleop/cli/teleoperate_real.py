@@ -15,8 +15,8 @@ Usage:
 Controls:
     - Hold LB (left bumper) to enable arm movement
     - Left stick X: Left/right (Y axis)
-    - Left stick Y: Up/down (Z axis)
-    - Right stick Y: Forward/back (X axis)
+    - Left stick Y: Forward/back (X axis)
+    - Right stick Y: Up/down (Z axis)
     - Right stick X: Wrist roll rotation (direct, not IK)
     - Right trigger: Gripper (released=open, pulled=closed)
     - A button: Return to home position
@@ -45,6 +45,7 @@ from xbox_soarm_teleop.control.cartesian import (
     apply_ik_solution,
     full_joint_positions,
     make_cartesian_state,
+    step_cartesian_home,
     step_gripper_toward,
     step_wrist_roll,
     sync_cartesian_state,
@@ -148,7 +149,7 @@ def run_teleoperation(
     ik_max_err_mm: float = 30.0,
     ik_mean_err_mm: float = 10.0,
     ik_vel_scale: float = 1.0,
-    swap_xy: bool = True,
+    swap_xy: bool = False,
     debug_limiters: bool = False,
     debug_limiters_every: int = 30,
     use_jacobian: bool = False,
@@ -289,8 +290,12 @@ def run_teleoperation(
 
     print(f"Controller deadzone: {getattr(controller_cfg, 'deadzone', 'n/a')}", flush=True)
     print(f"Linear scale: {_proc_cfg.linear_scale} m/s", flush=True)
-    print(f"Orientation scale: {_proc_cfg.orientation_scale} rad/s", flush=True)
-    print(f"XY axis swap (real frame fix): {'ON' if swap_xy else 'OFF'}", flush=True)
+    orientation_enabled = bool(getattr(mapper, "enable_pitch", False) or getattr(mapper, "enable_yaw", False))
+    if orientation_enabled:
+        print(f"Orientation scale: {_proc_cfg.orientation_scale} rad/s", flush=True)
+    else:
+        print("Orientation controls: OFF (touch mode)", flush=True)
+    print(f"XY axis swap: {'ON' if swap_xy else 'OFF'}", flush=True)
     if strict_safety:
         print(
             "Strict safety: ON "
@@ -418,6 +423,7 @@ def run_teleoperation(
     workspace_clip_z = 0
     pitch_sat_count = 0
     yaw_sat_count = 0
+    homing_active = False
     min_joint_margin_deg = float("inf")
     min_margin_joint = ""
     safety_reject_count = 0
@@ -587,27 +593,7 @@ def run_teleoperation(
 
                 if state.a_button_pressed:
                     print("\nGoing home...", flush=True)
-                    sync_cartesian_state(
-                        cartesian_state,
-                        kinematics,
-                        home_ik_joint_pos_deg,
-                        wrist_roll_deg=float(HOME_POSITION_DEG["wrist_roll"]),
-                        target_pitch=0.0,
-                        target_yaw=0.0,
-                        gripper_pos=0.0,
-                    )
-
-                    # Send home position to robot
-                    action = {}
-                    home_deg = {name: HOME_POSITION_DEG[name] for name in JOINT_NAMES[:-1]}
-                    for idx, name in enumerate(IK_JOINT_NAMES):
-                        home_deg[name] = float(cartesian_state.ik_joint_pos_deg[idx])
-                    home_deg["wrist_roll"] = cartesian_state.wrist_roll_deg
-                    for name in JOINT_NAMES[:-1]:
-                        action[f"{name}.pos"] = deg_to_normalized(home_deg[name], name)
-                    action["gripper.pos"] = 0.0  # Open
-                    robot.send_action(action)
-                    continue
+                    homing_active = True
 
                 ee_delta = mapper(state)
                 ee_delta = apply_axis_mapping(ee_delta, swap_xy=swap_xy)
@@ -635,16 +621,29 @@ def run_teleoperation(
                         gripper=ee_delta.gripper,
                     )
 
-            # Rate-limit gripper movement
             assert cartesian_state is not None
-            cartesian_state.gripper_pos = step_gripper_toward(
-                cartesian_state.gripper_pos,
-                ee_delta.gripper,
-                gripper_rate=gripper_rate,
-                dt=LOOP_PERIOD,
-            )
+            if homing_active:
+                homing_active = not step_cartesian_home(
+                    cartesian_state,
+                    kinematics,
+                    home_ik_joint_pos_deg,
+                    home_wrist_roll_deg=float(HOME_POSITION_DEG["wrist_roll"]),
+                    home_gripper_pos=0.0,
+                    ik_joint_max_step_deg=ik_joint_vel_limits,
+                    wrist_roll_vel_deg_s=90.0,
+                    gripper_rate=gripper_rate,
+                    dt=LOOP_PERIOD,
+                )
+                ee_delta = EEDelta(gripper=cartesian_state.gripper_pos)
+            else:
+                cartesian_state.gripper_pos = step_gripper_toward(
+                    cartesian_state.gripper_pos,
+                    ee_delta.gripper,
+                    gripper_rate=gripper_rate,
+                    dt=LOOP_PERIOD,
+                )
 
-            if not ee_delta.is_zero_motion():
+            if not homing_active and not ee_delta.is_zero_motion():
                 target_pose, target_pos, target_flags = advance_cartesian_target(
                     cartesian_state,
                     ee_delta,
@@ -1117,9 +1116,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scale IK joint velocity limits. Default: 1.0.",
     )
     parser.add_argument(
-        "--no-swap-xy",
+        "--swap-xy",
         action="store_true",
-        help="Disable XY swap for real-robot Cartesian mapping (legacy behavior).",
+        dest="swap_xy",
+        help="Enable legacy XY swap for Cartesian mapping.",
+    )
+    parser.add_argument(
+        "--no-swap-xy",
+        action="store_false",
+        dest="swap_xy",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--debug-limiters",
@@ -1137,7 +1143,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         choices=["cartesian", "joint", "crane", "puppet"],
         default="crane",
-        help="Control mode: crane (cylindrical, default), joint (direct per-joint), cartesian (full IK/Jacobian), puppet (IMU wrist).",
+        help="Control mode: crane (cylindrical, default), joint (direct per-joint), cartesian (touch-point IK), puppet (IMU wrist).",
     )
     parser.add_argument(
         "--jacobian",
@@ -1304,7 +1310,7 @@ def main() -> None:
         ik_max_err_mm=args.ik_max_err_mm,
         ik_mean_err_mm=args.ik_mean_err_mm,
         ik_vel_scale=args.ik_vel_scale,
-        swap_xy=not args.no_swap_xy,
+        swap_xy=args.swap_xy,
         debug_limiters=args.debug_limiters,
         debug_limiters_every=args.debug_limiters_every,
         use_jacobian=args.jacobian,

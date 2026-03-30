@@ -186,9 +186,9 @@ class KeyboardController:
 
         Stick sign conventions match XboxController so all existing processors
         work correctly:
-            right_stick_y negative  → arm moves forward (+X)
+            left_stick_y  negative  → arm moves forward (+X)
             left_stick_x  positive  → arm moves right   (+Y direction, post-negation in processor)
-            left_stick_y  negative  → arm moves up       (+Z)
+            right_stick_y negative  → arm moves up       (+Z)
             right_stick_x positive  → wrist rolls right
         """
         if not self._connected:
@@ -206,8 +206,8 @@ class KeyboardController:
 
         # ── Stick axes (opposing keys cancel, result clamped to [-1, 1]) ──────
 
-        # Forward/back → right_stick_y (W=forward → negative, matching Xbox up-stick convention)
-        right_stick_y = _combine(
+        # Forward/back → left_stick_y (W=forward → negative, matching Xbox up-stick convention)
+        left_stick_y = _combine(
             pos=self._is_held(held, cfg.key_back),
             neg=self._is_held(held, cfg.key_forward),
             scale=speed,
@@ -220,8 +220,8 @@ class KeyboardController:
             scale=speed,
         )
 
-        # Up/down → left_stick_y (R=up → negative, matching Xbox up-stick convention)
-        left_stick_y = _combine(
+        # Up/down → right_stick_y (R=up → negative, matching Xbox up-stick convention)
+        right_stick_y = _combine(
             pos=self._is_held(held, cfg.key_down),
             neg=self._is_held(held, cfg.key_up),
             scale=speed,
