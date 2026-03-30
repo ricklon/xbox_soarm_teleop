@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Simulated teleoperation with 3D visualization.
+"""Legacy Meshcat simulation path.
+
+This script is kept for lightweight demos and older bookmarks, but the
+maintained simulator workflow is ``uv run simulate-mujoco``.
 
 This example runs the Xbox controller teleoperation in simulation,
 visualizing the SO-ARM101 in a web browser using meshcat.

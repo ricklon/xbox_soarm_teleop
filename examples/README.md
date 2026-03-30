@@ -11,7 +11,6 @@ optimizing around.
 | Script | Preferred Command | Purpose |
 |--------|-------------------|---------|
 | `debug_controller.py` | `uv run python examples/debug_controller.py` | Inspect normalized Xbox controller input without a robot |
-| `simulate.py` | `uv run python examples/simulate.py` | Meshcat visualization for lightweight simulation and demos |
 | `simulate_mujoco.py` | `uv run simulate-mujoco` | MuJoCo simulation for controller, mode, and routine testing |
 | `teleoperate_real.py` | `uv run teleoperate-real` | Main real-robot teleoperation entry point |
 | `teleoperate_dual.py` | `uv run teleoperate-dual` | Digital twin mode: real robot plus MuJoCo |
@@ -50,6 +49,14 @@ preferred entry points.
 |--------|-------------------|
 | `teleoperate.py` | `uv run teleoperate-real` |
 | `ik_smoke_test.py` | `uv run ik-smoke` |
+
+## Legacy Demo Paths
+
+These still work, but they are no longer treated as maintained primary workflows.
+
+| Script | Status |
+|--------|--------|
+| `simulate.py` | Legacy Meshcat demo path; prefer `uv run simulate-mujoco` |
 
 ## One-Off And Investigative Scripts
 

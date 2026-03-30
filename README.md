@@ -15,7 +15,7 @@ Built as an extension to the [HuggingFace LeRobot](https://github.com/huggingfac
 - Deadman switch (LB) for safety
 - Home position button (A)
 - Workspace bounds enforcement
-- **3D simulation** with meshcat visualization
+- **3D simulation** with MuJoCo visualization
 - **MuJoCo simulation** with physics
 - **Real robot control** via LeRobot
 - **Digital twin mode** - simultaneous simulation and real robot
@@ -67,20 +67,7 @@ uv run python examples/debug_controller.py
 
 Move sticks and triggers to inspect normalized controller values.
 
-### 2. Run 3D Simulation (meshcat)
-
-```bash
-uv run python examples/simulate.py
-```
-
-Then open http://127.0.0.1:7000/static/ in your browser to see the robot.
-
-**Demo mode** (no controller):
-```bash
-uv run python examples/simulate.py --no-controller
-```
-
-### 3. Run MuJoCo Simulation (optional)
+### 2. Run MuJoCo Simulation
 
 ```bash
 # Install MuJoCo first
@@ -109,7 +96,7 @@ uv run simulate-mujoco --motion-routine \
 uv run mujoco-ik-check --no-controller --ik-log ik_error.csv --ik-max-err-mm 25 --ik-mean-err-mm 8
 ```
 
-### 4. Run with Real Robot
+### 3. Run with Real Robot
 
 Connect your SO-ARM101 via USB, then:
 
@@ -124,7 +111,7 @@ uv run teleoperate-real --port /dev/ttyUSB0
 uv run teleoperate-real --motion-routine --routine-pattern square --routine-plane xy
 ```
 
-### 5. Digital Twin Mode (Real Robot + Simulation)
+### 4. Digital Twin Mode (Real Robot + Simulation)
 
 Run both the real robot and MuJoCo simulation simultaneously. The simulation shows a real-time preview of robot movements.
 
@@ -142,12 +129,15 @@ These are the primary commands to reach for first:
 | Command | Purpose |
 |--------|---------|
 | `uv run python examples/debug_controller.py` | Inspect normalized Xbox input without a robot |
-| `uv run python examples/simulate.py` | Meshcat visualization |
 | `uv run simulate-mujoco` | MuJoCo simulation |
 | `uv run teleoperate-real` | Main real-robot teleop entry point |
 | `uv run teleoperate-dual --port /dev/ttyUSB0` | Digital twin mode |
 | `uv run record-xbox --repo-id <user/dataset> --robot-port /dev/ttyUSB0 --task \"...\"` | Record project-native teleop demonstrations |
 | `uv run python examples/lerobot_record_cartesian.py --repo-id <user/dataset> --task \"...\" --robot-port /dev/ttyUSB0` | Convenience wrapper for cartesian recording |
+
+Legacy Meshcat path:
+- `uv run python examples/simulate.py`
+- Kept for lightweight demos, but not a maintained primary control path.
 
 For the full script inventory, including diagnostics, compatibility shims, and
 one-off investigation tools, see [examples/README.md](examples/README.md).
@@ -284,7 +274,7 @@ sudo usermod -aG input $USER
 # Then logout and login
 ```
 
-### Simulation window doesn't open (meshcat)
+### Legacy meshcat window doesn't open
 
 Open http://127.0.0.1:7000/static/ manually in your browser.
 
