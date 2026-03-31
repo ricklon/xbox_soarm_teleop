@@ -18,6 +18,11 @@ def _ecodes_name(mapping: dict, code: int) -> str:
     return result[0] if isinstance(result, list) else result
 
 
+def _is_matching_joycon_device_name(name: str, patterns: list[str]) -> bool:
+    """Return True for usable Joy-Con input devices and False for IMU-only nodes."""
+    return any(pat in name for pat in patterns) and "IMU" not in name
+
+
 class JoyConController:
     """Right Joy-Con teleoperator (horizontal single-controller mode).
 
@@ -182,7 +187,7 @@ class JoyConController:
         for path in evdev.list_devices():
             try:
                 dev = evdev.InputDevice(path)
-                if any(pat in dev.name for pat in self.config.device_name_patterns):
+                if _is_matching_joycon_device_name(dev.name, self.config.device_name_patterns):
                     candidates.append(dev)
                 else:
                     dev.close()

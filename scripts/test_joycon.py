@@ -3,7 +3,7 @@
 
 Run with: uv run python scripts/test_joycon.py
 """
-import os
+import select
 import sys
 import time
 
@@ -78,9 +78,11 @@ info("(if nothing appears, the Joy-Con is not sending events yet)")
 deadline = time.monotonic() + 5.0
 event_count = 0
 
-joycon_dev.set_blocking(False)
 while time.monotonic() < deadline:
     try:
+        readable, _, _ = select.select([joycon_dev.fd], [], [], 0.05)
+        if not readable:
+            continue
         for event in joycon_dev.read():
             if event.type in (evdev.ecodes.EV_ABS, evdev.ecodes.EV_KEY):
                 code_name = evdev.ecodes.bytype[event.type].get(event.code, str(event.code))

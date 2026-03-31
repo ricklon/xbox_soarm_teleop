@@ -2,7 +2,10 @@
 
 
 from xbox_soarm_teleop.config.joycon_config import JoyConConfig
-from xbox_soarm_teleop.teleoperators.joycon import JoyConController
+from xbox_soarm_teleop.teleoperators.joycon import (
+    JoyConController,
+    _is_matching_joycon_device_name,
+)
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 
 
@@ -26,6 +29,13 @@ class TestJoyConConfig:
         cfg = JoyConConfig()
         assert cfg.dpad_x_axis == ""
         assert cfg.dpad_y_axis == ""
+
+    def test_device_name_matching_excludes_imu(self):
+        cfg = JoyConConfig()
+        assert _is_matching_joycon_device_name("Joy-Con (R)", cfg.device_name_patterns) is True
+        assert (
+            _is_matching_joycon_device_name("Joy-Con (R) (IMU)", cfg.device_name_patterns) is False
+        )
 
 
 class TestJoyConController:
