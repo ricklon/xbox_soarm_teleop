@@ -1,5 +1,6 @@
 """Tests for packaged CLI entry points."""
 
+import mujoco
 import numpy as np
 
 from xbox_soarm_teleop.cli.analyze_joint_diag import build_parser as build_analyze_parser
@@ -7,6 +8,7 @@ from xbox_soarm_teleop.cli.diagnose_robot import build_parser as build_diagnose_
 from xbox_soarm_teleop.cli.joint_rom_test import build_parser as build_joint_rom_parser
 from xbox_soarm_teleop.cli.record_xbox import build_parser as build_record_xbox_parser
 from xbox_soarm_teleop.cli.simulate_mujoco import (
+    PICK_PLACE_CUBE_START,
     STACK_CUBE_COUNT,
     ChallengeManager,
     MuJoCoSimulator,
@@ -78,6 +80,12 @@ def test_simulate_mujoco_stack_layout_parser() -> None:
     assert args.challenge_layout == "stack"
 
 
+def test_simulate_mujoco_scene_parser() -> None:
+    parser = build_simulate_mujoco_parser()
+    args = parser.parse_args(["--scene", "pick_place_basic"])
+    assert args.scene == "pick_place_basic"
+
+
 class _FakeKinematics:
     def forward_kinematics(self, joints: np.ndarray) -> np.ndarray:
         pose = np.eye(4)
@@ -142,6 +150,38 @@ def test_stack_scene_compiles() -> None:
     sim = MuJoCoSimulator("assets/so101_abs.urdf", scene="stack")
     assert sim.has_stack_scene() is True
     assert len(sim.stack_cube_body_ids) == STACK_CUBE_COUNT
+
+
+def test_pick_place_scene_compiles() -> None:
+    sim = MuJoCoSimulator("assets/so101_abs.urdf", scene="pick_place_basic")
+    assert sim.has_pick_place_scene() is True
+    assert sim.get_pick_cube_position() is not None
+
+
+def test_stack_scene_reset_restores_cube_positions() -> None:
+    sim = MuJoCoSimulator("assets/so101_abs.urdf", scene="stack")
+    body_name, body_id = next(iter(sim.stack_cube_body_ids.items()))
+    jnt_adr = sim.model.body_jntadr[body_id]
+    qpos_adr = sim.model.jnt_qposadr[jnt_adr]
+    sim.data.qpos[qpos_adr : qpos_adr + 3] += np.array([0.03, 0.0, 0.02], dtype=float)
+    mujoco.mj_forward(sim.model, sim.data)
+
+    sim.reset_stack_scene()
+
+    displacements = sim.get_stack_cube_displacements()
+    assert body_name in displacements
+    assert displacements[body_name] < 0.01
+
+
+def test_pick_place_scene_reset_restores_cube_pose() -> None:
+    sim = MuJoCoSimulator("assets/so101_abs.urdf", scene="pick_place_basic")
+    sim.set_pick_cube_pose(np.array([0.45, 0.15, 0.25], dtype=float))
+
+    sim.reset_pick_place_scene()
+
+    cube_pos = sim.get_pick_cube_position()
+    assert cube_pos is not None
+    np.testing.assert_allclose(cube_pos, PICK_PLACE_CUBE_START, atol=1e-6)
 
 
 def test_teleoperate_dual_parser() -> None:

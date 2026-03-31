@@ -41,7 +41,7 @@ class XboxConfig:
     # Button mappings (can be overridden for different controller types)
     deadman_button: str = "BTN_TL"  # Left bumper
     home_button: str = "BTN_SOUTH"  # A button
-    aux_button: str = "BTN_NORTH"  # Y button, reserved for script-specific actions
+    aux_button: str = "BTN_WEST"  # Y button on Linux Xbox layout, reserved for script-specific actions
 
     # Axis mappings
     left_stick_x_axis: str = "ABS_X"

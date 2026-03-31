@@ -56,6 +56,7 @@ from xbox_soarm_teleop.control.cartesian import (
     step_cartesian_home,
     step_gripper_toward,
     step_wrist_roll,
+    sync_cartesian_state,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
@@ -120,6 +121,15 @@ STACK_COLORS = [
     (0.65, 0.65, 0.12, 1.0),
     (0.12, 0.12, 0.65, 1.0),
 ]
+PICK_PLACE_TABLE_HEIGHT = 0.12
+PICK_PLACE_TABLE_CENTER = np.array([0.31, 0.04, PICK_PLACE_TABLE_HEIGHT / 2.0], dtype=float)
+PICK_PLACE_TABLE_HALF_EXTENTS = np.array([0.16, 0.14, PICK_PLACE_TABLE_HEIGHT / 2.0], dtype=float)
+PICK_PLACE_CUBE_HALF_EXTENT = 0.02
+PICK_PLACE_CUBE_MASS = 0.04
+PICK_PLACE_CUBE_START = np.array([0.34, -0.03, PICK_PLACE_TABLE_HEIGHT + PICK_PLACE_CUBE_HALF_EXTENT], dtype=float)
+PICK_PLACE_GOAL_CENTER = np.array([0.29, 0.13, PICK_PLACE_TABLE_HEIGHT + 0.001], dtype=float)
+PICK_PLACE_GOAL_INNER_HALF_EXTENTS = np.array([0.045, 0.045, 0.03], dtype=float)
+PICK_PLACE_GOAL_WALL_THICKNESS = 0.005
 
 
 class StackChallenge:
@@ -153,6 +163,126 @@ class StackChallenge:
         moved = len(self.completed)
         return f"Stack moved: {moved}/{STACK_CUBE_COUNT}"
 
+    def reset(self) -> None:
+        self.completed.clear()
+
+
+class PickPlaceTask:
+    """Assisted pick-and-place scene with a physical cube and goal box."""
+
+    def __init__(
+        self,
+        sim: "MuJoCoSimulator",
+        grasp_close_threshold: float = 0.75,
+        release_open_threshold: float = 0.35,
+        grasp_radius: float = 0.045,
+    ):
+        self.sim = sim
+        self.grasp_close_threshold = grasp_close_threshold
+        self.release_open_threshold = release_open_threshold
+        self.grasp_radius = grasp_radius
+        self.attached = False
+        self.completed = False
+
+    def start(self) -> None:
+        print("\n=== PICK AND PLACE ===", flush=True)
+        print("Pick the cube from the table and place it inside the goal box.", flush=True)
+        print("Assisted grasp: close gripper near cube to attach, open to release.\n", flush=True)
+
+    def update(self, gripper_pos: float) -> list[str]:
+        events: list[str] = []
+        cube_pos = self.sim.get_pick_cube_position()
+        if cube_pos is None:
+            return events
+
+        ee_pos = self.sim.get_ee_position()
+        if not self.attached and gripper_pos >= self.grasp_close_threshold:
+            if np.linalg.norm(cube_pos - ee_pos) <= self.grasp_radius:
+                self.attached = True
+                events.append("cube attached")
+
+        if self.attached:
+            carried_pos = ee_pos + np.array([0.0, 0.0, -0.015], dtype=float)
+            carried_pos[2] = max(carried_pos[2], PICK_PLACE_TABLE_HEIGHT + PICK_PLACE_CUBE_HALF_EXTENT)
+            self.sim.set_pick_cube_pose(carried_pos)
+            if gripper_pos <= self.release_open_threshold:
+                self.attached = False
+                events.append("cube released")
+
+        if not self.attached and not self.completed and self.sim.cube_in_pick_place_goal():
+            self.completed = True
+            events.append("goal reached")
+        return events
+
+    def print_summary(self) -> None:
+        print("\n=== PICK AND PLACE SUMMARY ===", flush=True)
+        print("Success" if self.completed else "Incomplete", flush=True)
+
+    def status_text(self) -> str:
+        if self.completed:
+            return "Pick/place complete"
+        if self.attached:
+            return "Cube attached"
+        return "Acquire cube"
+
+    def reset(self) -> None:
+        self.attached = False
+        self.completed = False
+
+
+def reset_active_scene(
+    sim: "MuJoCoSimulator",
+    *,
+    control_mode,
+    processor,
+    mapper,
+    cartesian_state,
+    kinematics,
+    stack_challenge: "StackChallenge | None",
+    pick_place_task: "PickPlaceTask | None",
+    trace_points: list[np.ndarray],
+) -> bool:
+    """Reset the active physical scene and associated runtime state.
+
+    Returns:
+        True if a scene reset was performed, False otherwise.
+    """
+    reset_performed = False
+    if sim.has_stack_scene():
+        print("\nResetting stack scene...", flush=True)
+        sim.reset_stack_scene()
+        if stack_challenge is not None:
+            stack_challenge.reset()
+        reset_performed = True
+    if sim.has_pick_place_scene():
+        print("\nResetting pick/place scene...", flush=True)
+        sim.reset_pick_place_scene()
+        if pick_place_task is not None:
+            pick_place_task.reset()
+        reset_performed = True
+
+    if not reset_performed:
+        return False
+
+    trace_points.clear()
+    if hasattr(mapper, "reset"):
+        mapper.reset()
+
+    if getattr(control_mode, "value", None) == "cartesian" and cartesian_state is not None and kinematics is not None:
+        sync_cartesian_state(
+            cartesian_state,
+            kinematics,
+            np.zeros(4, dtype=float),
+            wrist_roll_deg=0.0,
+            target_pitch=0.0,
+            target_yaw=0.0,
+            gripper_pos=0.0,
+        )
+    elif hasattr(processor, "reset"):
+        processor.reset()
+
+    return True
+
 
 class MuJoCoSimulator:
     """MuJoCo-based SO-ARM101 simulator."""
@@ -167,7 +297,7 @@ class MuJoCoSimulator:
         self.scene = scene
         self.model = load_model_with_cameras(urdf_path, scene=scene)
         self.data = mujoco.MjData(self.model)
-        self.physics_scene_active = scene == "stack"
+        self.physics_scene_active = scene in {"stack", "pick_place_basic"}
 
         # Get joint indices
         self.joint_ids = {}
@@ -182,11 +312,17 @@ class MuJoCoSimulator:
         self.target_pos = np.zeros(len(JOINT_NAMES))
         self.stack_cube_body_ids: dict[str, int] = {}
         self.stack_initial_positions: dict[str, np.ndarray] = {}
+        self.stack_spawn_positions: dict[str, np.ndarray] = {}
+        self.pick_cube_body_id: int | None = None
+        self.pick_cube_qpos_adr: int | None = None
+        self.pick_cube_qvel_adr: int | None = None
 
         # Initialize to home position
         self.go_home()
-        if self.physics_scene_active:
+        if scene == "stack":
             self._settle_stack_scene()
+        elif scene == "pick_place_basic":
+            self._bind_pick_place_scene()
 
     def go_home(self) -> None:
         """Reset to home position."""
@@ -280,7 +416,10 @@ class MuJoCoSimulator:
             mujoco.mj_forward(self.model, self.data)
 
     def has_stack_scene(self) -> bool:
-        return self.physics_scene_active
+        return self.scene == "stack"
+
+    def has_pick_place_scene(self) -> bool:
+        return self.scene == "pick_place_basic"
 
     def _settle_stack_scene(self, steps: int = 200) -> None:
         """Let the stack fall onto the plane and record resting positions."""
@@ -290,6 +429,9 @@ class MuJoCoSimulator:
             body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
             if body_id >= 0:
                 self.stack_cube_body_ids[body_name] = body_id
+        self.stack_spawn_positions = {
+            name: self.data.xpos[body_id].copy() for name, body_id in self.stack_cube_body_ids.items()
+        }
         for _ in range(steps):
             self.step()
         self.stack_initial_positions = {
@@ -304,6 +446,76 @@ class MuJoCoSimulator:
             name: float(np.linalg.norm(self.data.xpos[body_id] - self.stack_initial_positions[name]))
             for name, body_id in self.stack_cube_body_ids.items()
         }
+
+    def _bind_pick_place_scene(self) -> None:
+        """Bind the free cube handles for the pick/place scene."""
+        self.pick_cube_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "pick_cube")
+        if self.pick_cube_body_id < 0:
+            self.pick_cube_body_id = None
+            return
+        jnt_adr = self.model.body_jntadr[self.pick_cube_body_id]
+        if jnt_adr < 0:
+            self.pick_cube_body_id = None
+            return
+        self.pick_cube_qpos_adr = self.model.jnt_qposadr[jnt_adr]
+        self.pick_cube_qvel_adr = self.model.jnt_dofadr[jnt_adr]
+
+    def get_pick_cube_position(self) -> np.ndarray | None:
+        """Return the current cube center position for the pick/place scene."""
+        if self.pick_cube_body_id is None:
+            return None
+        return self.data.xpos[self.pick_cube_body_id].copy()
+
+    def set_pick_cube_pose(self, position: np.ndarray) -> None:
+        """Directly place the pick/place cube at a target position."""
+        if self.pick_cube_qpos_adr is None or self.pick_cube_qvel_adr is None:
+            return
+        self.data.qpos[self.pick_cube_qpos_adr : self.pick_cube_qpos_adr + 3] = position
+        self.data.qpos[self.pick_cube_qpos_adr + 3 : self.pick_cube_qpos_adr + 7] = np.array(
+            [1.0, 0.0, 0.0, 0.0],
+            dtype=float,
+        )
+        self.data.qvel[self.pick_cube_qvel_adr : self.pick_cube_qvel_adr + 6] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+
+    def cube_in_pick_place_goal(self) -> bool:
+        """Return True when the cube lies inside the goal box interior."""
+        cube_pos = self.get_pick_cube_position()
+        if cube_pos is None:
+            return False
+        xy_ok = np.all(
+            np.abs(cube_pos[:2] - PICK_PLACE_GOAL_CENTER[:2])
+            <= (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[:2] - PICK_PLACE_CUBE_HALF_EXTENT)
+        )
+        z_min = PICK_PLACE_TABLE_HEIGHT + PICK_PLACE_CUBE_HALF_EXTENT - 0.01
+        z_max = PICK_PLACE_TABLE_HEIGHT + PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]
+        z_ok = z_min <= cube_pos[2] <= z_max
+        return bool(xy_ok and z_ok)
+
+    def reset_stack_scene(self) -> None:
+        """Restore stack cubes to their spawn positions and let them settle."""
+        if not self.stack_cube_body_ids:
+            return
+        self.go_home()
+        for name, body_id in self.stack_cube_body_ids.items():
+            spawn_pos = self.stack_spawn_positions.get(name)
+            if spawn_pos is None:
+                continue
+            jnt_adr = self.model.body_jntadr[body_id]
+            if jnt_adr < 0:
+                continue
+            qpos_adr = self.model.jnt_qposadr[jnt_adr]
+            qvel_adr = self.model.jnt_dofadr[jnt_adr]
+            self.data.qpos[qpos_adr : qpos_adr + 3] = spawn_pos
+            self.data.qpos[qpos_adr + 3 : qpos_adr + 7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+            self.data.qvel[qvel_adr : qvel_adr + 6] = 0.0
+        mujoco.mj_forward(self.model, self.data)
+        self._settle_stack_scene()
+
+    def reset_pick_place_scene(self) -> None:
+        """Restore the pick/place cube to its start pose and home the arm."""
+        self.go_home()
+        self.set_pick_cube_pose(PICK_PLACE_CUBE_START.copy())
 
 
 def build_stack_scene_model(urdf_path: str) -> mujoco.MjModel:
@@ -344,10 +556,89 @@ def build_stack_scene_model(urdf_path: str) -> mujoco.MjModel:
         Path(tmp_path).unlink(missing_ok=True)
 
 
+def build_pick_place_scene_model(urdf_path: str) -> mujoco.MjModel:
+    """Compile a simple physical pick-and-place scene on top of the robot model."""
+    base_model = mujoco.MjModel.from_xml_path(urdf_path)
+    with tempfile.NamedTemporaryFile(
+        suffix=".xml",
+        dir=str(PROJECT_ROOT / "assets"),
+        delete=False,
+    ) as tmp:
+        tmp_path = tmp.name
+    try:
+        mujoco.mj_saveLastXML(tmp_path, base_model)
+        spec = mujoco.MjSpec.from_file(tmp_path)
+
+        floor = spec.worldbody.add_geom()
+        floor.name = "pick_place_floor"
+        floor.type = mujoco.mjtGeom.mjGEOM_PLANE
+        floor.size = [0.8, 0.8, 0.05]
+        floor.pos = [0.2, 0.0, 0.0]
+        floor.rgba = [0.45, 0.45, 0.45, 1.0]
+
+        table = spec.worldbody.add_geom()
+        table.name = "pick_place_table"
+        table.type = mujoco.mjtGeom.mjGEOM_BOX
+        table.size = PICK_PLACE_TABLE_HALF_EXTENTS.tolist()
+        table.pos = PICK_PLACE_TABLE_CENTER.tolist()
+        table.rgba = [0.60, 0.60, 0.60, 1.0]
+        table.friction = [1.1, 0.02, 0.001]
+
+        cube_body = spec.worldbody.add_body()
+        cube_body.name = "pick_cube"
+        cube_body.pos = PICK_PLACE_CUBE_START.tolist()
+        cube_body.add_freejoint()
+        cube_geom = cube_body.add_geom()
+        cube_geom.name = "pick_cube_geom"
+        cube_geom.type = mujoco.mjtGeom.mjGEOM_BOX
+        cube_geom.size = [PICK_PLACE_CUBE_HALF_EXTENT] * 3
+        cube_geom.mass = PICK_PLACE_CUBE_MASS
+        cube_geom.rgba = [0.85, 0.25, 0.20, 1.0]
+        cube_geom.friction = [1.1, 0.02, 0.001]
+
+        goal_parts = [
+            ("goal_base", [0.0, 0.0, 0.0], [*PICK_PLACE_GOAL_INNER_HALF_EXTENTS[:2], 0.004]),
+            (
+                "goal_wall_left",
+                [-(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS), 0.0, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+                [PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1], PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            ),
+            (
+                "goal_wall_right",
+                [(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS), 0.0, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+                [PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1], PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            ),
+            (
+                "goal_wall_back",
+                [0.0, -(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS), PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+                [PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            ),
+            (
+                "goal_wall_front",
+                [0.0, (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS), PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+                [PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            ),
+        ]
+        for name, offset, size in goal_parts:
+            geom = spec.worldbody.add_geom()
+            geom.name = name
+            geom.type = mujoco.mjtGeom.mjGEOM_BOX
+            geom.pos = (PICK_PLACE_GOAL_CENTER + np.array(offset, dtype=float)).tolist()
+            geom.size = size
+            geom.rgba = [0.10, 0.65, 0.35, 0.85]
+            geom.contype = 1
+            geom.conaffinity = 1
+        return spec.compile()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
 def load_model_with_cameras(urdf_path: str, scene: str = "default") -> mujoco.MjModel:
     """Load the simulator model, optionally augmenting it with a physical scene."""
     if scene == "stack":
         return build_stack_scene_model(urdf_path)
+    if scene == "pick_place_basic":
+        return build_pick_place_scene_model(urdf_path)
     return mujoco.MjModel.from_xml_path(urdf_path)
 
 
@@ -1147,11 +1438,14 @@ def run_with_controller(
 
     print(f"{runtime.controller_label} connected", flush=True)
     print_controls(controller_type, mode, exit_hint="Close window              exit")
+    if sim.has_stack_scene() or sim.has_pick_place_scene():
+        print("  Y button                  reset scene", flush=True)
 
 
     # Initialize challenge mode if enabled
     challenge: ChallengeManager | None = None
     stack_challenge: StackChallenge | None = None
+    pick_place_task: PickPlaceTask | None = None
     if challenge_mode and challenge_layout == "stack":
         if not sim.has_stack_scene():
             print("ERROR: stack challenge requested without stack scene.", flush=True)
@@ -1172,6 +1466,9 @@ def run_with_controller(
             layout=challenge_layout,
         )
         challenge.start()
+    if sim.has_pick_place_scene():
+        pick_place_task = PickPlaceTask(sim)
+        pick_place_task.start()
 
     # IK joint positions (4 joints: base, shoulder_lift, elbow_flex, wrist_flex)
     ik_joint_pos_deg = np.zeros(4)
@@ -1187,6 +1484,7 @@ def run_with_controller(
     error_sum = 0.0
     error_max = 0.0
     error_start = time.monotonic()
+    last_scene_reset_time = 0.0
 
     csv_file = None
     csv_writer = None
@@ -1362,6 +1660,23 @@ def run_with_controller(
             state = controller.read()
             controller_ms = (time.perf_counter() - _t0) * 1000.0
 
+            reset_requested = state.y_button or state.y_button_pressed
+            now = time.monotonic()
+            if reset_requested and now - last_scene_reset_time > 0.5:
+                if reset_active_scene(
+                    sim,
+                    control_mode=control_mode,
+                    processor=processor,
+                    mapper=mapper,
+                    cartesian_state=cartesian_state,
+                    kinematics=kinematics,
+                    stack_challenge=stack_challenge,
+                    pick_place_task=pick_place_task,
+                    trace_points=trace_points,
+                ):
+                    homing_active = False
+                    last_scene_reset_time = now
+
             if control_mode in (ControlMode.JOINT, ControlMode.CRANE, ControlMode.PUPPET):
                 joint_cmd = processor(state)
                 positions_deg = np.array(
@@ -1381,6 +1696,9 @@ def run_with_controller(
                     moved_now = stack_challenge.update()
                     for cube_name in moved_now:
                         print(f"\n  {cube_name} moved!", flush=True)
+                if pick_place_task is not None:
+                    for event in pick_place_task.update(gripper_norm):
+                        print(f"\n  {event}", flush=True)
                 viewer.sync()
                 servo_ms = (time.perf_counter() - _t0) * 1000.0
                 if bm_timer is not None:
@@ -1397,6 +1715,13 @@ def run_with_controller(
                     print(
                         f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
                         f"{stack_challenge.status_text()} | Grip: {gripper_norm:.2f}   ",
+                        end="\r",
+                        flush=True,
+                    )
+                elif pick_place_task is not None:
+                    print(
+                        f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
+                        f"{pick_place_task.status_text()} | Grip: {gripper_norm:.2f}   ",
                         end="\r",
                         flush=True,
                     )
@@ -1531,6 +1856,9 @@ def run_with_controller(
                 moved_now = stack_challenge.update()
                 for cube_name in moved_now:
                     print(f"\n  {cube_name} moved!", flush=True)
+            if pick_place_task is not None:
+                for event in pick_place_task.update(cartesian_state.gripper_pos):
+                    print(f"\n  {event}", flush=True)
             if challenge is not None:
                 challenge.update_with_touch_points(
                     pos,
@@ -1573,6 +1901,13 @@ def run_with_controller(
                     end="\r",
                     flush=True,
                 )
+            elif pick_place_task is not None:
+                print(
+                    f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
+                    f"{pick_place_task.status_text()} | Grip: {cartesian_state.gripper_pos:.2f}   ",
+                    end="\r",
+                    flush=True,
+                )
             elif challenge is not None:
                 n_targets = len(challenge.active_targets)
                 n_collected = len(challenge.collected_targets)
@@ -1610,6 +1945,8 @@ def run_with_controller(
     # Print challenge summary if in challenge mode
     if stack_challenge is not None:
         stack_challenge.print_summary()
+    if pick_place_task is not None:
+        pick_place_task.print_summary()
     if challenge is not None:
         challenge.print_summary()
 
@@ -2158,6 +2495,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initial viewer camera preset. Use [ and ] to cycle, ESC for free camera.",
     )
     parser.add_argument(
+        "--scene",
+        choices=["default", "pick_place_basic"],
+        default="default",
+        help="Physical scene to load. 'pick_place_basic' adds a table, cube, and goal box.",
+    )
+    parser.add_argument(
         "--deadzone",
         type=float,
         default=0.15,
@@ -2456,7 +2799,11 @@ def main() -> None:
             print(f"  {plane}: {size:.3f} m")
         return
 
-    scene = "stack" if args.challenge and args.challenge_layout == "stack" else "default"
+    if args.scene != "default" and args.challenge and args.challenge_layout == "stack":
+        print("ERROR: --scene pick_place_basic cannot be combined with --challenge-layout stack.")
+        sys.exit(1)
+
+    scene = "stack" if args.challenge and args.challenge_layout == "stack" else args.scene
     print("Loading MuJoCo model...", flush=True)
     sim = MuJoCoSimulator(str(URDF_PATH), scene=scene)
     print("Model loaded!", flush=True)
