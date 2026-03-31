@@ -1,9 +1,11 @@
 # SO-ARM101 Driving Guide
 
-A practical reference for teleoperating the SO-ARM101 across all four control modes and three controller types.
+A practical reference for teleoperating the SO-ARM101 across all four control modes and the supported controller input paths.
 
 See also:
 - [README](../README.md)
+- [Mode Verification Guide](mode_verification_guide.md)
+- [Dual Joy-Con Test Guide](dual_joycon_test_guide.md)
 - [Calibration Guide](CALIBRATION.md)
 - [LeRobot Cartesian Pipeline](lerobot_pipeline.md)
 
@@ -20,7 +22,7 @@ uv run teleoperate-real --port /dev/ttyUSB0 --mode crane
 ```
 
 **Safety rule for all modes:** keep one hand free to Ctrl-C or hit the physical e-stop.
-The deadman switch (LB on Xbox, SL on Joy-Con) must be held for any arm motion;
+The deadman switch (LB on Xbox, SL on single Joy-Con, ZL on dual Joy-Con) must be held for any arm motion;
 releasing it freezes the arm in place.  Keyboard mode has no deadman — motion starts
 when movement keys are pressed.
 
@@ -90,6 +92,19 @@ elbow collisions, and the arm naturally folds inward as you retract.
 
 > Note: reach is not bound on a single Joy-Con.  Use Xbox or keyboard for full crane control.
 
+### Dual Joy-Con controls
+
+Dual Joy-Con is not the recommended crane path. If you still use it, treat the left Joy-Con as the control hand:
+
+| Input | Action |
+|-------|--------|
+| Hold ZL | Deadman |
+| Left stick | Pan / reach-style positioning |
+| Left D-pad up / down | Vertical jog |
+| Right ZR | Gripper |
+
+The split Joy-Con path is primarily intended for cartesian natural-motion testing, not crane.
+
 ### Keyboard controls
 
 | Key | Action |
@@ -148,7 +163,20 @@ A to go home and start over.
 ### Joy-Con (R) controls
 
 The single Joy-Con stick maps to X/Y translation; Z and orientation axes are not
-bound.  Cartesian mode is most useful with an Xbox controller.
+bound.  For fuller cartesian control, prefer Xbox or the split `dual_joycon` path.
+
+### Dual Joy-Con controls
+
+| Input | Action |
+|-------|--------|
+| Hold ZL | Deadman / clutch |
+| Left stick | X / Y translation |
+| Left D-pad up / down | Z translation |
+| Right Joy-Con IMU | Wrist orientation |
+| Right ZR | Gripper |
+| Right + | Home |
+
+Release and re-hold `ZL` to capture a new comfortable wrist neutral pose.
 
 ### Keyboard controls
 
@@ -311,6 +339,20 @@ Stick ────────────────── pan + reach/height 
 [+]   home
 [B]   height down (puppet)
 IMU   wrist orientation (puppet)
+```
+
+### Dual Joy-Con — split hold
+
+```
+Left Joy-Con
+[ZL]  deadman / clutch
+Stick ─────────────── X / Y translation (cartesian)
+D-pad up/down ─────── Z translation (cartesian)
+
+Right Joy-Con
+[ZR]  gripper
+[+]   home
+IMU   wrist orientation (cartesian natural-motion path)
 ```
 
 ### Keyboard

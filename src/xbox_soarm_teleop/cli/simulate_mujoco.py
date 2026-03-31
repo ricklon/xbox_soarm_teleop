@@ -1409,7 +1409,7 @@ def run_with_controller(
                 print("  evdev not installed — run: uv pip install evdev")
             print("  Check 'input' group: groups $USER | grep input")
             print("  Add with: sudo usermod -aG input $USER  (then re-login)")
-        elif controller_type == "joycon":
+        elif controller_type in {"joycon", "dual_joycon"}:
             try:
                 import evdev
 
@@ -1429,7 +1429,10 @@ def run_with_controller(
                     print("  No input devices found (check permissions: sudo usermod -aG input $USER)")
             except ImportError:
                 print("  evdev not installed — run: uv pip install evdev")
-            print("  Joy-Con setup: bluetooth connect + press SL+SR for single-controller mode")
+            if controller_type == "joycon":
+                print("  Joy-Con setup: bluetooth connect + press SL+SR for single-controller mode")
+            else:
+                print("  Connect both Joy-Cons and keep the right Joy-Con awake for IMU input")
             print("  joycond must be running: systemctl is-active joycond")
         else:
             print("  - Check that controller is connected")
@@ -1799,6 +1802,7 @@ def run_with_controller(
                     cartesian_state.wrist_roll_deg,
                     ee_delta.droll,
                     dt=LOOP_PERIOD,
+                    roll_target=ee_delta.roll_target,
                 )
                 apply_ik_solution(
                     cartesian_state,
@@ -2205,7 +2209,11 @@ def run_demo_mode(
             max_delta = ik_joint_vel_limits * LOOP_PERIOD
             joint_delta = ik_result - cartesian_state.ik_joint_pos_deg
             joint_delta = np.clip(joint_delta, -max_delta, max_delta)
-            next_wrist_roll_deg = step_wrist_roll(cartesian_state.wrist_roll_deg, droll, dt=LOOP_PERIOD)
+            next_wrist_roll_deg = step_wrist_roll(
+                cartesian_state.wrist_roll_deg,
+                droll,
+                dt=LOOP_PERIOD,
+            )
             apply_ik_solution(
                 cartesian_state,
                 kinematics,
@@ -2418,9 +2426,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--controller",
-        choices=["xbox", "joycon", "keyboard"],
+        choices=["xbox", "joycon", "dual_joycon", "keyboard"],
         default="xbox",
-        help="Controller type: xbox, joycon, or keyboard. Default: xbox.",
+        help="Controller type: xbox, joycon, dual_joycon, or keyboard. Default: xbox.",
     )
     parser.add_argument(
         "--keyboard-grab",

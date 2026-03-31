@@ -1,8 +1,9 @@
-"""Tests for JoyConController input handling."""
+"""Tests for Joy-Con input handling."""
 
 
-from xbox_soarm_teleop.config.joycon_config import JoyConConfig
+from xbox_soarm_teleop.config.joycon_config import DualJoyConConfig, JoyConConfig
 from xbox_soarm_teleop.teleoperators.joycon import (
+    DualJoyConController,
     JoyConController,
     _is_matching_joycon_device_name,
 )
@@ -36,6 +37,18 @@ class TestJoyConConfig:
         assert (
             _is_matching_joycon_device_name("Joy-Con (R) (IMU)", cfg.device_name_patterns) is False
         )
+
+
+class TestDualJoyConConfig:
+    def test_defaults(self):
+        cfg = DualJoyConConfig()
+        assert cfg.deadzone == 0.1
+        assert cfg.deadman_button == "BTN_TL2"
+        assert cfg.gripper_button == "BTN_TR2"
+        assert cfg.left_stick_x_axis == "ABS_X"
+        assert cfg.right_stick_x_axis == "ABS_RX"
+        assert "Joy-Con (L)" in cfg.left_device_name_patterns
+        assert "Joy-Con (R)" in cfg.right_device_name_patterns
 
 
 class TestJoyConController:
@@ -145,15 +158,58 @@ class TestJoyConController:
         """connect() returns False when no matching device is found."""
         import xbox_soarm_teleop.teleoperators.joycon as joycon_mod
 
-        class FakeEvdev:
-            def list_devices(self):
-                return []
-
         monkeypatch.setattr(joycon_mod, "__builtins__", __builtins__)
         ctrl = JoyConController()
 
         # Patch _find_device to return None
-        ctrl._find_device = lambda: None
+        ctrl._find_device = lambda *args, **kwargs: None
         result = ctrl.connect()
         assert result is False
         assert ctrl.is_connected is False
+
+
+class TestDualJoyConController:
+    def test_init_defaults(self):
+        ctrl = DualJoyConController()
+        assert ctrl.config.deadzone == 0.1
+        assert ctrl.is_connected is False
+
+    def test_read_when_disconnected_returns_zero_state(self):
+        ctrl = DualJoyConController()
+        state = ctrl.read()
+        assert isinstance(state, XboxState)
+        assert state.left_stick_x == 0.0
+        assert state.imu_orientation_valid is False
+
+    def test_read_merges_left_right_and_imu(self):
+        ctrl = DualJoyConController()
+        ctrl._connected = True
+        ctrl._left_raw_state["ABS_X"] = 32767
+        ctrl._left_raw_state["ABS_Y"] = 0
+        ctrl._left_raw_state["BTN_TL2"] = 1
+        ctrl._left_raw_state["BTN_DPAD_UP"] = 1
+        ctrl._right_raw_state["ABS_RX"] = -32767
+        ctrl._right_raw_state["ABS_RY"] = 0
+        ctrl._right_raw_state["BTN_TR2"] = 1
+        ctrl._right_raw_state["BTN_START"] = 1
+
+        class _FakeIMU:
+            available = True
+
+            def read_orientation(self):
+                return (0.1, -0.2, 0.3)
+
+        ctrl._imu = _FakeIMU()
+        state = ctrl.read()
+
+        assert state.left_stick_x > 0.9
+        assert abs(state.left_stick_y) < 0.01
+        assert state.right_stick_x < -0.9
+        assert state.left_bumper is True
+        assert state.right_trigger == 1.0
+        assert state.a_button is True
+        assert state.dpad_y == -1.0
+        assert state.imu_pitch == 0.1
+        assert state.imu_roll == -0.2
+        assert state.imu_yaw == 0.3
+        assert state.imu_orientation_valid is True

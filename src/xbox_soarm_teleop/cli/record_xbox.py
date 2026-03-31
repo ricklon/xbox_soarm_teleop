@@ -90,17 +90,21 @@ def _pose_to_array(pose: np.ndarray) -> np.ndarray:
 
 
 def _build_cartesian_controller(controller_type: str):
-    from xbox_soarm_teleop.config.joycon_config import JoyConConfig
+    from xbox_soarm_teleop.config.joycon_config import DualJoyConConfig, JoyConConfig
     from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
     from xbox_soarm_teleop.config.xbox_config import XboxConfig
-    from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta
-    from xbox_soarm_teleop.teleoperators.joycon import JoyConController
+    from xbox_soarm_teleop.processors.xbox_to_ee import MapDualJoyConToEEDelta, MapXboxToEEDelta
+    from xbox_soarm_teleop.teleoperators.joycon import DualJoyConController, JoyConController
     from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
     from xbox_soarm_teleop.teleoperators.xbox import XboxController
 
     if controller_type == "joycon":
         cfg = JoyConConfig()
         controller = JoyConController(cfg)
+        proc_cfg = cfg
+    elif controller_type == "dual_joycon":
+        cfg = DualJoyConConfig()
+        controller = DualJoyConController(cfg)
         proc_cfg = cfg
     elif controller_type == "keyboard":
         cfg = KeyboardConfig()
@@ -111,13 +115,26 @@ def _build_cartesian_controller(controller_type: str):
         controller = XboxController(cfg)
         proc_cfg = cfg
 
-    mapper = MapXboxToEEDelta(
-        linear_scale=proc_cfg.linear_scale,
-        angular_scale=proc_cfg.angular_scale,
-        orientation_scale=proc_cfg.orientation_scale,
-        invert_pitch=proc_cfg.invert_pitch,
-        invert_yaw=proc_cfg.invert_yaw,
-    )
+    if controller_type == "dual_joycon":
+        mapper = MapDualJoyConToEEDelta(
+            linear_scale=proc_cfg.linear_scale,
+            vertical_scale=proc_cfg.vertical_scale,
+            roll_scale=proc_cfg.roll_scale,
+            pitch_scale=proc_cfg.pitch_scale,
+            yaw_scale=proc_cfg.yaw_scale,
+            invert_z=proc_cfg.invert_z,
+            invert_roll=proc_cfg.invert_roll,
+            invert_pitch=proc_cfg.invert_pitch,
+            invert_yaw=proc_cfg.invert_yaw,
+        )
+    else:
+        mapper = MapXboxToEEDelta(
+            linear_scale=proc_cfg.linear_scale,
+            angular_scale=proc_cfg.angular_scale,
+            orientation_scale=proc_cfg.orientation_scale,
+            invert_pitch=proc_cfg.invert_pitch,
+            invert_yaw=proc_cfg.invert_yaw,
+        )
     return controller, mapper, proc_cfg
 
 
@@ -160,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--controller",
-        choices=["xbox", "joycon", "keyboard"],
+        choices=["xbox", "joycon", "dual_joycon", "keyboard"],
         default="xbox",
         help="Input device type.",
     )

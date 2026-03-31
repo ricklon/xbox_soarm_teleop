@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 
 
@@ -26,6 +28,9 @@ class EEDelta:
     dpitch: float = 0.0
     dyaw: float = 0.0
     gripper: float = 0.0
+    roll_target: float | None = None
+    pitch_target: float | None = None
+    yaw_target: float | None = None
 
     def as_array(self) -> list[float]:
         """Return delta as a list [dx, dy, dz, droll, dpitch, dyaw, gripper]."""
@@ -40,6 +45,9 @@ class EEDelta:
             and self.droll == 0.0
             and self.dpitch == 0.0
             and self.dyaw == 0.0
+            and self.roll_target is None
+            and self.pitch_target is None
+            and self.yaw_target is None
         )
 
 
@@ -151,3 +159,92 @@ class MapXboxToEEDelta:
     def reset(self) -> None:
         """Reset processor state (no-op for stateless processor)."""
         pass
+
+
+class MapDualJoyConToEEDelta:
+    """Map dual Joy-Con state to cartesian motion plus absolute orientation.
+
+    Left Joy-Con:
+        - Stick: X/Y translation
+        - D-pad up/down: Z translation
+        - ZL: deadman/clutch
+
+    Right Joy-Con:
+        - IMU: absolute wrist orientation relative to clutch-in pose
+        - ZR: gripper
+        - +: home
+
+    The IMU orientation is interpreted relative to the moment the deadman is
+    pressed. Releasing and re-pressing the deadman reclutches the orientation.
+    """
+
+    def __init__(
+        self,
+        linear_scale: float = 0.1,
+        vertical_scale: float = 0.08,
+        roll_scale: float = 1.0,
+        pitch_scale: float = 1.0,
+        yaw_scale: float = 0.75,
+        invert_z: bool = False,
+        invert_roll: bool = False,
+        invert_pitch: bool = False,
+        invert_yaw: bool = False,
+    ) -> None:
+        self.linear_scale = linear_scale
+        self.vertical_scale = vertical_scale
+        self.roll_scale = roll_scale
+        self.pitch_scale = pitch_scale
+        self.yaw_scale = yaw_scale
+        self.invert_z = invert_z
+        self.invert_roll = invert_roll
+        self.invert_pitch = invert_pitch
+        self.invert_yaw = invert_yaw
+        self._deadman_prev = False
+        self._imu_reference = np.zeros(3, dtype=float)
+
+    def __call__(self, state: XboxState) -> EEDelta:
+        """Map dual Joy-Con state to EE motion and wrist targets."""
+        gripper = state.right_trigger
+        if not state.left_bumper:
+            self._deadman_prev = False
+            return EEDelta(gripper=gripper)
+
+        if state.imu_orientation_valid:
+            imu_now = np.array([state.imu_roll, state.imu_pitch, state.imu_yaw], dtype=float)
+            if not self._deadman_prev:
+                self._imu_reference = imu_now.copy()
+            imu_delta = imu_now - self._imu_reference
+        else:
+            imu_delta = np.zeros(3, dtype=float)
+
+        self._deadman_prev = True
+
+        dz = -state.dpad_y * self.vertical_scale
+        if self.invert_z:
+            dz = -dz
+
+        roll_target = imu_delta[2] * self.roll_scale
+        pitch_target = imu_delta[1] * self.pitch_scale
+        yaw_target = -imu_delta[0] * self.yaw_scale
+
+        if self.invert_roll:
+            roll_target = -roll_target
+        if self.invert_pitch:
+            pitch_target = -pitch_target
+        if self.invert_yaw:
+            yaw_target = -yaw_target
+
+        return EEDelta(
+            dx=-state.left_stick_y * self.linear_scale,
+            dy=-state.left_stick_x * self.linear_scale,
+            dz=dz,
+            gripper=gripper,
+            roll_target=roll_target if state.imu_orientation_valid else None,
+            pitch_target=pitch_target if state.imu_orientation_valid else None,
+            yaw_target=yaw_target if state.imu_orientation_valid else None,
+        )
+
+    def reset(self) -> None:
+        """Clear clutch state so the next deadman press captures a new neutral."""
+        self._deadman_prev = False
+        self._imu_reference = np.zeros(3, dtype=float)

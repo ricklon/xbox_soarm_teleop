@@ -20,8 +20,6 @@ current position — the processor degrades gracefully to crane-without-IMU-wris
 from __future__ import annotations
 
 import math
-import time
-from pathlib import Path
 
 import numpy as np
 
@@ -32,6 +30,7 @@ from xbox_soarm_teleop.config.joints import (
 )
 from xbox_soarm_teleop.diagnostics.xbox_joint_drive import map_trigger_to_gripper_deg
 from xbox_soarm_teleop.processors.joint_direct import JointCommand
+from xbox_soarm_teleop.teleoperators.joycon_imu import JoyConIMU
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 
 # Velocity limits for the direct joints driven by stick / buttons
@@ -48,158 +47,6 @@ _HEIGHT_MAX: float = 0.40
 
 # How many degrees of wrist deflection per degree of IMU tilt from neutral
 _IMU_WRIST_SCALE: float = 1.0
-
-# Complementary filter coefficient (0 = accel only, 1 = gyro only)
-_COMP_ALPHA: float = 0.95
-
-
-# ---------------------------------------------------------------------------
-# JoyConIMU — reads pitch/roll from Linux IIO sysfs (hid-nintendo driver)
-# ---------------------------------------------------------------------------
-
-class JoyConIMU:
-    """Read Joy-Con pitch and roll from the Linux IIO subsystem.
-
-    The ``hid-nintendo`` kernel driver exposes accelerometer and gyroscope
-    data at ``/sys/bus/iio/devices/iio:deviceN/`` as raw sysfs attributes.
-    A complementary filter fuses both sensors to give stable orientation.
-
-    Args:
-        device_index: IIO device index to try first.  Pass ``None`` to
-            auto-scan for a Joy-Con IMU device.
-        alpha: Complementary filter coefficient (gyro weight, 0–1).
-    """
-
-    _ACCEL_ATTRS = ("in_accel_x_raw", "in_accel_y_raw", "in_accel_z_raw")
-    _GYRO_ATTRS = ("in_anglvel_x_raw", "in_anglvel_y_raw", "in_anglvel_z_raw")
-    _NAME_KEYWORDS = ("joycon", "joy-con", "nintendo")
-
-    def __init__(self, device_index: int | None = None, alpha: float = _COMP_ALPHA) -> None:
-        self.alpha = alpha
-        self._iio_path: Path | None = self._find_iio_device(device_index)
-        self._accel_scale: float = self._read_scale("in_accel_scale", 1.0)
-        self._gyro_scale: float = self._read_scale("in_anglvel_scale", 1.0)
-        self._pitch: float = 0.0   # rad — updated by filter
-        self._roll: float = 0.0    # rad
-        self._last_t: float = time.monotonic()
-        self._calibrated = False
-        if self._iio_path:
-            print(f"JoyConIMU: found IIO device at {self._iio_path}", flush=True)
-        else:
-            print(
-                "JoyConIMU: no IIO device found — wrist orientation from IMU unavailable. "
-                "Ensure hid-nintendo driver is loaded and Joy-Con is connected.",
-                flush=True,
-            )
-
-    @property
-    def available(self) -> bool:
-        return self._iio_path is not None
-
-    def read(self) -> tuple[float, float]:
-        """Return current ``(pitch_rad, roll_rad)`` from the IMU.
-
-        Returns ``(0.0, 0.0)`` if the IIO device is not available.
-        """
-        if self._iio_path is None:
-            return 0.0, 0.0
-
-        try:
-            ax, ay, az = self._read_accel()
-            gx, gy, gz = self._read_gyro()
-        except OSError:
-            return self._pitch, self._roll
-
-        now = time.monotonic()
-        dt = min(now - self._last_t, 0.1)   # cap stale dt on first call
-        self._last_t = now
-
-        # Accelerometer-based pitch/roll (gravity reference, noisy)
-        norm = math.sqrt(ax * ax + ay * ay + az * az)
-        if norm > 0.01:
-            accel_pitch = math.atan2(-ax, math.sqrt(ay * ay + az * az))
-            accel_roll = math.atan2(ay, az)
-        else:
-            accel_pitch = self._pitch
-            accel_roll = self._roll
-
-        # Gyro integration (drift-prone but smooth)
-        gyro_pitch = self._pitch + gy * dt
-        gyro_roll = self._roll + gx * dt
-
-        # Complementary filter
-        self._pitch = self.alpha * gyro_pitch + (1.0 - self.alpha) * accel_pitch
-        self._roll = self.alpha * gyro_roll + (1.0 - self.alpha) * accel_roll
-
-        return self._pitch, self._roll
-
-    def calibrate(self) -> None:
-        """Reset the filter state from current accelerometer reading."""
-        if self._iio_path is None:
-            return
-        try:
-            ax, ay, az = self._read_accel()
-            norm = math.sqrt(ax * ax + ay * ay + az * az)
-            if norm > 0.01:
-                self._pitch = math.atan2(-ax, math.sqrt(ay * ay + az * az))
-                self._roll = math.atan2(ay, az)
-        except OSError:
-            pass
-        self._last_t = time.monotonic()
-        self._calibrated = True
-
-    # ── Private helpers ────────────────────────────────────────────────────
-
-    def _find_iio_device(self, index: int | None) -> Path | None:
-        iio_root = Path("/sys/bus/iio/devices")
-        if not iio_root.exists():
-            return None
-
-        candidates: list[Path] = []
-        for dev in sorted(iio_root.iterdir()):
-            name_file = dev / "name"
-            if not name_file.exists():
-                continue
-            try:
-                name = name_file.read_text().strip().lower()
-            except OSError:
-                continue
-            if any(kw in name for kw in self._NAME_KEYWORDS):
-                # Require at least accel attributes
-                if (dev / "in_accel_x_raw").exists():
-                    candidates.append(dev)
-
-        if not candidates:
-            return None
-        if index is not None and index < len(candidates):
-            return candidates[index]
-        return candidates[0]
-
-    def _read_scale(self, attr: str, default: float) -> float:
-        if self._iio_path is None:
-            return default
-        f = self._iio_path / attr
-        if not f.exists():
-            return default
-        try:
-            return float(f.read_text().strip())
-        except (OSError, ValueError):
-            return default
-
-    def _read_accel(self) -> tuple[float, float, float]:
-        p = self._iio_path
-        ax = float((p / "in_accel_x_raw").read_text()) * self._accel_scale  # type: ignore[operator]
-        ay = float((p / "in_accel_y_raw").read_text()) * self._accel_scale  # type: ignore[operator]
-        az = float((p / "in_accel_z_raw").read_text()) * self._accel_scale  # type: ignore[operator]
-        return ax, ay, az
-
-    def _read_gyro(self) -> tuple[float, float, float]:
-        p = self._iio_path
-        gx = float((p / "in_anglvel_x_raw").read_text()) * self._gyro_scale  # type: ignore[operator]
-        gy = float((p / "in_anglvel_y_raw").read_text()) * self._gyro_scale  # type: ignore[operator]
-        gz = float((p / "in_anglvel_z_raw").read_text()) * self._gyro_scale  # type: ignore[operator]
-        return gx, gy, gz
-
 
 # ---------------------------------------------------------------------------
 # PuppetProcessor

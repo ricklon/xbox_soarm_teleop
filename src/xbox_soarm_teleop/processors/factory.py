@@ -7,9 +7,16 @@ from xbox_soarm_teleop.config.modes import ControlMode
 
 def make_processor(
     mode: ControlMode,
+    controller_type: str = "xbox",
     linear_scale: float = 0.1,
+    vertical_scale: float | None = None,
     angular_scale: float = 0.5,
     orientation_scale: float = 1.0,
+    roll_scale: float = 1.0,
+    pitch_scale: float = 1.0,
+    yaw_scale: float = 0.75,
+    invert_z: bool = False,
+    invert_roll: bool = False,
     invert_pitch: bool = False,
     invert_yaw: bool = False,
     joint_max_vel_deg_s: float = 70.0,
@@ -21,9 +28,16 @@ def make_processor(
 
     Args:
         mode: The desired ControlMode.
+        controller_type: Input device type to specialize mapping when needed.
         linear_scale: m/s at full stick deflection (CARTESIAN/CRANE modes).
+        vertical_scale: m/s at full vertical command for controllers without an analog Z axis.
         angular_scale: rad/s at full stick for wrist roll (CARTESIAN/CRANE modes).
         orientation_scale: rad/s for pitch/yaw D-pad (CARTESIAN/CRANE modes).
+        roll_scale: Absolute roll target scale for IMU-driven orientation.
+        pitch_scale: Absolute pitch target scale for IMU-driven orientation.
+        yaw_scale: Absolute yaw target scale for IMU-driven orientation.
+        invert_z: Invert vertical translation.
+        invert_roll: Invert wrist roll / IMU roll.
         invert_pitch: Invert pitch axis (CARTESIAN/CRANE modes).
         invert_yaw: Invert yaw axis (CARTESIAN/CRANE modes).
         joint_max_vel_deg_s: Max joint velocity in deg/s (JOINT mode).
@@ -39,7 +53,20 @@ def make_processor(
         ValueError: If mode is not a recognised ControlMode.
     """
     if mode == ControlMode.CARTESIAN:
-        from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta
+        from xbox_soarm_teleop.processors.xbox_to_ee import MapDualJoyConToEEDelta, MapXboxToEEDelta
+
+        if controller_type == "dual_joycon":
+            return MapDualJoyConToEEDelta(
+                linear_scale=linear_scale,
+                vertical_scale=vertical_scale if vertical_scale is not None else linear_scale,
+                roll_scale=roll_scale,
+                pitch_scale=pitch_scale,
+                yaw_scale=yaw_scale,
+                invert_z=invert_z,
+                invert_roll=invert_roll,
+                invert_pitch=invert_pitch,
+                invert_yaw=invert_yaw,
+            )
 
         return MapXboxToEEDelta(
             linear_scale=linear_scale,

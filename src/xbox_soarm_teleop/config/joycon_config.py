@@ -1,4 +1,4 @@
-"""Configuration for Nintendo Switch Right Joy-Con input (single horizontal mode)."""
+"""Configuration for Nintendo Switch Joy-Con input devices."""
 
 from dataclasses import dataclass, field
 
@@ -68,4 +68,61 @@ class JoyConConfig:
     # Device discovery — joycond virtual device name patterns
     device_name_patterns: list = field(
         default_factory=lambda: ["Nintendo Switch Right Joy-Con", "Joy-Con (R)"]
+    )
+
+
+@dataclass
+class DualJoyConConfig:
+    """Configuration for split dual Joy-Con teleoperation.
+
+    The intended default posture is standard vertical use:
+    - Left Joy-Con drives translation and clutch/deadman.
+    - Right Joy-Con drives gripper plus natural wrist orientation from the IMU.
+    """
+
+    deadzone: float = 0.1
+    linear_scale: float = 0.1
+    vertical_scale: float = 0.08
+    angular_scale: float = 0.5
+    orientation_scale: float = 1.0
+    roll_scale: float = 1.0
+    pitch_scale: float = 1.0
+    yaw_scale: float = 0.75
+    gripper_rate: float = 2.0
+
+    invert_x: bool = False
+    invert_y: bool = False
+    invert_z: bool = False
+    invert_roll: bool = False
+    invert_pitch: bool = False
+    invert_yaw: bool = False
+
+    left_device_index: int = 0
+    right_device_index: int = 0
+    imu_device_index: int | None = None
+
+    left_stick_x_axis: str = "ABS_X"
+    left_stick_y_axis: str = "ABS_Y"
+    right_stick_x_axis: str = "ABS_RX"
+    right_stick_y_axis: str = "ABS_RY"
+
+    deadman_button: str = "BTN_TL2"      # ZL
+    home_button: str = "BTN_START"       # +
+    aux_button: str = "BTN_MODE"         # Home
+    gripper_button: str = "BTN_TR2"      # ZR
+    z_up_button: str = "BTN_DPAD_UP"
+    z_down_button: str = "BTN_DPAD_DOWN"
+    dpad_left_button: str = "BTN_DPAD_LEFT"
+    dpad_right_button: str = "BTN_DPAD_RIGHT"
+
+    stick_range: tuple[int, int] = field(default_factory=lambda: (-32767, 32767))
+
+    left_device_name_patterns: list[str] = field(
+        default_factory=lambda: ["Nintendo Switch Left Joy-Con", "Joy-Con (L)"]
+    )
+    right_device_name_patterns: list[str] = field(
+        default_factory=lambda: ["Nintendo Switch Right Joy-Con", "Joy-Con (R)"]
+    )
+    right_imu_name_patterns: list[str] = field(
+        default_factory=lambda: ["Nintendo Switch Right Joy-Con IMU", "Joy-Con (R) IMU"]
     )

@@ -80,6 +80,12 @@ class XboxTeleoperator:
 
             ctrl_cfg = JoyConConfig(deadzone=config.deadzone)
             self._controller = JoyConController(ctrl_cfg)
+        elif config.controller_type == "dual_joycon":
+            from xbox_soarm_teleop.config.joycon_config import DualJoyConConfig
+            from xbox_soarm_teleop.teleoperators.joycon import DualJoyConController
+
+            ctrl_cfg = DualJoyConConfig(deadzone=config.deadzone)
+            self._controller = DualJoyConController(ctrl_cfg)
         elif config.controller_type == "keyboard":
             from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
             from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
@@ -91,6 +97,7 @@ class XboxTeleoperator:
             self._controller = XboxController(xbox_cfg)
         self._processor = make_processor(
             self._mode,
+            controller_type=config.controller_type,
             loop_dt=config.loop_dt,
             urdf_path=config.urdf_path,
         )

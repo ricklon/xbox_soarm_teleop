@@ -91,8 +91,16 @@ def step_gripper_toward(current: float, target: float, *, gripper_rate: float, d
     return target
 
 
-def step_wrist_roll(current_deg: float, droll_rad_s: float, *, dt: float) -> float:
+def step_wrist_roll(
+    current_deg: float,
+    droll_rad_s: float,
+    *,
+    dt: float,
+    roll_target: float | None = None,
+) -> float:
     """Integrate wrist roll and clamp it to a conservative full-turn range."""
+    if roll_target is not None:
+        return float(np.clip(np.rad2deg(roll_target), -180.0, 180.0))
     if abs(droll_rad_s) <= 0.001:
         return current_deg
     next_deg = current_deg + np.rad2deg(droll_rad_s * dt)
@@ -121,14 +129,22 @@ def advance_cartesian_target(
     target_pos, clip_flags = clip_position(target_pos)
 
     pitch_clipped = False
-    if abs(ee_delta.dpitch) > 0.001:
+    if ee_delta.pitch_target is not None:
+        clipped_pitch = float(np.clip(ee_delta.pitch_target, -pitch_limit_rad, pitch_limit_rad))
+        pitch_clipped = clipped_pitch != ee_delta.pitch_target
+        state.target_pitch = clipped_pitch
+    elif abs(ee_delta.dpitch) > 0.001:
         next_pitch = state.target_pitch + ee_delta.dpitch * dt
         clipped_pitch = float(np.clip(next_pitch, -pitch_limit_rad, pitch_limit_rad))
         pitch_clipped = clipped_pitch != next_pitch
         state.target_pitch = clipped_pitch
 
     yaw_clipped = False
-    if abs(ee_delta.dyaw) > 0.001:
+    if ee_delta.yaw_target is not None:
+        clipped_yaw = float(np.clip(ee_delta.yaw_target, -yaw_limit_rad, yaw_limit_rad))
+        yaw_clipped = clipped_yaw != ee_delta.yaw_target
+        state.target_yaw = clipped_yaw
+    elif abs(ee_delta.dyaw) > 0.001:
         next_yaw = state.target_yaw + ee_delta.dyaw * dt
         clipped_yaw = float(np.clip(next_yaw, -yaw_limit_rad, yaw_limit_rad))
         yaw_clipped = clipped_yaw != next_yaw

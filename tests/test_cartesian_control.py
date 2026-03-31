@@ -52,6 +52,7 @@ def test_step_gripper_toward_and_roll() -> None:
     assert step_gripper_toward(0.0, 1.0, gripper_rate=2.0, dt=0.1) == 0.2
     assert step_gripper_toward(0.8, 1.0, gripper_rate=5.0, dt=0.1) == 1.0
     assert step_wrist_roll(179.0, np.deg2rad(20.0), dt=0.1) == 180.0
+    assert step_wrist_roll(0.0, 0.0, dt=0.1, roll_target=np.deg2rad(45.0)) == 45.0
 
 
 def test_advance_cartesian_target_and_apply_solution() -> None:
@@ -74,6 +75,34 @@ def test_advance_cartesian_target_and_apply_solution() -> None:
     assert flags["yaw_clipped"] is True
     assert flags["has_orientation_target"] is True
     assert flags["orientation_weight"] == 0.1
+    assert not np.allclose(target_pose[:3, :3], np.eye(3))
+
+
+def test_advance_cartesian_target_uses_absolute_orientation_targets() -> None:
+    kin = _FakeKinematics()
+    state = make_cartesian_state(kin, np.array([0.0, 0.0, 0.0, 0.0]))
+    delta = EEDelta(
+        dx=0.0,
+        dy=0.0,
+        dz=0.0,
+        pitch_target=0.3,
+        yaw_target=-0.4,
+    )
+
+    target_pose, _target_pos, flags = advance_cartesian_target(
+        state,
+        delta,
+        dt=0.1,
+        clip_position=lambda pos: (pos, {}),
+        pitch_limit_rad=0.5,
+        yaw_limit_rad=0.5,
+    )
+
+    assert state.target_pitch == 0.3
+    assert state.target_yaw == -0.4
+    assert flags["pitch_clipped"] is False
+    assert flags["yaw_clipped"] is False
+    assert flags["has_orientation_target"] is True
     assert not np.allclose(target_pose[:3, :3], np.eye(3))
 
     apply_ik_solution(

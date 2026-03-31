@@ -3,6 +3,7 @@
 from xbox_soarm_teleop.teleoperators.xbox import XboxController, XboxState
 
 __all__ = [
+    "DualJoyConController",
     "JoyConController",
     "KeyboardController",
     "XboxController",
@@ -13,6 +14,10 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    if name == "DualJoyConController":
+        from xbox_soarm_teleop.teleoperators.joycon import DualJoyConController
+
+        return DualJoyConController
     if name == "JoyConController":
         from xbox_soarm_teleop.teleoperators.joycon import JoyConController
 

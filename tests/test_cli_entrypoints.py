@@ -63,6 +63,12 @@ def test_teleoperate_real_parser() -> None:
     assert args.controller == "xbox"
 
 
+def test_teleoperate_real_parser_dual_joycon() -> None:
+    parser = build_teleoperate_real_parser()
+    args = parser.parse_args(["--controller", "dual_joycon"])
+    assert args.controller == "dual_joycon"
+
+
 def test_simulate_mujoco_parser() -> None:
     parser = build_simulate_mujoco_parser()
     args = parser.parse_args(["--controller", "keyboard", "--mode", "joint"])
@@ -71,6 +77,13 @@ def test_simulate_mujoco_parser() -> None:
     assert args.no_controller is False
     assert args.challenge_layout == "random"
     assert args.camera_view == "front_right"
+
+
+def test_simulate_mujoco_parser_dual_joycon() -> None:
+    parser = build_simulate_mujoco_parser()
+    args = parser.parse_args(["--controller", "dual_joycon", "--mode", "cartesian"])
+    assert args.controller == "dual_joycon"
+    assert args.mode == "cartesian"
 
 
 def test_simulate_mujoco_stack_layout_parser() -> None:
@@ -192,6 +205,12 @@ def test_teleoperate_dual_parser() -> None:
     assert args.motion_routine is False
 
 
+def test_teleoperate_dual_parser_dual_joycon() -> None:
+    parser = build_teleoperate_dual_parser()
+    args = parser.parse_args(["--controller", "dual_joycon"])
+    assert args.controller == "dual_joycon"
+
+
 def test_record_xbox_parser() -> None:
     parser = build_record_xbox_parser()
     args = parser.parse_args(
@@ -201,3 +220,20 @@ def test_record_xbox_parser() -> None:
     assert args.robot_port == "/dev/ttyUSB0"
     assert args.task == "stack block"
     assert args.mode == "crane"
+
+
+def test_record_xbox_parser_dual_joycon() -> None:
+    parser = build_record_xbox_parser()
+    args = parser.parse_args(
+        [
+            "--repo-id",
+            "user/dataset",
+            "--robot-port",
+            "/dev/ttyUSB0",
+            "--task",
+            "stack block",
+            "--controller",
+            "dual_joycon",
+        ]
+    )
+    assert args.controller == "dual_joycon"

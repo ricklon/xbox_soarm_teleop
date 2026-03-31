@@ -321,6 +321,9 @@ def run_teleoperation(
             elif controller_type == "joycon":
                 print("  Joy-Con setup: bluetooth connect + press SL+SR for single-controller mode")
                 print("  joycond must be running: systemctl is-active joycond")
+            elif controller_type == "dual_joycon":
+                print("  Connect both Joy-Cons and keep the right Joy-Con awake for IMU input")
+                print("  joycond must be running: systemctl is-active joycond")
             else:
                 print("  - Check that controller is connected")
             sys.exit(1)
@@ -750,6 +753,7 @@ def run_teleoperation(
                     cartesian_state.wrist_roll_deg,
                     ee_delta.droll,
                     dt=LOOP_PERIOD,
+                    roll_target=ee_delta.roll_target,
                 )
                 apply_ik_solution(
                     cartesian_state,
@@ -978,9 +982,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--controller",
-        choices=["xbox", "joycon", "keyboard"],
+        choices=["xbox", "joycon", "dual_joycon", "keyboard"],
         default="xbox",
-        help="Controller type: xbox, joycon, or keyboard. Default: xbox.",
+        help="Controller type: xbox, joycon, dual_joycon, or keyboard. Default: xbox.",
     )
     parser.add_argument(
         "--keyboard-grab",

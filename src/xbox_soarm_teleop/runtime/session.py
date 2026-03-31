@@ -8,6 +8,7 @@ from typing import Any
 from xbox_soarm_teleop.config.modes import ControlMode
 
 _CONTROLLER_LABELS = {
+    "dual_joycon": "Dual Joy-Con",
     "joycon": "Joy-Con",
     "keyboard": "keyboard",
     "xbox": "Xbox controller",
@@ -52,6 +53,15 @@ def _build_controller_configs(
         if linear_scale is not None:
             config.linear_scale = linear_scale
         return config, config, "joycon"
+
+    if controller_type == "dual_joycon":
+        from xbox_soarm_teleop.config.joycon_config import DualJoyConConfig
+
+        config = DualJoyConConfig(deadzone=deadzone)
+        if linear_scale is not None:
+            config.linear_scale = linear_scale
+            config.vertical_scale = linear_scale
+        return config, config, "dual_joycon"
 
     if controller_type == "keyboard":
         from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
@@ -155,6 +165,10 @@ def build_control_runtime(
             from xbox_soarm_teleop.teleoperators.joycon import JoyConController
 
             controller = JoyConController(controller_config)
+        elif controller_kind == "dual_joycon":
+            from xbox_soarm_teleop.teleoperators.joycon import DualJoyConController
+
+            controller = DualJoyConController(controller_config)
         elif controller_kind == "keyboard":
             from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
 
@@ -175,9 +189,16 @@ def build_control_runtime(
 
         processor = make_processor(
             control_mode,
+            controller_type=controller_type,
             linear_scale=processor_config.linear_scale,
+            vertical_scale=getattr(processor_config, "vertical_scale", None),
             angular_scale=processor_config.angular_scale,
             orientation_scale=processor_config.orientation_scale,
+            roll_scale=getattr(processor_config, "roll_scale", 1.0),
+            pitch_scale=getattr(processor_config, "pitch_scale", 1.0),
+            yaw_scale=getattr(processor_config, "yaw_scale", 0.75),
+            invert_z=getattr(processor_config, "invert_z", False),
+            invert_roll=getattr(processor_config, "invert_roll", False),
             invert_pitch=processor_config.invert_pitch,
             invert_yaw=processor_config.invert_yaw,
             loop_dt=loop_dt,

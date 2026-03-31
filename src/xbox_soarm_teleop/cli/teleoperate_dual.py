@@ -154,6 +154,7 @@ class MuJoCoSimulator:
 
 def run_dual_mode(
     port: str,
+    controller_type: str = "xbox",
     calibration_dir: Path | None = None,
     motion_routine: bool = False,
     routine_duration: float = 15.0,
@@ -184,7 +185,7 @@ def run_dual_mode(
     from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta
 
     runtime = build_control_runtime(
-        controller_type="xbox",
+        controller_type=controller_type,
         mode="cartesian",
         deadzone=0.1,
         linear_scale=None,
@@ -474,6 +475,7 @@ def run_dual_mode(
                         cartesian_state.wrist_roll_deg,
                         ee_delta.droll,
                         dt=LOOP_PERIOD,
+                        roll_target=ee_delta.roll_target,
                     )
                     apply_ik_solution(
                         cartesian_state,
@@ -557,6 +559,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Serial port for robot (e.g., /dev/ttyACM0). Auto-detected if not specified.",
+    )
+    parser.add_argument(
+        "--controller",
+        choices=["xbox", "joycon", "dual_joycon", "keyboard"],
+        default="xbox",
+        help="Controller type: xbox, joycon, dual_joycon, or keyboard. Default: xbox.",
     )
     parser.add_argument(
         "--calibration-dir",
@@ -722,6 +730,7 @@ def main() -> None:
 
     run_dual_mode(
         port,
+        controller_type=args.controller,
         calibration_dir=Path(args.calibration_dir) if args.calibration_dir else None,
         motion_routine=args.motion_routine,
         routine_duration=args.routine_duration,

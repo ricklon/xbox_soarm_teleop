@@ -10,7 +10,7 @@ optimizing around.
 
 | Script | Preferred Command | Purpose |
 |--------|-------------------|---------|
-| `debug_controller.py` | `uv run python examples/debug_controller.py` | Inspect normalized Xbox controller input without a robot |
+| `debug_controller.py` | `uv run python examples/debug_controller.py` | Inspect normalized controller input without a robot |
 | `simulate_mujoco.py` | `uv run simulate-mujoco` | MuJoCo simulation for controller, mode, and routine testing |
 | `teleoperate_real.py` | `uv run teleoperate-real` | Main real-robot teleoperation entry point |
 | `teleoperate_dual.py` | `uv run teleoperate-dual` | Digital twin mode: real robot plus MuJoCo |

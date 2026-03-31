@@ -3,7 +3,7 @@
 import pytest
 
 from xbox_soarm_teleop.config.xbox_config import XboxConfig
-from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, MapXboxToEEDelta
+from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, MapDualJoyConToEEDelta, MapXboxToEEDelta
 from xbox_soarm_teleop.teleoperators.xbox import XboxController, XboxState
 
 
@@ -21,6 +21,10 @@ class TestXboxState:
         assert state.left_bumper is False
         assert state.a_button is False
         assert state.y_button is False
+        assert state.imu_roll == 0.0
+        assert state.imu_pitch == 0.0
+        assert state.imu_yaw == 0.0
+        assert state.imu_orientation_valid is False
 
     def test_custom_initialization(self):
         """State should accept custom values."""
@@ -168,6 +172,9 @@ class TestEEDelta:
         gripper_only = EEDelta(gripper=0.5)
         assert gripper_only.is_zero_motion() is True  # Gripper doesn't count as motion
 
+        target_only = EEDelta(roll_target=0.0)
+        assert target_only.is_zero_motion() is False
+
 
 class TestMapXboxToEEDelta:
     """Tests for MapXboxToEEDelta processor."""
@@ -253,3 +260,97 @@ class TestMapXboxToEEDelta:
         delta = mapper(XboxState(left_bumper=True, dpad_y=-1.0, dpad_x=1.0))
         assert delta.dpitch == 0.0
         assert delta.dyaw == 0.0
+
+
+class TestMapDualJoyConToEEDelta:
+    def test_deadman_blocks_motion_and_resets_clutch(self):
+        mapper = MapDualJoyConToEEDelta()
+        delta = mapper(
+            XboxState(
+                left_bumper=False,
+                left_stick_x=1.0,
+                left_stick_y=1.0,
+                dpad_y=-1.0,
+                right_trigger=0.5,
+                imu_orientation_valid=True,
+                imu_roll=0.1,
+                imu_pitch=0.2,
+                imu_yaw=0.3,
+            )
+        )
+        assert delta.dx == 0.0
+        assert delta.dy == 0.0
+        assert delta.dz == 0.0
+        assert delta.gripper == 0.5
+        assert delta.roll_target is None
+
+    def test_first_deadman_press_captures_imu_neutral(self):
+        mapper = MapDualJoyConToEEDelta()
+        state = XboxState(
+            left_bumper=True,
+            imu_orientation_valid=True,
+            imu_roll=0.2,
+            imu_pitch=-0.1,
+            imu_yaw=0.3,
+        )
+        delta = mapper(state)
+        assert delta.roll_target == pytest.approx(0.0)
+        assert delta.pitch_target == pytest.approx(0.0)
+        assert delta.yaw_target == pytest.approx(0.0)
+
+    def test_translation_and_orientation_follow_dual_mapping(self):
+        mapper = MapDualJoyConToEEDelta(linear_scale=0.1, vertical_scale=0.08)
+        mapper(
+            XboxState(
+                left_bumper=True,
+                imu_orientation_valid=True,
+                imu_roll=0.2,
+                imu_pitch=-0.1,
+                imu_yaw=0.3,
+            )
+        )
+        delta = mapper(
+            XboxState(
+                left_bumper=True,
+                left_stick_x=0.5,
+                left_stick_y=-1.0,
+                dpad_y=-1.0,
+                right_trigger=1.0,
+                imu_orientation_valid=True,
+                imu_roll=0.3,
+                imu_pitch=0.2,
+                imu_yaw=0.7,
+            )
+        )
+        assert delta.dx == pytest.approx(0.1)
+        assert delta.dy == pytest.approx(-0.05)
+        assert delta.dz == pytest.approx(0.08)
+        assert delta.gripper == 1.0
+        assert delta.roll_target == pytest.approx(0.4)
+        assert delta.pitch_target == pytest.approx(0.3)
+        assert delta.yaw_target == pytest.approx(-0.075)
+
+    def test_deadman_repress_reclutches_orientation(self):
+        mapper = MapDualJoyConToEEDelta()
+        mapper(
+            XboxState(
+                left_bumper=True,
+                imu_orientation_valid=True,
+                imu_roll=0.0,
+                imu_pitch=0.0,
+                imu_yaw=0.0,
+            )
+        )
+        mapper(XboxState(left_bumper=False))
+        delta = mapper(
+            XboxState(
+                left_bumper=True,
+                imu_orientation_valid=True,
+                imu_roll=0.5,
+                imu_pitch=0.4,
+                imu_yaw=0.3,
+            )
+        )
+        assert delta.roll_target == pytest.approx(0.0)
+        assert delta.pitch_target == pytest.approx(0.0)
+        assert delta.yaw_target == pytest.approx(0.0)

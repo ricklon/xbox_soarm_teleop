@@ -1,6 +1,6 @@
 # Xbox SO-ARM Teleop
 
-Teleoperation for the SO-ARM100/101 robotic arm with Xbox, Joy-Con, and keyboard input.
+Teleoperation for the SO-ARM100/101 robotic arm with Xbox, Joy-Con, dual Joy-Con, and keyboard input.
 The project supports cartesian IK, crane, joint-direct, and puppet control modes for
 simulation and real hardware.
 
@@ -8,12 +8,12 @@ Built as an extension to the [HuggingFace LeRobot](https://github.com/huggingfac
 
 ## Features
 
-- Xbox, Joy-Con, and keyboard teleoperation
+- Xbox, Joy-Con, dual Joy-Con, and keyboard teleoperation
 - Multiple control modes: cartesian, crane, joint, and puppet
 - Cartesian end-effector control (X, Y, Z, roll) with IK
-- Position-controlled gripper via right trigger
-- Deadman switch (LB) for safety
-- Home position button (A)
+- Gripper control across supported input paths
+- Deadman-gated motion for safety
+- Home position command
 - Workspace bounds enforcement
 - **3D simulation** with MuJoCo visualization
 - **MuJoCo simulation** with physics
@@ -50,12 +50,17 @@ uv pip install -e ".[dev]"
 
 ## Guides
 
-- [Driving Guide](docs/driving_guide.md) for controller mappings and mode-specific operating advice
-- [Calibration Guide](docs/CALIBRATION.md) for SO-ARM101 setup and recalibration
-- [LeRobot Cartesian Pipeline](docs/lerobot_pipeline.md) for the `soarm_cartesian_ik` processor step
-- [Dataset Schema](docs/dataset_schema.md) for recorded action/observation formats by mode
-- [Audit Response and Plan](docs/audit_plan.md) for the movement-model and safety follow-up work
-- [Examples Inventory](examples/README.md) for the supported-vs-diagnostic script split
+| Need | Use |
+|------|-----|
+| Fastest preflight and pass/fail check | [Operator Checklist](docs/operator_checklist.md) |
+| Per-mode validation steps and failure patterns | [Mode Verification Guide](docs/mode_verification_guide.md) |
+| Split Joy-Con pairing, bring-up, and natural-motion testing | [Dual Joy-Con Test Guide](docs/dual_joycon_test_guide.md) |
+| Controller mappings and operating advice | [Driving Guide](docs/driving_guide.md) |
+| Robot setup and recalibration | [Calibration Guide](docs/CALIBRATION.md) |
+| Cartesian processor pipeline details | [LeRobot Cartesian Pipeline](docs/lerobot_pipeline.md) |
+| Dataset action/observation layout | [Dataset Schema](docs/dataset_schema.md) |
+| Project follow-up plan and audit notes | [Audit Response and Plan](docs/audit_plan.md) |
+| Example script inventory | [Examples Inventory](examples/README.md) |
 
 ## Quick Start
 
@@ -257,7 +262,10 @@ xbox_soarm_teleop/
 ## Requirements
 
 - Python 3.10
-- Xbox controller (tested with Xbox One/Series controllers)
+- Supported input device:
+  - Xbox controller
+  - Nintendo Joy-Con (`joycon` or `dual_joycon` path)
+  - Keyboard
 - SO-ARM100 or SO-ARM101 robotic arm (for real robot control)
 - LeRobot with kinematics extra
 
@@ -358,19 +366,37 @@ All motors must have the same firmware. Update using Feetech's Windows software:
 
 ## Joy-Con Support
 
-A Nintendo Switch Right Joy-Con can be used as an alternative to an Xbox controller,
-held sideways in single-controller mode.
+This project supports two Joy-Con workflows:
 
-### Control Mapping (Right Joy-Con, horizontal)
+1. `joycon`
+Right Joy-Con only, held sideways in single-controller mode. This is the older compatibility path.
+
+2. `dual_joycon`
+Split left + right Joy-Con control, with the right Joy-Con IMU used for more natural wrist orientation in cartesian mode.
+
+Use these docs first:
+
+- [Dual Joy-Con Test Guide](docs/dual_joycon_test_guide.md) for pairing, bring-up, and natural-motion cartesian testing
+- [Mode Verification Guide](docs/mode_verification_guide.md) for per-mode pass/fail checks
+- [Driving Guide](docs/driving_guide.md) for mode-specific mappings
+
+### Dual Joy-Con cartesian mapping
 
 | Input | Function |
 |-------|----------|
-| Stick | Movement (same as Xbox left + right stick) |
-| SL (left rail button) | Deadman switch — hold to enable motion |
-| ZR (top shoulder) | Gripper (digital: open/closed) |
-| A face button | Home position |
-| Y face button | Auxiliary action (script-defined) |
-| SR, B, X, +, Home | Available for future mapping |
+| Left `ZL` | Deadman / clutch |
+| Left stick | `X/Y` translation |
+| Left D-pad up/down | `Z` translation |
+| Right Joy-Con IMU | Wrist orientation |
+| Right `ZR` | Gripper |
+| Right `+` | Home |
+
+Release and re-hold `ZL` to reclutch the IMU neutral pose.
+
+### Single Joy-Con mapping
+
+The single `joycon` mode still uses a right Joy-Con held sideways in single-controller mode.
+It remains available for the existing single-controller crane, joint, and puppet workflows.
 
 ### One-time System Setup (Ubuntu 22.04+, kernel 6.8+)
 
@@ -388,10 +414,11 @@ This script:
 
 ```bash
 # Hold the sync button (flat rail side) for 3 seconds — LEDs will chase
-bluetoothctl connect 98:B6:AF:5E:5D:39   # replace with your MAC
+# Connect each Joy-Con with bluetoothctl
+bluetoothctl connect <MAC>   # replace with your controller MAC
 
-# When connected, press SL+SR simultaneously on the Joy-Con
-# The second LED will become solid — single-controller mode is active
+# For the single Joy-Con path only:
+# press SL+SR simultaneously on the right Joy-Con to activate single-controller mode
 ```
 
 Find your MAC address with `bluetoothctl devices | grep Joy-Con`.
@@ -416,13 +443,28 @@ if ctrl.connect():
     ctrl.disconnect()
 ```
 
-`JoyConController` is a drop-in replacement for `XboxController` — all processors
-and control loops work unchanged.
+Single Joy-Con compatibility:
+
+- `JoyConController` is the single-controller compatibility path.
+
+Dual Joy-Con path:
+
+```python
+from xbox_soarm_teleop.config.joycon_config import DualJoyConConfig
+from xbox_soarm_teleop.teleoperators.joycon import DualJoyConController
+
+ctrl = DualJoyConController(DualJoyConConfig())
+if ctrl.connect():
+    state = ctrl.read()
+    print(state.left_stick_x, state.right_trigger, state.imu_orientation_valid)
+    ctrl.disconnect()
+```
 
 ### Troubleshooting
 
 **`No Joy-Con found`** — Check `bluetoothctl info <MAC>` shows `Connected: yes`.
-Press SL+SR to activate single-controller mode.
+For the single Joy-Con path, press `SL+SR` to activate single-controller mode.
+For the dual Joy-Con path, confirm that both left and right evdev devices appear.
 
 **`Permission denied on /dev/input/eventN`** — Re-run `setup_joycon.sh` or manually:
 `sudo chmod 0660 /dev/input/event17`

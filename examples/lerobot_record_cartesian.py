@@ -23,7 +23,7 @@ def main() -> None:
     parser.add_argument("--robot-port", required=True, help="Robot serial port.")
     parser.add_argument(
         "--controller",
-        choices=["xbox", "joycon", "keyboard"],
+        choices=["xbox", "joycon", "dual_joycon", "keyboard"],
         default="xbox",
         help="Input device type.",
     )

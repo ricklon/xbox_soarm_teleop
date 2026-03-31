@@ -35,6 +35,12 @@ class XboxState:
     a_button_pressed: bool = False
     y_button_pressed: bool = False
 
+    # Optional IMU orientation (radians) for controllers that expose it.
+    imu_roll: float = 0.0
+    imu_pitch: float = 0.0
+    imu_yaw: float = 0.0
+    imu_orientation_valid: bool = False
+
 
 class XboxController:
     """Xbox controller teleoperator for SO-ARM teleoperation.

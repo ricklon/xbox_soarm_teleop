@@ -42,6 +42,34 @@ def control_help_lines(
                     "  Shift           2× speed multiplier",
                 ]
             )
+    elif controller_type == "dual_joycon":
+        if mode == "joint":
+            lines.extend(
+                [
+                    "  Left stick          drive selected joint",
+                    "  D-pad left/right    cycle joint",
+                ]
+            )
+        elif mode == "cartesian":
+            lines.extend(
+                [
+                    "  Hold ZL + left stick      translate X/Y",
+                    "  Hold ZL + D-pad up/down   translate Z",
+                    "  Right Joy-Con IMU         wrist orientation",
+                    "  ZR                        gripper (hold=close)",
+                    "  + button                  home position",
+                    "  Release + hold ZL         reclutch IMU neutral",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "  Hold ZL + left stick      control arm",
+                    "  Right Joy-Con stick       auxiliary axis",
+                    "  ZR                        gripper (hold=close)",
+                    "  + button                  home position",
+                ]
+            )
     elif controller_type == "joycon":
         if mode == "joint":
             lines.extend(

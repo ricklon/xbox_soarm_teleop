@@ -9,7 +9,7 @@ from xbox_soarm_teleop.config.modes import ControlMode
 from xbox_soarm_teleop.processors.crane import CraneProcessor
 from xbox_soarm_teleop.processors.factory import make_processor
 from xbox_soarm_teleop.processors.joint_direct import JointCommand, JointDirectProcessor
-from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta
+from xbox_soarm_teleop.processors.xbox_to_ee import MapDualJoyConToEEDelta, MapXboxToEEDelta
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 
 
@@ -47,6 +47,11 @@ def test_control_mode_invalid_raises():
 def test_factory_cartesian_returns_mapper():
     p = make_processor(ControlMode.CARTESIAN)
     assert isinstance(p, MapXboxToEEDelta)
+
+
+def test_factory_cartesian_dual_joycon_returns_dual_mapper():
+    p = make_processor(ControlMode.CARTESIAN, controller_type="dual_joycon")
+    assert isinstance(p, MapDualJoyConToEEDelta)
 
 
 def test_factory_joint_returns_joint_processor():
