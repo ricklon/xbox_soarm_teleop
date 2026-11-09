@@ -48,6 +48,7 @@ from xbox_soarm_teleop.config.joints import (
     limits_rad_to_deg,
     parse_joint_limits,
 )
+from xbox_soarm_teleop.config.workspace import load_workspace_limits
 from xbox_soarm_teleop.control.cartesian import (
     advance_cartesian_target,
     apply_ik_solution,
@@ -60,6 +61,7 @@ from xbox_soarm_teleop.control.cartesian import (
     use_jacobian_step,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
+from xbox_soarm_teleop.control.safety import make_workspace_clipper
 from xbox_soarm_teleop.control.units import deg_to_normalized
 from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 
@@ -213,6 +215,8 @@ def run_dual_mode(
 
     # Joint velocity limits
     ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])  # deg/s
+    workspace_limits, _ = load_workspace_limits()
+    clip_position = make_workspace_clipper(workspace_limits)
 
     # Initialize MuJoCo simulation
     print("Loading MuJoCo model...", flush=True)
@@ -424,19 +428,6 @@ def run_dual_mode(
                     )
 
                 if not homing_active and not ee_delta.is_zero_motion():
-                    def clip_position(pos):
-                        return (
-                            np.array(
-                                [
-                                    np.clip(pos[0], -0.1, 0.5),
-                                    np.clip(pos[1], -0.3, 0.3),
-                                    np.clip(pos[2], 0.05, 0.45),
-                                ],
-                                dtype=float,
-                            ),
-                            {},
-                        )
-
                     target_pose, _target_pos, target_flags = advance_cartesian_target(
                         cartesian_state,
                         ee_delta,
