@@ -211,7 +211,12 @@ class KeyboardController:
         )
         self._listener.start()
 
-        if not getattr(pynput_keyboard.Listener, "IS_TRUSTED", True):
+        # On macOS, pynput's class attribute IS_TRUSTED is always False; the real
+        # result is set on the instance by the listener thread once it is ready.
+        wait = getattr(self._listener, "wait", None)
+        if callable(wait):
+            wait()
+        if not getattr(self._listener, "IS_TRUSTED", True):
             self.disconnect()
             raise RuntimeError(
                 "Keyboard monitoring is not trusted on this platform. "
