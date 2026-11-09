@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from xbox_soarm_teleop.config.modes import ControlMode
@@ -40,6 +42,7 @@ class ControlRuntime:
 def _build_controller_configs(
     *,
     controller_type: str,
+    controller_backend: str,
     deadzone: float,
     linear_scale: float | None,
     keyboard_grab: bool,
@@ -68,6 +71,7 @@ def _build_controller_configs(
         from xbox_soarm_teleop.config.xbox_config import XboxConfig
 
         config = KeyboardConfig(
+            backend=controller_backend,
             grab=keyboard_grab,
             record_path=keyboard_record,
             playback_path=keyboard_playback,
@@ -82,10 +86,21 @@ def _build_controller_configs(
 
     from xbox_soarm_teleop.config.xbox_config import XboxConfig
 
-    config = XboxConfig(deadzone=deadzone)
+    config = XboxConfig(deadzone=deadzone, backend=controller_backend)
     if linear_scale is not None:
         config.linear_scale = linear_scale
     return config, config, "xbox"
+
+
+def _resolve_keyboard_backend(controller_backend: str, keyboard_playback: str | None) -> str:
+    """Resolve the effective keyboard backend for messaging and config."""
+    if keyboard_playback:
+        return "playback"
+    if controller_backend != "auto":
+        return controller_backend
+    if sys.platform == "linux":
+        return "evdev"
+    return "pynput"
 
 
 def _build_kinematics_stack(
@@ -99,9 +114,10 @@ def _build_kinematics_stack(
     if control_mode == ControlMode.JOINT:
         return None, None
 
-    from lerobot.model.kinematics import RobotKinematics
-
     from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES
+    from xbox_soarm_teleop.kinematics.constrained import RobotKinematics
+
+    urdf_path = _resolve_kinematics_urdf_path(urdf_path)
 
     if announce:
         print("Loading kinematics model...", flush=True)
@@ -120,9 +136,21 @@ def _build_kinematics_stack(
     return kinematics, jacobian_controller
 
 
+def _resolve_kinematics_urdf_path(urdf_path: str) -> str:
+    """Prefer the portable sibling URDF when an absolute-mesh variant is passed."""
+    path = Path(urdf_path)
+    if path.name != "so101_abs.urdf":
+        return urdf_path
+    portable = path.with_name("so101.urdf")
+    if portable.exists():
+        return str(portable)
+    return urdf_path
+
+
 def build_control_runtime(
     *,
     controller_type: str,
+    controller_backend: str = "auto",
     mode: str,
     deadzone: float,
     linear_scale: float | None,
@@ -141,6 +169,7 @@ def build_control_runtime(
     from xbox_soarm_teleop.processors.factory import make_processor
 
     control_mode = ControlMode(mode)
+    urdf_path = _resolve_kinematics_urdf_path(urdf_path)
     kinematics, jacobian_controller = _build_kinematics_stack(
         control_mode=control_mode,
         urdf_path=urdf_path,
@@ -151,6 +180,7 @@ def build_control_runtime(
 
     controller_config, processor_config, controller_kind = _build_controller_configs(
         controller_type=controller_type,
+        controller_backend=controller_backend,
         deadzone=deadzone,
         linear_scale=linear_scale,
         keyboard_grab=keyboard_grab,
@@ -172,7 +202,10 @@ def build_control_runtime(
         elif controller_kind == "keyboard":
             from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController
 
-            if not keyboard_grab and not keyboard_playback:
+            effective_keyboard_backend = _resolve_keyboard_backend(
+                controller_backend, keyboard_playback
+            )
+            if effective_keyboard_backend == "evdev" and not keyboard_grab and not keyboard_playback:
                 print(
                     "WARNING: keyboard controller active without --keyboard-grab. "
                     f"Keypresses will be detected even when {keyboard_focus_target} is not focused. "

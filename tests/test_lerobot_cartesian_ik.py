@@ -9,7 +9,7 @@ from xbox_soarm_teleop.lerobot_steps.cartesian_ik import SoArmCartesianIKProcess
 
 
 class _FakeKinematics:
-    def forward_kinematics(self, joints: np.ndarray) -> np.ndarray:
+    def forward_kinematics(self, joints: np.ndarray, *, wrist_roll_deg: float = 0.0) -> np.ndarray:
         pose = np.eye(4, dtype=float)
         pose[0, 3] = float(joints[0])
         pose[1, 3] = float(joints[1])

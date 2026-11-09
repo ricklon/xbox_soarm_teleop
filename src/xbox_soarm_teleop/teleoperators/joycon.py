@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import sys
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +23,85 @@ def _ecodes_name(mapping: dict, code: int) -> str:
 def _is_matching_joycon_device_name(name: str, patterns: list[str]) -> bool:
     """Return True for usable Joy-Con input devices and False for IMU-only nodes."""
     return any(pat in name for pat in patterns) and "IMU" not in name
+
+
+def _patterns_target_left(patterns: list[str]) -> bool:
+    """Return True when the requested Joy-Con patterns target the left unit."""
+    lowered = " ".join(patterns).lower()
+    return "left" in lowered or "(l)" in lowered
+
+
+class _PyJoyConDevice:
+    """macOS Joy-Con device wrapper using joycon-python over HID."""
+
+    _STICK_RANGE = (0, 4095)
+
+    def __init__(self, joycon_id: tuple[int, int, str], *, track_orientation: bool = False, alpha: float = 0.95):
+        from pyjoycon.wrappers import PythonicJoyCon
+
+        self._joycon = PythonicJoyCon(*joycon_id)
+        self._track_orientation = track_orientation
+        self._alpha = alpha
+        self._pitch = 0.0
+        self._roll = 0.0
+        self._yaw = 0.0
+        self._last_t = time.monotonic()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._joycon, name)
+
+    @property
+    def stick_range(self) -> tuple[int, int]:
+        return self._STICK_RANGE
+
+    @property
+    def available(self) -> bool:
+        return self._track_orientation
+
+    def disconnect(self) -> None:
+        self._joycon.disconnect()
+
+    def calibrate(self) -> None:
+        self._pitch = 0.0
+        self._roll = 0.0
+        self._yaw = 0.0
+        self._last_t = time.monotonic()
+
+    def read_orientation(self) -> tuple[float, float, float]:
+        if not self._track_orientation:
+            return 0.0, 0.0, 0.0
+
+        accel = self._joycon.accel_in_g
+        gyro = self._joycon.gyro_in_rad
+        if not accel or not gyro:
+            return self._pitch, self._roll, self._yaw
+
+        ax = sum(sample[0] for sample in accel) / len(accel)
+        ay = sum(sample[1] for sample in accel) / len(accel)
+        az = sum(sample[2] for sample in accel) / len(accel)
+        gx = sum(sample[0] for sample in gyro) / len(gyro)
+        gy = sum(sample[1] for sample in gyro) / len(gyro)
+        gz = sum(sample[2] for sample in gyro) / len(gyro)
+
+        now = time.monotonic()
+        dt = min(now - self._last_t, 0.1)
+        self._last_t = now
+
+        norm = math.sqrt(ax * ax + ay * ay + az * az)
+        if norm > 0.01:
+            accel_pitch = math.atan2(-ax, math.sqrt(ay * ay + az * az))
+            accel_roll = math.atan2(ay, az)
+        else:
+            accel_pitch = self._pitch
+            accel_roll = self._roll
+
+        gyro_pitch = self._pitch + gy * dt
+        gyro_roll = self._roll + gx * dt
+
+        self._pitch = self._alpha * gyro_pitch + (1.0 - self._alpha) * accel_pitch
+        self._roll = self._alpha * gyro_roll + (1.0 - self._alpha) * accel_roll
+        self._yaw += gz * dt
+        return self._pitch, self._roll, self._yaw
 
 
 @dataclass
@@ -133,6 +214,14 @@ class _JoyConMathMixin:
             if candidate is not chosen:
                 candidate.close()
         return chosen
+
+    def _find_pyjoycon_id(self, patterns: list[str], device_index: int) -> tuple[int, int, str] | None:
+        from pyjoycon.device import get_L_ids, get_R_ids
+
+        candidates = get_L_ids() if _patterns_target_left(patterns) else get_R_ids()
+        if not candidates:
+            return None
+        return candidates[device_index] if device_index < len(candidates) else candidates[0]
 
 
 class JoyConController(_JoyConMathMixin):
@@ -260,6 +349,8 @@ class DualJoyConController(_JoyConMathMixin):
         self._prev_state = XboxState()
         self._left_reader: _JoyConDeviceReader | None = None
         self._right_reader: _JoyConDeviceReader | None = None
+        self._left_pyjoycon: _PyJoyConDevice | None = None
+        self._right_pyjoycon: _PyJoyConDevice | None = None
         self._left_raw_state: dict[str, int] = {}
         self._right_raw_state: dict[str, int] = {}
         self._left_lock = threading.Lock()
@@ -275,6 +366,41 @@ class DualJoyConController(_JoyConMathMixin):
 
     def connect(self) -> bool:
         """Connect to left and right Joy-Con input devices."""
+        if sys.platform == "darwin":
+            left_id = self._find_pyjoycon_id(
+                self.config.left_device_name_patterns,
+                self.config.left_device_index,
+            )
+            right_id = self._find_pyjoycon_id(
+                self.config.right_device_name_patterns,
+                self.config.right_device_index,
+            )
+            if left_id is None or right_id is None:
+                return False
+
+            try:
+                self._left_pyjoycon = _PyJoyConDevice(left_id)
+                self._right_pyjoycon = _PyJoyConDevice(right_id, track_orientation=True)
+                self._right_pyjoycon.calibrate()
+            except Exception:
+                if self._left_pyjoycon is not None:
+                    try:
+                        self._left_pyjoycon.disconnect()
+                    except Exception:
+                        pass
+                    self._left_pyjoycon = None
+                if self._right_pyjoycon is not None:
+                    try:
+                        self._right_pyjoycon.disconnect()
+                    except Exception:
+                        pass
+                    self._right_pyjoycon = None
+                return False
+
+            self._connected = True
+            self._connected_ref["connected"] = True
+            return True
+
         try:
             left = self._find_device(
                 self.config.left_device_name_patterns,
@@ -320,6 +446,18 @@ class DualJoyConController(_JoyConMathMixin):
 
     def disconnect(self) -> None:
         """Disconnect both Joy-Con devices."""
+        if self._left_pyjoycon is not None:
+            try:
+                self._left_pyjoycon.disconnect()
+            except Exception:
+                pass
+            self._left_pyjoycon = None
+        if self._right_pyjoycon is not None:
+            try:
+                self._right_pyjoycon.disconnect()
+            except Exception:
+                pass
+            self._right_pyjoycon = None
         if self._left_reader is not None:
             self._left_reader.stop()
             self._left_reader = None
@@ -335,6 +473,10 @@ class DualJoyConController(_JoyConMathMixin):
 
     @property
     def is_connected(self) -> bool:
+        if sys.platform == "darwin" and (
+            self._left_pyjoycon is not None or self._right_pyjoycon is not None
+        ):
+            return self._connected and self._left_pyjoycon is not None and self._right_pyjoycon is not None
         return self._connected_ref["connected"] or (
             self._connected and self._left_reader is None and self._right_reader is None
         )
@@ -343,6 +485,11 @@ class DualJoyConController(_JoyConMathMixin):
         """Return merged left/right Joy-Con state plus IMU orientation."""
         if not self.is_connected:
             return XboxState()
+
+        if sys.platform == "darwin" and (
+            self._left_pyjoycon is not None or self._right_pyjoycon is not None
+        ):
+            return self._read_pyjoycon()
 
         self._prev_state = XboxState(
             left_stick_x=self._state.left_stick_x,
@@ -430,4 +577,87 @@ class DualJoyConController(_JoyConMathMixin):
             self._state.imu_yaw = 0.0
             self._state.imu_orientation_valid = False
 
+        return self._state
+
+    def _read_pyjoycon(self) -> XboxState:
+        if self._left_pyjoycon is None or self._right_pyjoycon is None:
+            return XboxState()
+
+        self._prev_state = XboxState(
+            left_stick_x=self._state.left_stick_x,
+            left_stick_y=self._state.left_stick_y,
+            right_stick_x=self._state.right_stick_x,
+            right_stick_y=self._state.right_stick_y,
+            right_trigger=self._state.right_trigger,
+            left_bumper=self._state.left_bumper,
+            a_button=self._state.a_button,
+            y_button=self._state.y_button,
+            dpad_x=self._state.dpad_x,
+            dpad_y=self._state.dpad_y,
+        )
+
+        left_stick = self._left_pyjoycon.stick_l
+        right_stick = self._right_pyjoycon.stick_r
+
+        left_x = self._normalize_stick_raw(
+            int(left_stick[0]),
+            stick_range=self._left_pyjoycon.stick_range,
+            invert=self.config.invert_x,
+        )
+        left_y = self._normalize_stick_raw(
+            int(left_stick[1]),
+            stick_range=self._left_pyjoycon.stick_range,
+            invert=self.config.invert_y,
+        )
+        right_x = self._normalize_stick_raw(
+            int(right_stick[0]),
+            stick_range=self._right_pyjoycon.stick_range,
+            invert=False,
+        )
+        right_y = self._normalize_stick_raw(
+            int(right_stick[1]),
+            stick_range=self._right_pyjoycon.stick_range,
+            invert=False,
+        )
+        self._state.left_stick_x, self._state.left_stick_y = self._apply_radial_deadzone(
+            left_x,
+            left_y,
+            deadzone=self.config.deadzone,
+        )
+        self._state.right_stick_x, self._state.right_stick_y = self._apply_radial_deadzone(
+            right_x,
+            right_y,
+            deadzone=self.config.deadzone,
+        )
+
+        self._state.left_bumper = bool(self._left_pyjoycon.zl)
+        self._state.right_trigger = 1.0 if self._right_pyjoycon.zr else 0.0
+        self._state.a_button = bool(self._right_pyjoycon.plus)
+        self._state.y_button = bool(self._right_pyjoycon.home)
+        self._state.a_button_pressed = self._state.a_button and not self._prev_state.a_button
+        self._state.y_button_pressed = self._state.y_button and not self._prev_state.y_button
+
+        left_pressed = bool(self._left_pyjoycon.left)
+        right_pressed = bool(self._left_pyjoycon.right)
+        if left_pressed and not right_pressed:
+            self._state.dpad_x = -1.0
+        elif right_pressed and not left_pressed:
+            self._state.dpad_x = 1.0
+        else:
+            self._state.dpad_x = 0.0
+
+        up_pressed = bool(self._left_pyjoycon.up)
+        down_pressed = bool(self._left_pyjoycon.down)
+        if up_pressed and not down_pressed:
+            self._state.dpad_y = -1.0
+        elif down_pressed and not up_pressed:
+            self._state.dpad_y = 1.0
+        else:
+            self._state.dpad_y = 0.0
+
+        pitch, roll, yaw = self._right_pyjoycon.read_orientation()
+        self._state.imu_pitch = pitch
+        self._state.imu_roll = roll
+        self._state.imu_yaw = yaw
+        self._state.imu_orientation_valid = True
         return self._state

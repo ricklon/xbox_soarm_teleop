@@ -11,7 +11,7 @@ from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES
 placo = pytest.importorskip("placo")
 
 # Path to SO101 URDF
-URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
+URDF_PATH = Path(__file__).parent.parent / "assets" / "so101.urdf"
 
 # Joint names for IK
 JOINT_NAMES = IK_JOINT_NAMES
@@ -26,7 +26,7 @@ def kinematics():
     if not URDF_PATH.exists():
         pytest.skip(f"URDF not found at {URDF_PATH}")
 
-    from lerobot.model.kinematics import RobotKinematics
+    from xbox_soarm_teleop.kinematics.constrained import RobotKinematics
 
     return RobotKinematics(
         urdf_path=str(URDF_PATH),

@@ -18,7 +18,7 @@ from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta
 
 
 class _FakeKinematics:
-    def forward_kinematics(self, joints: np.ndarray) -> np.ndarray:
+    def forward_kinematics(self, joints: np.ndarray, *, wrist_roll_deg: float = 0.0) -> np.ndarray:
         pose = np.eye(4, dtype=float)
         pose[0, 3] = float(joints[0])
         pose[1, 3] = float(joints[1])
@@ -151,3 +151,55 @@ def test_step_cartesian_home_is_rate_limited() -> None:
     assert state.gripper_pos == 0.8
     assert state.target_pitch < 1.0
     assert state.target_yaw > -1.0
+
+
+def test_explicit_neutral_orientation_remains_active_on_later_translation():
+    state = make_cartesian_state(_FakeKinematics(), np.zeros(4))
+    options = dict(dt=0.1, clip_position=lambda p: (p, {}), pitch_limit_rad=1.0, yaw_limit_rad=1.0)
+    advance_cartesian_target(state, EEDelta(pitch_target=0.3), **options)
+    pose, _, flags = advance_cartesian_target(state, EEDelta(pitch_target=0.0), **options)
+    assert flags["has_orientation_target"]
+    assert flags["orientation_weight"] > 0
+    np.testing.assert_allclose(pose[:3, :3], np.eye(3))
+    _, _, flags = advance_cartesian_target(state, EEDelta(dx=0.01), **options)
+    assert flags["has_orientation_target"]
+
+
+def test_velocity_return_to_zero_does_not_disable_orientation():
+    state = make_cartesian_state(_FakeKinematics(), np.zeros(4))
+    options = dict(dt=0.1, clip_position=lambda p: (p, {}), pitch_limit_rad=1.0, yaw_limit_rad=1.0)
+    advance_cartesian_target(state, EEDelta(dpitch=1.0), **options)
+    _, _, flags = advance_cartesian_target(state, EEDelta(dpitch=-1.0), **options)
+    assert state.target_pitch == 0.0
+    assert flags["has_orientation_target"]
+
+
+def test_fresh_translation_does_not_request_orientation():
+    state = make_cartesian_state(_FakeKinematics(), np.zeros(4))
+    _, _, flags = advance_cartesian_target(
+        state,
+        EEDelta(dx=0.01),
+        dt=0.1,
+        clip_position=lambda p: (p, {}),
+        pitch_limit_rad=1.0,
+        yaw_limit_rad=1.0,
+    )
+    assert not flags["has_orientation_target"]
+
+
+def test_completed_home_clears_orientation_request():
+    state = make_cartesian_state(_FakeKinematics(), np.zeros(4))
+    state.orientation_active = True
+    done = step_cartesian_home(
+        state,
+        _FakeKinematics(),
+        np.zeros(4),
+        home_wrist_roll_deg=0.0,
+        home_gripper_pos=0.0,
+        ik_joint_max_step_deg=np.ones(4),
+        wrist_roll_vel_deg_s=10.0,
+        gripper_rate=1.0,
+        dt=0.1,
+    )
+    assert done
+    assert not state.orientation_active

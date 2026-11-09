@@ -26,15 +26,58 @@ from __future__ import annotations
 
 import json
 import sys
-import termios
 import threading
 import time
-import tty
 from pathlib import Path
 from typing import Any
 
 from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
+
+try:
+    import termios
+    import tty
+except ImportError:  # pragma: no cover - Windows import path
+    termios = None
+    tty = None
+
+
+_FALLBACK_ECODES = {
+    "KEY_1": 2,
+    "KEY_2": 3,
+    "KEY_3": 4,
+    "KEY_4": 5,
+    "KEY_5": 6,
+    "KEY_TAB": 15,
+    "KEY_Q": 16,
+    "KEY_W": 17,
+    "KEY_E": 18,
+    "KEY_R": 19,
+    "KEY_Y": 21,
+    "KEY_A": 30,
+    "KEY_S": 31,
+    "KEY_D": 32,
+    "KEY_F": 33,
+    "KEY_H": 35,
+    "KEY_LEFTSHIFT": 42,
+    "KEY_SPACE": 57,
+    "KEY_RIGHTSHIFT": 54,
+    "KEY_UP": 103,
+    "KEY_LEFT": 105,
+    "KEY_RIGHT": 106,
+    "KEY_DOWN": 108,
+}
+
+_PYNPUT_KEY_TOKENS = {
+    "KEY_SPACE": "special:space",
+    "KEY_TAB": "special:tab",
+    "KEY_UP": "special:up",
+    "KEY_DOWN": "special:down",
+    "KEY_LEFT": "special:left",
+    "KEY_RIGHT": "special:right",
+    "KEY_LEFTSHIFT": "special:shift_l",
+    "KEY_RIGHTSHIFT": "special:shift_r",
+}
 
 
 class KeyboardController:
@@ -54,13 +97,15 @@ class KeyboardController:
     def __init__(self, config: KeyboardConfig | None = None) -> None:
         self.config = config or KeyboardConfig()
         self._device: Any = None
-        self._held_keys: set[int] = set()
+        self._held_keys: set[Any] = set()
         self._held_keys_lock = threading.Lock()
         self._connected = False
         self._reader_thread: threading.Thread | None = None
+        self._listener: Any = None
         self._stop_event = threading.Event()
         self._speed_level: int = self.config.default_speed_level
-        self._key_map: dict[str, int] = {}   # config key name → evdev keycode
+        self._key_map: dict[str, Any] = {}   # config key name → backend token
+        self._playback_code_style: str = "evdev"
 
         self._grabbed: bool = False
 
@@ -92,6 +137,12 @@ class KeyboardController:
         """
         if self.config.playback_path:
             return self._connect_playback()
+
+        backend = self._resolve_backend()
+        if backend == "pynput":
+            return self._connect_pynput()
+        if backend != "evdev":
+            raise RuntimeError(f"Keyboard backend '{backend}' is not implemented yet.")
 
         try:
             import evdev  # noqa: F401
@@ -125,6 +176,49 @@ class KeyboardController:
         self._reader_thread.start()
         return True
 
+    def _resolve_backend(self) -> str:
+        """Resolve the live keyboard backend for the current platform."""
+        if self.config.playback_path:
+            return "playback"
+        if self.config.backend != "auto":
+            return self.config.backend
+        if sys.platform == "linux":
+            return "evdev"
+        return "pynput"
+
+    def _connect_pynput(self) -> bool:
+        """Connect using the desktop pynput listener backend."""
+        try:
+            from pynput import keyboard as pynput_keyboard
+        except ImportError as exc:
+            raise ImportError(
+                "pynput not installed. Run: uv sync --extra keyboard\n"
+                "macOS and Windows keyboard mode use pynput."
+            ) from exc
+
+        if self.config.grab:
+            print(
+                "WARNING: --keyboard-grab is only supported by the Linux evdev backend.",
+                flush=True,
+            )
+
+        self._build_key_map()
+        self._connected = True
+        self._stop_event.clear()
+        self._listener = pynput_keyboard.Listener(
+            on_press=self._on_pynput_press,
+            on_release=self._on_pynput_release,
+        )
+        self._listener.start()
+
+        if not getattr(pynput_keyboard.Listener, "IS_TRUSTED", True):
+            self.disconnect()
+            raise RuntimeError(
+                "Keyboard monitoring is not trusted on this platform. "
+                "On macOS, grant Accessibility/Input Monitoring to your terminal or IDE."
+            )
+        return True
+
     def _connect_playback(self) -> bool:
         """Load a recording file and start the playback thread."""
         path = Path(self.config.playback_path)  # type: ignore[arg-type]
@@ -137,6 +231,11 @@ class KeyboardController:
         except Exception as exc:
             print(f"ERROR: could not load playback file {path}: {exc}", flush=True)
             return False
+
+        if events and isinstance(events[0].get("code"), str):
+            self._playback_code_style = "token"
+        else:
+            self._playback_code_style = "evdev"
 
         # Build key map from config (needed so read() can resolve key names)
         self._build_key_map()
@@ -158,6 +257,12 @@ class KeyboardController:
         if self._reader_thread is not None:
             self._reader_thread.join(timeout=1.0)
             self._reader_thread = None
+        if self._listener is not None:
+            try:
+                self._listener.stop()
+            except Exception:
+                pass
+            self._listener = None
         self._restore_terminal()
         if self._device is not None:
             if getattr(self, "_grabbed", False):
@@ -305,7 +410,17 @@ class KeyboardController:
         return None
 
     def _build_key_map(self) -> None:
-        """Populate _key_map: config key name → evdev keycode integer."""
+        """Populate _key_map with backend-specific tokens."""
+        backend = self._resolve_backend()
+        if backend == "pynput" or (backend == "playback" and self._playback_code_style == "token"):
+            self._key_map = {
+                name: self._pynput_token_for_name(name)
+                for attr, name in vars(self.config).items()
+                if attr.startswith("key_") and isinstance(name, str)
+            }
+            return
+
+        self._key_map = {}
         try:
             import evdev
 
@@ -315,15 +430,50 @@ class KeyboardController:
                     if code is not None:
                         self._key_map[name] = code
         except ImportError:
-            pass
+            for attr, name in vars(self.config).items():
+                if attr.startswith("key_") and isinstance(name, str) and name.startswith("KEY_"):
+                    code = _FALLBACK_ECODES.get(name)
+                    if code is not None:
+                        self._key_map[name] = code
 
     def _is_held(self, held: frozenset, key_name: str) -> bool:
         """Return True if the key named key_name is currently held."""
         code = self._key_map.get(key_name)
         return code is not None and code in held
 
+    def _pynput_token_for_name(self, key_name: str) -> str:
+        """Return a canonical token for a configured key name."""
+        if key_name in _PYNPUT_KEY_TOKENS:
+            return _PYNPUT_KEY_TOKENS[key_name]
+        if key_name.startswith("KEY_") and len(key_name) == 5:
+            return f"char:{key_name[-1].lower()}"
+        raise KeyError(f"Unsupported pynput key mapping: {key_name}")
+
+    def _pynput_token_from_event(self, key: Any) -> str | None:
+        """Translate a pynput key event into a canonical token."""
+        char = getattr(key, "char", None)
+        if isinstance(char, str) and char:
+            return f"char:{char.lower()}"
+
+        text = str(key)
+        special = {
+            "Key.space": "special:space",
+            "Key.tab": "special:tab",
+            "Key.up": "special:up",
+            "Key.down": "special:down",
+            "Key.left": "special:left",
+            "Key.right": "special:right",
+            "Key.shift": "special:shift_l",
+            "Key.shift_l": "special:shift_l",
+            "Key.shift_r": "special:shift_r",
+        }
+        return special.get(text)
+
     def _enter_cbreak(self) -> None:
         """Put stdin into cbreak mode: no echo, no line-buffering, signals intact."""
+        if termios is None or tty is None:
+            self._orig_term = None
+            return
         try:
             fd = sys.stdin.fileno()
             self._orig_term = termios.tcgetattr(fd)
@@ -333,12 +483,51 @@ class KeyboardController:
 
     def _restore_terminal(self) -> None:
         """Restore terminal to its state before connect()."""
-        if self._orig_term is not None:
+        if self._orig_term is not None and termios is not None:
             try:
                 termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._orig_term)
             except (termios.error, AttributeError, OSError):
                 pass
             self._orig_term = None
+
+    def _speed_key_tokens(self) -> dict[Any, int]:
+        """Return the configured speed-level tokens for the active backend."""
+        speed_keys: dict[Any, int] = {}
+        for i, attr in enumerate(
+            ["key_speed_1", "key_speed_2", "key_speed_3", "key_speed_4", "key_speed_5"]
+        ):
+            name = getattr(self.config, attr, None)
+            token = self._key_map.get(name)
+            if token is not None:
+                speed_keys[token] = i
+        return speed_keys
+
+    def _handle_key_event(self, token: Any, value: int) -> None:
+        """Update held state, speed selection, and recording for one logical key event."""
+        speed_keys = self._speed_key_tokens()
+        record_toggle = self._key_map.get(self.config.key_record_toggle)
+
+        if value == 1:
+            with self._held_keys_lock:
+                self._held_keys.add(token)
+            if token in speed_keys:
+                self._speed_level = speed_keys[token]
+            if token == record_toggle:
+                self._toggle_recording()
+        elif value == 0:
+            with self._held_keys_lock:
+                self._held_keys.discard(token)
+        else:
+            return
+
+        if self._recording:
+            self._record_events.append(
+                {
+                    "t": time.monotonic() - self._record_start,
+                    "code": token,
+                    "value": value,
+                }
+            )
 
     def _read_events_loop(self) -> None:
         """Background thread: read evdev key events, maintain _held_keys set."""
@@ -348,20 +537,6 @@ class KeyboardController:
 
         fd = self._device.fd
 
-        # Map evdev keycodes for speed-level keys
-        speed_keys: dict[int, int] = {}
-        for i, attr in enumerate(
-            ["key_speed_1", "key_speed_2", "key_speed_3", "key_speed_4", "key_speed_5"]
-        ):
-            name = getattr(self.config, attr, None)
-            if name:
-                code = getattr(evdev.ecodes, name, None)
-                if code is not None:
-                    speed_keys[code] = i
-
-        # Keycode for record toggle (Tab by default)
-        record_toggle_code: int | None = self._key_map.get(self.config.key_record_toggle)
-
         while not self._stop_event.is_set():
             try:
                 r, _, _ = select.select([fd], [], [], 0.05)
@@ -370,34 +545,24 @@ class KeyboardController:
                 for event in self._device.read():
                     if event.type != evdev.ecodes.EV_KEY:
                         continue
-                    if event.value == 1:     # key down
-                        with self._held_keys_lock:
-                            self._held_keys.add(event.code)
-                        if event.code in speed_keys:
-                            self._speed_level = speed_keys[event.code]
-                        # Tab: toggle recording
-                        if event.code == record_toggle_code:
-                            self._toggle_recording()
-                    elif event.value == 0:   # key up
-                        with self._held_keys_lock:
-                            self._held_keys.discard(event.code)
-                    else:
-                        continue   # key-repeat (value==2) — skip recording
-
-                    # Append to recording buffer (key-down and key-up only)
-                    if self._recording and event.value in (0, 1):
-                        self._record_events.append(
-                            {
-                                "t": time.monotonic() - self._record_start,
-                                "code": event.code,
-                                "value": event.value,
-                            }
-                        )
+                    self._handle_key_event(event.code, event.value)
             except OSError:
                 self._connected = False
                 break
             except Exception:
                 pass
+
+    def _on_pynput_press(self, key: Any) -> None:
+        """Handle a pynput key-down event."""
+        token = self._pynput_token_from_event(key)
+        if token is not None:
+            self._handle_key_event(token, 1)
+
+    def _on_pynput_release(self, key: Any) -> None:
+        """Handle a pynput key-up event."""
+        token = self._pynput_token_from_event(key)
+        if token is not None:
+            self._handle_key_event(token, 0)
 
     def _toggle_recording(self) -> None:
         """Start or stop recording; auto-save on stop."""

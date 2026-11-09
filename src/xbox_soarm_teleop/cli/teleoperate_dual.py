@@ -53,9 +53,9 @@ from xbox_soarm_teleop.control.cartesian import (
     apply_ik_solution,
     full_joint_positions,
     make_cartesian_state,
+    solve_cartesian_motion,
     step_cartesian_home,
     step_gripper_toward,
-    step_wrist_roll,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
 from xbox_soarm_teleop.control.units import deg_to_normalized
@@ -443,7 +443,9 @@ def run_dual_mode(
                     )
                     orientation_weight = float(target_flags["orientation_weight"])
 
-                    if use_jacobian:
+                    next_wrist_roll_deg = cartesian_state.wrist_roll_deg
+                    if (use_jacobian and not cartesian_state.orientation_active
+                            and ee_delta.roll_target is None and abs(ee_delta.droll) <= 0.001):
                         # Jacobian-based control: EE velocity -> joint velocity -> integrate
                         # Use position + pitch mode (4 DOF) for optimal control with 4 joints
                         ee_vel = np.array([ee_delta.dx, ee_delta.dy, ee_delta.dz, ee_delta.dpitch])
@@ -463,20 +465,13 @@ def run_dual_mode(
                         candidate_joints = np.clip(candidate_joints, -joint_limits_deg, joint_limits_deg)
                     else:
                         # IK-based control: solve IK for target pose
-                        new_joints = kinematics.inverse_kinematics(
-                            cartesian_state.ik_joint_pos_deg,
-                            target_pose,
-                            position_weight=1.0,
-                            orientation_weight=orientation_weight,
+                        new_joints, next_wrist_roll_deg = solve_cartesian_motion(
+                            cartesian_state, kinematics, target_pose, ee_delta,
+                            dt=LOOP_PERIOD, orientation_weight=orientation_weight,
+                            max_joint_step_deg=ik_joint_vel_limits * LOOP_PERIOD,
                         )
                         candidate_joints = new_joints[:4]
 
-                    next_wrist_roll_deg = step_wrist_roll(
-                        cartesian_state.wrist_roll_deg,
-                        ee_delta.droll,
-                        dt=LOOP_PERIOD,
-                        roll_target=ee_delta.roll_target,
-                    )
                     apply_ik_solution(
                         cartesian_state,
                         kinematics,

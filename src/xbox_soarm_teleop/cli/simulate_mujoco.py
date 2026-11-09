@@ -29,7 +29,9 @@ Challenge mode:
 
 import argparse
 import csv
+import importlib.util
 import json
+import os
 import signal
 import sys
 import tempfile
@@ -53,9 +55,9 @@ from xbox_soarm_teleop.control.cartesian import (
     apply_ik_solution,
     full_joint_positions,
     make_cartesian_state,
+    solve_cartesian_motion,
     step_cartesian_home,
     step_gripper_toward,
-    step_wrist_roll,
     sync_cartesian_state,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
@@ -64,7 +66,7 @@ from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 
 # Project paths
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-URDF_PATH = PROJECT_ROOT / "assets" / "so101_abs.urdf"
+URDF_PATH = PROJECT_ROOT / "assets" / "so101.urdf"
 
 # Joint names (order matters - matches URDF joint order)
 JOINT_NAMES = JOINT_NAMES_WITH_GRIPPER
@@ -1321,6 +1323,7 @@ def run_with_controller(
     linear_scale: float | None = None,
     mode: str = "crane",
     controller_type: str = "xbox",
+    controller_backend: str = "auto",
     keyboard_grab: bool = False,
     keyboard_record: str | None = None,
     keyboard_playback: str | None = None,
@@ -1356,6 +1359,7 @@ def run_with_controller(
 
     runtime = build_control_runtime(
         controller_type=controller_type,
+        controller_backend=controller_backend,
         mode=mode,
         deadzone=deadzone,
         linear_scale=linear_scale,
@@ -1410,30 +1414,39 @@ def run_with_controller(
             print("  Check 'input' group: groups $USER | grep input")
             print("  Add with: sudo usermod -aG input $USER  (then re-login)")
         elif controller_type in {"joycon", "dual_joycon"}:
-            try:
-                import evdev
-
-                names = []
-                for path in evdev.list_devices():
-                    try:
-                        d = evdev.InputDevice(path)
-                        names.append(f"  {path}: {d.name}")
-                        d.close()
-                    except (OSError, PermissionError):
-                        pass
-                if names:
-                    print("  Input devices found:")
-                    for n in names:
-                        print(n)
+            if sys.platform == "darwin":
+                print("  macOS Joy-Con path uses Bluetooth + HID, not evdev.")
+                print("  Verify both Joy-Cons are connected in System Settings > Bluetooth.")
+                print("  Install the Joy-Con extra: uv sync --extra joycon")
+                if controller_type == "dual_joycon":
+                    print("  Keep both Joy-Cons awake; the right Joy-Con provides IMU orientation.")
                 else:
-                    print("  No input devices found (check permissions: sudo usermod -aG input $USER)")
-            except ImportError:
-                print("  evdev not installed — run: uv pip install evdev")
-            if controller_type == "joycon":
-                print("  Joy-Con setup: bluetooth connect + press SL+SR for single-controller mode")
+                    print("  Single Joy-Con mode on macOS is limited; prefer dual_joycon for IMU workflows.")
             else:
-                print("  Connect both Joy-Cons and keep the right Joy-Con awake for IMU input")
-            print("  joycond must be running: systemctl is-active joycond")
+                try:
+                    import evdev
+
+                    names = []
+                    for path in evdev.list_devices():
+                        try:
+                            d = evdev.InputDevice(path)
+                            names.append(f"  {path}: {d.name}")
+                            d.close()
+                        except (OSError, PermissionError):
+                            pass
+                    if names:
+                        print("  Input devices found:")
+                        for n in names:
+                            print(n)
+                    else:
+                        print("  No input devices found (check permissions: sudo usermod -aG input $USER)")
+                except ImportError:
+                    print("  evdev not installed — run: uv pip install evdev")
+                if controller_type == "joycon":
+                    print("  Joy-Con setup: bluetooth connect + press SL+SR for single-controller mode")
+                else:
+                    print("  Connect both Joy-Cons and keep the right Joy-Con awake for IMU input")
+                print("  joycond must be running: systemctl is-active joycond")
         else:
             print("  - Check that controller is connected")
         print("  - Or use --no-controller for demo mode")
@@ -1785,11 +1798,10 @@ def run_with_controller(
 
                 # Solve IK for 4 joints
                 _t0 = time.perf_counter()
-                new_joints = kinematics.inverse_kinematics(
-                    cartesian_state.ik_joint_pos_deg,
-                    target_pose,
-                    position_weight=1.0,
-                    orientation_weight=orientation_weight,
+                new_joints, next_wrist_roll_deg = solve_cartesian_motion(
+                    cartesian_state, kinematics, target_pose, ee_delta,
+                    dt=LOOP_PERIOD, orientation_weight=orientation_weight,
+                    max_joint_step_deg=ik_joint_vel_limits * LOOP_PERIOD,
                 )
                 ik_ms = (time.perf_counter() - _t0) * 1000.0
                 ik_result = new_joints[:4]
@@ -1798,12 +1810,6 @@ def run_with_controller(
                 max_delta = ik_joint_vel_limits * LOOP_PERIOD
                 joint_delta = ik_result - cartesian_state.ik_joint_pos_deg
                 joint_delta = np.clip(joint_delta, -max_delta, max_delta)
-                next_wrist_roll_deg = step_wrist_roll(
-                    cartesian_state.wrist_roll_deg,
-                    ee_delta.droll,
-                    dt=LOOP_PERIOD,
-                    roll_target=ee_delta.roll_target,
-                )
                 apply_ik_solution(
                     cartesian_state,
                     kinematics,
@@ -1995,9 +2001,10 @@ def run_demo_mode(
     ik_log_path: str | None = None,
     ik_max_err_mm: float = 30.0,
     ik_mean_err_mm: float = 10.0,
+    headless: bool = False,
 ) -> int:
     """Run demo mode with automatic movement."""
-    from lerobot.model.kinematics import RobotKinematics
+    from xbox_soarm_teleop.kinematics.constrained import RobotKinematics
 
     kinematics = RobotKinematics(
         urdf_path=str(URDF_PATH),
@@ -2006,7 +2013,7 @@ def run_demo_mode(
     )
 
     print("\nDemo mode - automatic movement", flush=True)
-    print("Close window to exit\n", flush=True)
+    print("Ctrl+C to exit\n" if headless else "Close window to exit\n", flush=True)
 
     cartesian_state = make_cartesian_state(kinematics, np.zeros(4, dtype=float))
     ik_joint_vel_limits = IK_JOINT_VEL_LIMITS_ARRAY
@@ -2148,18 +2155,24 @@ def run_demo_mode(
         active_camera_name = camera_presets[next_index]
         print(f"\nCamera: {active_camera_name}", flush=True)
 
-    with mujoco.viewer.launch_passive(sim.model, sim.data, key_callback=key_callback) as viewer:
-        if active_camera_name is None:
-            set_viewer_free_camera(viewer)
-        else:
-            set_viewer_camera(viewer, active_camera_name)
-        workspace_drawn = False
-        while viewer.is_running() and running:
+    viewer_context = (
+        _HeadlessViewer() if headless else
+        mujoco.viewer.launch_passive(sim.model, sim.data, key_callback=key_callback)
+    )
+    with viewer_context as viewer:
+        if not headless:
             if active_camera_name is None:
                 set_viewer_free_camera(viewer)
             else:
                 set_viewer_camera(viewer, active_camera_name)
-            redraw_workspace = workspace_draw and (
+        workspace_drawn = False
+        while viewer.is_running() and running:
+            if not headless:
+                if active_camera_name is None:
+                    set_viewer_free_camera(viewer)
+                else:
+                    set_viewer_camera(viewer, active_camera_name)
+            redraw_workspace = not headless and workspace_draw and (
                 not workspace_drawn
                 or (routine_trace and not hasattr(viewer, "add_marker") and hasattr(viewer, "user_scn"))
             )
@@ -2197,11 +2210,10 @@ def run_demo_mode(
             target_pose[:3, 3] = target_pos
 
             # Solve IK for position only (4 joints)
-            new_joints = kinematics.inverse_kinematics(
-                cartesian_state.ik_joint_pos_deg,
-                target_pose,
-                position_weight=1.0,
-                orientation_weight=0.0,
+            new_joints, next_wrist_roll_deg = solve_cartesian_motion(
+                cartesian_state, kinematics, target_pose, EEDelta(droll=droll),
+                dt=LOOP_PERIOD, orientation_weight=0.0,
+                max_joint_step_deg=ik_joint_vel_limits * LOOP_PERIOD,
             )
             ik_result = new_joints[:4]
 
@@ -2209,11 +2221,6 @@ def run_demo_mode(
             max_delta = ik_joint_vel_limits * LOOP_PERIOD
             joint_delta = ik_result - cartesian_state.ik_joint_pos_deg
             joint_delta = np.clip(joint_delta, -max_delta, max_delta)
-            next_wrist_roll_deg = step_wrist_roll(
-                cartesian_state.wrist_roll_deg,
-                droll,
-                dt=LOOP_PERIOD,
-            )
             apply_ik_solution(
                 cartesian_state,
                 kinematics,
@@ -2429,6 +2436,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["xbox", "joycon", "dual_joycon", "keyboard"],
         default="xbox",
         help="Controller type: xbox, joycon, dual_joycon, or keyboard. Default: xbox.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["auto", "inputs", "sdl", "evdev", "pynput", "mujoco"],
+        default="auto",
+        help="Input backend override. Default: auto.",
     )
     parser.add_argument(
         "--keyboard-grab",
@@ -2753,15 +2766,68 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _running_under_mjpython() -> bool:
+    """Return True when running under MuJoCo's macOS launcher."""
+    return os.environ.get("XBOX_SOARM_MJPYTHON") == "1"
+
+
+def _maybe_reexec_under_mjpython(args: argparse.Namespace) -> None:
+    """Relaunch under mjpython when macOS viewer support requires it."""
+    if sys.platform != "darwin" or args.headless or _running_under_mjpython():
+        return
+
+    mujoco_spec = importlib.util.find_spec("mujoco")
+    if mujoco_spec is None or mujoco_spec.origin is None:
+        raise RuntimeError(
+            "MuJoCo is not importable, so the macOS viewer relaunch path is unavailable."
+        )
+    native = (
+        Path(mujoco_spec.origin).parent
+        / "MuJoCo_(mjpython).app"
+        / "Contents"
+        / "MacOS"
+        / "mjpython"
+    )
+    if not native.exists():
+        raise RuntimeError(
+            "MuJoCo viewer on macOS requires mjpython, but the native launcher was not found."
+        )
+
+    venv_python = str(Path(sys.executable))
+    real_python = os.path.realpath(sys.executable)
+    libpython_dir = str(Path(real_python).resolve().parent.parent / "lib")
+    env = os.environ.copy()
+    env["XBOX_SOARM_MJPYTHON"] = "1"
+    env["MJPYTHON_BIN"] = str(native)
+    env["MJPYTHON_LIBPYTHON"] = real_python
+    existing_fallback = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+    fallback_parts = [libpython_dir, "/usr/local/lib", "/usr/lib"]
+    if existing_fallback:
+        fallback_parts.extend(part for part in existing_fallback.split(":") if part)
+    env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join(dict.fromkeys(fallback_parts))
+
+    os.execve(
+        str(native),
+        [
+            venv_python,
+            "-m",
+            "xbox_soarm_teleop.cli.simulate_mujoco",
+            *sys.argv[1:],
+        ],
+        env,
+    )
+
+
 def main() -> None:
     args = build_parser().parse_args()
+    _maybe_reexec_under_mjpython(args)
 
     if not URDF_PATH.exists():
         print(f"ERROR: URDF not found at {URDF_PATH}")
         sys.exit(1)
 
     if args.estimate_max_square:
-        from lerobot.model.kinematics import RobotKinematics
+        from xbox_soarm_teleop.kinematics.constrained import RobotKinematics
 
         kinematics = RobotKinematics(
             urdf_path=str(URDF_PATH),
@@ -2830,6 +2896,7 @@ def main() -> None:
     if no_controller:
         exit_code = run_demo_mode(
             sim,
+            headless=args.headless,
             routine_pattern=args.routine_pattern,
             routine_plane=args.routine_plane,
             routine_square_size=args.routine_square_size,
@@ -2859,6 +2926,7 @@ def main() -> None:
             linear_scale=args.linear_scale,
             mode=args.mode,
             controller_type=args.controller,
+            controller_backend=args.backend,
             keyboard_grab=args.keyboard_grab,
             keyboard_record=args.record,
             keyboard_playback=args.playback,

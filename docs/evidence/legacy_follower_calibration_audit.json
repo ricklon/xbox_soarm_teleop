@@ -1,0 +1,65 @@
+{
+  "source": "/Users/rianders/Documents/ricklon/personal/lerobot/.cache/calibration/so100/main_follower.json",
+  "sha256": "c546609f386c078e00d721c7ee622e3ecf4e0089aa7a3d3663507677df299688",
+  "model_mapping_verified": false,
+  "joints": {
+    "shoulder_pan": {
+      "homing_offset": -2019,
+      "drive_mode": 0,
+      "start_pos": 1986,
+      "end_pos": 3043,
+      "calib_mode": "DEGREE",
+      "encoder_at_legacy_nominal_zero": 2019,
+      "legacy_nominal_sign": 1
+    },
+    "shoulder_lift": {
+      "homing_offset": 2192,
+      "drive_mode": 1,
+      "start_pos": 2082,
+      "end_pos": -1168,
+      "calib_mode": "DEGREE",
+      "encoder_at_legacy_nominal_zero": 2192,
+      "legacy_nominal_sign": -1
+    },
+    "elbow_flex": {
+      "homing_offset": -1955,
+      "drive_mode": 0,
+      "start_pos": 2096,
+      "end_pos": 2979,
+      "calib_mode": "DEGREE",
+      "encoder_at_legacy_nominal_zero": 1955,
+      "legacy_nominal_sign": 1
+    },
+    "wrist_flex": {
+      "homing_offset": -152,
+      "drive_mode": 0,
+      "start_pos": 68,
+      "end_pos": 1176,
+      "calib_mode": "DEGREE",
+      "encoder_at_legacy_nominal_zero": 152,
+      "legacy_nominal_sign": 1
+    },
+    "wrist_roll": {
+      "homing_offset": 3094,
+      "drive_mode": 1,
+      "start_pos": 3065,
+      "end_pos": -2070,
+      "calib_mode": "DEGREE",
+      "encoder_at_legacy_nominal_zero": 3094,
+      "legacy_nominal_sign": -1
+    },
+    "gripper": {
+      "homing_offset": -2552,
+      "drive_mode": 0,
+      "start_pos": 2648,
+      "end_pos": 3576,
+      "calib_mode": "LINEAR"
+    }
+  },
+  "schema": "legacy_array_calibration",
+  "notes": [
+    "Legacy DEGREE applies direction, then software homing offset, then degree scale.",
+    "Legacy nominal zero is not established as URDF zero.",
+    "Do not reinterpret start_pos/end_pos as modern calibrated range endpoints."
+  ]
+}

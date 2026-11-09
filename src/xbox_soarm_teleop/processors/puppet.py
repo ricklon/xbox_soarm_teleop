@@ -113,33 +113,10 @@ class PuppetProcessor:
 
     def _init_kinematics(self, urdf_path: str) -> None:
         try:
-            from lerobot.model.kinematics import RobotKinematics
+            from xbox_soarm_teleop.kinematics.cylindrical import CylindricalKinematics
 
-            self._planar_ik = RobotKinematics(
-                urdf_path=urdf_path,
-                target_frame_name="gripper_frame_link",
-                joint_names=["shoulder_lift", "elbow_flex"],
-            )
-            full_ik = RobotKinematics(
-                urdf_path=urdf_path,
-                target_frame_name="gripper_frame_link",
-                joint_names=["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex"],
-            )
-            home_4j = np.array(
-                [
-                    HOME_POSITION_DEG["shoulder_pan"],
-                    HOME_POSITION_DEG["shoulder_lift"],
-                    HOME_POSITION_DEG["elbow_flex"],
-                    HOME_POSITION_DEG["wrist_flex"],
-                ],
-                dtype=float,
-            )
-            ee_home = full_ik.forward_kinematics(home_4j)[:3, 3]
-            self._reach_m = float(np.clip(
-                np.sqrt(float(ee_home[0]) ** 2 + float(ee_home[1]) ** 2),
-                _REACH_MIN, _REACH_MAX,
-            ))
-            self._height_m = float(np.clip(float(ee_home[2]), _HEIGHT_MIN, _HEIGHT_MAX))
+            self._planar_ik = CylindricalKinematics(urdf_path)
+            self._sync_cylindrical_target()
         except Exception as exc:
             print(f"PuppetProcessor: kinematics init failed ({exc}), using defaults.", flush=True)
             self._planar_ik = None
@@ -153,7 +130,11 @@ class PuppetProcessor:
         Returns:
             JointCommand with updated goal positions.
         """
-        # Gripper always active
+        # Gate every commanded joint, including homing and gripper.
+        if not state.left_bumper:
+            return self._current_command()
+
+        # Position-controlled gripper while enabled
         g_lo, g_hi = JOINT_LIMITS_DEG["gripper"]
         self._gripper_deg = map_trigger_to_gripper_deg(state.right_trigger, g_lo, g_hi)
 
@@ -165,10 +146,8 @@ class PuppetProcessor:
                 selected_joint="",
             )
 
-        # Deadman
-        if not state.left_bumper:
-            return self._current_command()
-
+        previous = (self._pan_deg, self._sl_deg, self._ef_deg,
+                    self._wrist_flex_deg, self._wrist_roll_deg, self._reach_m, self._height_m)
         dt = self.loop_dt
 
         # --- Pan ---
@@ -191,28 +170,6 @@ class PuppetProcessor:
             _HEIGHT_MIN, _HEIGHT_MAX,
         ))
 
-        # --- 2-DOF planar IK ---
-        if self._planar_ik is not None:
-            target = np.eye(4)
-            target[0, 3] = self._reach_m
-            target[1, 3] = 0.0
-            target[2, 3] = self._height_m
-            ik_result = self._planar_ik.inverse_kinematics(
-                np.array([self._sl_deg, self._ef_deg], dtype=float),
-                target,
-                position_weight=1.0,
-                orientation_weight=0.0,
-            )
-            if ik_result is not None:
-                sl_new, ef_new = float(ik_result[0]), float(ik_result[1])
-                sl_lo, sl_hi = JOINT_LIMITS_DEG["shoulder_lift"]
-                ef_lo, ef_hi = JOINT_LIMITS_DEG["elbow_flex"]
-                # Velocity-cap IK output
-                sl_delta = float(np.clip(sl_new - self._sl_deg, -_IK_MAX_VEL_DEG_S * dt, _IK_MAX_VEL_DEG_S * dt))
-                ef_delta = float(np.clip(ef_new - self._ef_deg, -_IK_MAX_VEL_DEG_S * dt, _IK_MAX_VEL_DEG_S * dt))
-                self._sl_deg = float(np.clip(self._sl_deg + sl_delta, sl_lo, sl_hi))
-                self._ef_deg = float(np.clip(self._ef_deg + ef_delta, ef_lo, ef_hi))
-
         # --- Wrist from IMU (absolute orientation relative to neutral) ---
         if self._imu.available:
             pitch_rad, roll_rad = self._imu.read()
@@ -234,6 +191,26 @@ class PuppetProcessor:
             ))
         # else: wrist holds current position (no IMU available)
 
+
+        if self._planar_ik is not None:
+            solved = self._planar_ik.inverse_cylindrical(
+                np.array([self._sl_deg, self._ef_deg]), self._reach_m, self._height_m,
+                pan_deg=self._pan_deg, wrist_flex_deg=self._wrist_flex_deg,
+                wrist_roll_deg=self._wrist_roll_deg,
+            )
+            status = getattr(self._planar_ik, "last_ik_result", None)
+            if solved is None or (status is not None and not status.accepted):
+                (self._pan_deg, self._sl_deg, self._ef_deg, self._wrist_flex_deg,
+                 self._wrist_roll_deg, self._reach_m, self._height_m) = previous
+            else:
+                before = np.asarray(previous[:5])
+                proposed = np.array([self._pan_deg, *solved, self._wrist_flex_deg, self._wrist_roll_deg])
+                change = proposed - before
+                peak = float(np.max(np.abs(change)))
+                scale = min(1.0, _IK_MAX_VEL_DEG_S * dt / peak) if peak > 0 else 1.0
+                (self._pan_deg, self._sl_deg, self._ef_deg, self._wrist_flex_deg,
+                 self._wrist_roll_deg) = map(float, before + scale * change)
+
         return self._current_command()
 
     def reset(self) -> None:
@@ -246,10 +223,22 @@ class PuppetProcessor:
         self._ef_deg = float(HOME_POSITION_DEG["elbow_flex"])
         self._reach_m = 0.15
         self._height_m = 0.15
+        if self._planar_ik is not None:
+            self._sync_cylindrical_target()
         # Capture current IMU orientation as new neutral reference
         if self._imu.available:
             self._imu.calibrate()
             self._neutral_pitch, self._neutral_roll = self._imu.read()
+
+    def _sync_cylindrical_target(self) -> None:
+        """Initialize reach and height from the full current model pose."""
+        for name, angle in (("shoulder_pan", self._pan_deg),
+                            ("wrist_flex", self._wrist_flex_deg),
+                            ("wrist_roll", self._wrist_roll_deg)):
+            self._planar_ik.robot.set_joint(name, float(np.deg2rad(angle)))
+        pose = self._planar_ik.forward_kinematics(np.array([self._sl_deg, self._ef_deg]))
+        self._reach_m = float(np.hypot(*pose[:2, 3]))
+        self._height_m = float(pose[2, 3])
 
     def _current_command(self) -> JointCommand:
         return JointCommand(

@@ -1,5 +1,6 @@
 """Tests for Joy-Con input handling."""
 
+import sys
 
 from xbox_soarm_teleop.config.joycon_config import DualJoyConConfig, JoyConConfig
 from xbox_soarm_teleop.teleoperators.joycon import (
@@ -212,4 +213,50 @@ class TestDualJoyConController:
         assert state.imu_pitch == 0.1
         assert state.imu_roll == -0.2
         assert state.imu_yaw == 0.3
+        assert state.imu_orientation_valid is True
+
+    def test_read_darwin_backend_merges_buttons_sticks_and_imu(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        ctrl = DualJoyConController(DualJoyConConfig())
+        ctrl._connected = True
+
+        class _FakeJoyCon:
+            stick_range = (0, 4095)
+
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+            def read_orientation(self):
+                return (0.11, -0.22, 0.33)
+
+        ctrl._left_pyjoycon = _FakeJoyCon(
+            stick_l=(4095, 2048),
+            zl=1,
+            up=1,
+            down=0,
+            left=0,
+            right=1,
+        )
+        ctrl._right_pyjoycon = _FakeJoyCon(
+            stick_r=(0, 2048),
+            zr=1,
+            plus=1,
+            home=1,
+        )
+
+        state = ctrl.read()
+
+        assert state.left_stick_x > 0.9
+        assert abs(state.left_stick_y) < 0.01
+        assert state.right_stick_x < -0.9
+        assert abs(state.right_stick_y) < 0.01
+        assert state.left_bumper is True
+        assert state.right_trigger == 1.0
+        assert state.a_button is True
+        assert state.y_button is True
+        assert state.dpad_x == 1.0
+        assert state.dpad_y == -1.0
+        assert state.imu_pitch == 0.11
+        assert state.imu_roll == -0.22
+        assert state.imu_yaw == 0.33
         assert state.imu_orientation_valid is True

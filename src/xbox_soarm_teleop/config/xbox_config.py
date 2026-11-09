@@ -9,6 +9,7 @@ class XboxConfig:
 
     Attributes:
         deadzone: Threshold below which analog inputs are treated as zero.
+        backend: Input backend selection. "auto" picks a platform-appropriate backend.
         linear_scale: Maximum linear velocity in m/s at full stick deflection.
         angular_scale: Maximum angular velocity in rad/s at full stick deflection.
         orientation_scale: Maximum angular velocity in rad/s for pitch/yaw (D-pad).
@@ -23,6 +24,7 @@ class XboxConfig:
     """
 
     deadzone: float = 0.1
+    backend: str = "auto"
     dominant_axis_min: float = 0.55  # minimum stick magnitude before cross-axis suppression
     dominant_axis_ratio: float = 2.5  # dominant axis must exceed minor axis by this ratio
     cross_axis_attenuation: float = 0.2  # scale factor applied to minor axis when suppressed

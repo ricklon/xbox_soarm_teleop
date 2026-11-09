@@ -1,4 +1,9 @@
-"""Unit conversion helpers."""
+"""Legacy limit-scaled unit conversions used by existing live control.
+
+These helpers assume model zero equals normalized zero and infer scale from
+configured limits. They are not calibrated encoder-to-URDF conversions. See
+``calibrated_units`` for explicit mappings requiring measured references.
+"""
 
 from __future__ import annotations
 
