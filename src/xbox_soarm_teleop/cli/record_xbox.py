@@ -287,28 +287,11 @@ def run_recording(
         urdf_path = str(DEFAULT_URDF)
 
     # ---- Dataset features --------------------------------------------------
-    features = build_dataset_features(mode=mode, joint_count=len(JOINT_NAMES_WITH_GRIPPER))
-    features["observation.state"]["names"] = [f"{m}.pos" for m in JOINT_NAMES_WITH_GRIPPER]
-    features["action"]["names"] = [f"{m}.pos" for m in JOINT_NAMES_WITH_GRIPPER]
-    if mode == "cartesian":
-        features["action.ee_delta"]["names"] = [
-            "dx",
-            "dy",
-            "dz",
-            "droll",
-            "dpitch",
-            "dyaw",
-            "gripper",
-        ]
-        features["safety.flags"]["names"] = [
-            "ws_clip_x",
-            "ws_clip_y",
-            "ws_clip_z",
-            "speed_clip",
-            "orient_clip",
-            "joint_clip",
-            "reject",
-        ]
+    features = build_dataset_features(
+        mode=mode,
+        joint_count=len(JOINT_NAMES_WITH_GRIPPER),
+        joint_names=JOINT_NAMES_WITH_GRIPPER,
+    )
 
     dataset_kwargs: dict = {"features": features}
     if root is not None:
@@ -435,15 +418,7 @@ def run_recording(
                         ee_target_pose = np.eye(4, dtype=np.float32)
                     if ee_obs_pose is None:
                         ee_obs_pose = np.eye(4, dtype=np.float32)
-                    flags_order = [
-                        "ws_clip_x",
-                        "ws_clip_y",
-                        "ws_clip_z",
-                        "speed_clip",
-                        "orient_clip",
-                        "joint_clip",
-                        "reject",
-                    ]
+                    flags_order = features["safety.flags"]["names"]
                     safety_flags = np.array(
                         [ik_step.last_flags.get(k, 0) for k in flags_order], dtype=np.float32
                     )
