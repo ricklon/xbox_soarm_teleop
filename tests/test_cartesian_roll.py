@@ -84,3 +84,34 @@ def test_recording_processor_uses_coupled_motion(model):
         processor._ik_joint_pos_deg, wrist_roll_deg=processor._wrist_roll_deg
     )
     assert np.linalg.norm(achieved[:3, 3] - processor.last_target_pose[:3, 3]) <= 1e-5
+
+
+def test_clamp_to_ik_limits_uses_asymmetric_configured_limits():
+    from xbox_soarm_teleop.config.joints import JOINT_LIMITS_DEG
+    from xbox_soarm_teleop.control.cartesian import clamp_to_ik_limits
+
+    clamped = clamp_to_ik_limits(np.array([180.0, 90.0, 90.0, 90.0]))
+    # shoulder_pan ~+-110, shoulder_lift ~+-100, elbow ~+-96.8, wrist_flex ~[-95, 72]
+    np.testing.assert_allclose(
+        clamped,
+        [JOINT_LIMITS_DEG["shoulder_pan"][1], 90.0, 90.0, JOINT_LIMITS_DEG["wrist_flex"][1]],
+    )
+    assert clamped[3] < 72.0 + 1e-6
+
+
+def test_out_of_range_seed_recovers_instead_of_raising(model):
+    """Jacobian mode could leave wrist_flex past its 72 deg limit; IK must not crash."""
+    q = np.array([10.0, 30.0, -45.0, 90.0])
+    state = make_cartesian_state(model, q)
+    target = state.ee_pose.copy()
+    step = np.full(4, 5.0)
+    joints, roll = solve_cartesian_motion(
+        state, model, target, EEDelta(droll=0.5), dt=0.1, orientation_weight=0.0,
+        max_joint_step_deg=step,
+    )
+    assert np.all(np.isfinite(joints))
+    # Motion from the true (out-of-range) position stays rate limited...
+    assert np.all(np.abs(joints - q) <= step + 1e-9)
+    # ...and never moves further out of range.
+    assert joints[3] <= q[3]
+    assert np.isfinite(roll)

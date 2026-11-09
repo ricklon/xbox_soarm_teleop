@@ -7,7 +7,7 @@ from typing import Callable
 
 import numpy as np
 
-from xbox_soarm_teleop.config.joints import JOINT_LIMITS_DEG
+from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES, JOINT_LIMITS_DEG
 from xbox_soarm_teleop.control.home import (
     array_reached,
     scalar_reached,
@@ -255,6 +255,22 @@ def step_cartesian_home(
     return done
 
 
+def clamp_to_ik_limits(ik_joint_pos_deg: np.ndarray) -> np.ndarray:
+    """Clamp IK-chain joint angles to their configured (asymmetric) limits.
+
+    Args:
+        ik_joint_pos_deg: Angles in degrees, ordered as ``IK_JOINT_NAMES``.
+
+    Returns:
+        A clamped copy. Extra trailing entries, if any, are left unchanged.
+    """
+    joints = np.asarray(ik_joint_pos_deg, dtype=float).copy()
+    for i, name in enumerate(IK_JOINT_NAMES[: len(joints)]):
+        lower, upper = JOINT_LIMITS_DEG[name]
+        joints[i] = min(max(joints[i], lower), upper)
+    return joints
+
+
 def solve_cartesian_motion(
     state: CartesianControlState,
     kinematics,
@@ -273,6 +289,11 @@ def solve_cartesian_motion(
     limits scale the entire coupled step uniformly; intermediate poses along
     that joint-space interpolation need not lie exactly on a Cartesian line.
     The shared model is restored to the current state after planning.
+
+    A current position outside the configured joint limits (e.g. left there by
+    the Jacobian path) is clamped before seeding IK, so the solver does not
+    reject it; the returned step is still measured, and rate limited, from the
+    true current position, which steers the arm back inside its limits.
     """
     limits = None
     if max_joint_step_deg is not None:
@@ -288,7 +309,7 @@ def solve_cartesian_motion(
     try:
         kinematics.forward_kinematics(state.ik_joint_pos_deg, wrist_roll_deg=roll)
         joints = kinematics.inverse_kinematics(
-            state.ik_joint_pos_deg,
+            clamp_to_ik_limits(state.ik_joint_pos_deg),
             target_pose,
             position_weight=position_weight,
             orientation_weight=orientation_weight,
