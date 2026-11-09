@@ -63,6 +63,11 @@ from xbox_soarm_teleop.control.cartesian import (
     sync_cartesian_state,
     use_jacobian_step,
 )
+from xbox_soarm_teleop.control.motion_feedback import (
+    TrackingStats,
+    commanded_progress,
+    describe_motion_limit,
+)
 from xbox_soarm_teleop.control.routines import plane_offset
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
 from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
@@ -1298,6 +1303,36 @@ def draw_workspace(
     return True
 
 
+# Cartesian workspace bounds for simulation (meters, world frame). None = unbounded.
+SIM_WORKSPACE_BOUNDS = {"x": (0.05, 0.5), "y": (None, None), "z": (0.05, 0.45)}
+
+
+def _clip_to_sim_workspace(pos: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Clip a tool position to ``SIM_WORKSPACE_BOUNDS`` (``clip_position`` callback)."""
+    clipped = np.asarray(pos, dtype=float).copy()
+    for idx, key in enumerate(("x", "y", "z")):
+        low, high = SIM_WORKSPACE_BOUNDS[key]
+        if low is not None:
+            clipped[idx] = max(clipped[idx], low)
+        if high is not None:
+            clipped[idx] = min(clipped[idx], high)
+    return clipped, {}
+
+
+def _show_limit_overlay(viewer, message: str) -> None:
+    """Show (or clear, when empty) the limit message in the viewer window."""
+    set_texts = getattr(viewer, "set_texts", None)
+    if not callable(set_texts):
+        return
+    if message:
+        set_texts(
+            (mujoco.mjtFontScale.mjFONTSCALE_200, mujoco.mjtGridPos.mjGRID_TOPRIGHT,
+             "Stopped", message)
+        )
+    else:
+        set_texts([])
+
+
 class _HeadlessViewer:
     """Minimal stand-in for mujoco.viewer.Handle when running headless.
 
@@ -1509,9 +1544,8 @@ def run_with_controller(
 
     running = True
     loop_counter = 0
-    error_count = 0
-    error_sum = 0.0
-    error_max = 0.0
+    tracking = TrackingStats(max_err_mm=ik_max_err_mm, mean_err_mm=ik_mean_err_mm)
+    shown_limit = ""
     error_start = time.monotonic()
     last_scene_reset_time = 0.0
 
@@ -1530,6 +1564,8 @@ def run_with_controller(
                 "actual_y",
                 "actual_z",
                 "pos_err_mm",
+                "phase",
+                "limit",
             ]
         )
         print(f"IK error logging: {ik_log_path}", flush=True)
@@ -1770,6 +1806,8 @@ def run_with_controller(
                 # Jacobian mode is position + pitch only; drop yaw like the real-robot path.
                 ee_delta = replace(ee_delta, dyaw=0.0)
             assert cartesian_state is not None
+            frame_phase = "homing" if homing_active else "idle"
+            frame_limit = "homing" if homing_active else ""
             if homing_active:
                 homing_active = not step_cartesian_home(
                     cartesian_state,
@@ -1792,15 +1830,7 @@ def run_with_controller(
                 )
 
             if not homing_active and not ee_delta.is_zero_motion():
-                def clip_position(pos):
-                    return (
-                        np.array(
-                            [np.clip(pos[0], 0.05, 0.5), pos[1], np.clip(pos[2], 0.05, 0.45)],
-                            dtype=float,
-                        ),
-                        {},
-                    )
-
+                clip_position = _clip_to_sim_workspace
                 target_pose, target_pos, target_flags = advance_cartesian_target(
                     cartesian_state,
                     ee_delta,
@@ -1812,6 +1842,7 @@ def run_with_controller(
                 orientation_weight = float(target_flags["orientation_weight"])
 
                 _t0 = time.perf_counter()
+                ran_ik = False
                 if jacobian_ctrl is not None and use_jacobian_step(cartesian_state, ee_delta):
                     # Jacobian: EE velocity -> joint velocity -> integrate (position + pitch)
                     next_wrist_roll_deg = cartesian_state.wrist_roll_deg
@@ -1822,6 +1853,7 @@ def run_with_controller(
                     )
                 else:
                     # IK for 4 joints (also handles roll and orientation in Jacobian mode)
+                    ran_ik = True
                     new_joints, next_wrist_roll_deg = solve_cartesian_motion(
                         cartesian_state, kinematics, target_pose, ee_delta,
                         dt=LOOP_PERIOD, orientation_weight=orientation_weight,
@@ -1834,12 +1866,25 @@ def run_with_controller(
                         joint_delta, -max_delta, max_delta
                     )
                 ik_ms = (time.perf_counter() - _t0) * 1000.0
+                pos_before = cartesian_state.ee_pose[:3, 3].copy()
                 apply_ik_solution(
                     cartesian_state,
                     kinematics,
                     candidate_joints,
                     wrist_roll_deg=next_wrist_roll_deg,
                     target_pose=target_pose,
+                )
+                frame_phase = "moving"
+                frame_limit = describe_motion_limit(
+                    homing=False,
+                    delta=ee_delta,
+                    target_pos=target_pos,
+                    workspace_bounds=SIM_WORKSPACE_BOUNDS,
+                    ik_joints_deg=cartesian_state.ik_joint_pos_deg,
+                    ik_result=getattr(kinematics, "last_ik_result", None) if ran_ik else None,
+                    progress=commanded_progress(
+                        pos_before, cartesian_state.ee_pose[:3, 3], ee_delta, LOOP_PERIOD
+                    ),
                 )
 
                 if debug_ik and (loop_counter % max(debug_ik_every, 1) == 0):
@@ -1909,9 +1954,10 @@ def run_with_controller(
                     cartesian_state.last_ee_pose[:3, 3] - cartesian_state.last_target_pose[:3, 3]
                 )
             )
-            error_count += 1
-            error_sum += pos_err
-            error_max = max(error_max, pos_err)
+            tracking.add(pos_err, phase=frame_phase, limit=frame_limit)
+            if frame_limit != shown_limit:
+                _show_limit_overlay(viewer, frame_limit)
+                shown_limit = frame_limit
             if csv_writer:
                 t_s = time.monotonic() - error_start
                 csv_writer.writerow(
@@ -1924,6 +1970,8 @@ def run_with_controller(
                         f"{cartesian_state.last_ee_pose[1, 3]:.6f}",
                         f"{cartesian_state.last_ee_pose[2, 3]:.6f}",
                         f"{pos_err * 1000.0:.3f}",
+                        frame_phase,
+                        frame_limit,
                     ]
                 )
             pitch_deg = np.rad2deg(cartesian_state.target_pitch)
@@ -1952,9 +2000,11 @@ def run_with_controller(
                     flush=True,
                 )
             else:
+                limit_text = f" | STOP: {frame_limit}" if frame_limit else ""
                 print(
                     f"EE: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] | "
-                    f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {cartesian_state.gripper_pos:.2f}   ",
+                    f"P:{pitch_deg:+5.1f}° Y:{yaw_deg:+5.1f}° | Grip: {cartesian_state.gripper_pos:.2f}"
+                    f"{limit_text:<34}",
                     end="\r",
                     flush=True,
                 )
@@ -1984,22 +2034,9 @@ def run_with_controller(
     if challenge is not None:
         challenge.print_summary()
 
-    if error_count == 0:
-        print("IK error summary: no samples collected.")
-        return 0
-
-    mean_err_mm = (error_sum / error_count) * 1000.0
-    max_err_mm = error_max * 1000.0
-    print("IK error summary (kinematics FK)")
-    print(f"  samples: {error_count}")
-    print(f"  max position error: {max_err_mm:.1f} mm")
-    print(f"  mean position error: {mean_err_mm:.1f} mm")
-
-    if max_err_mm > ik_max_err_mm or mean_err_mm > ik_mean_err_mm:
-        print("FAIL: IK error exceeded thresholds.")
-        return 1
-    print("PASS")
-    return 0
+    for line in tracking.summary_lines():
+        print(line)
+    return 0 if tracking.passed else 1
 
 
 def run_demo_mode(
