@@ -51,6 +51,7 @@ from xbox_soarm_teleop.config.joints import (
 from xbox_soarm_teleop.control.cartesian import (
     advance_cartesian_target,
     apply_ik_solution,
+    clamp_to_ik_limits,
     full_joint_positions,
     make_cartesian_state,
     solve_cartesian_motion,
@@ -211,7 +212,6 @@ def run_dual_mode(
 
     # Joint velocity limits
     ik_joint_vel_limits = np.array([120.0, 90.0, 90.0, 90.0])  # deg/s
-    joint_limits_deg = np.array([180.0, 90.0, 90.0, 90.0])  # symmetric limits
 
     # Initialize MuJoCo simulation
     print("Loading MuJoCo model...", flush=True)
@@ -462,7 +462,7 @@ def run_dual_mode(
                         candidate_joints = cartesian_state.ik_joint_pos_deg + joint_vel_deg * LOOP_PERIOD
 
                         # Apply joint limits
-                        candidate_joints = np.clip(candidate_joints, -joint_limits_deg, joint_limits_deg)
+                        candidate_joints = clamp_to_ik_limits(candidate_joints)
                     else:
                         # IK-based control: solve IK for target pose
                         new_joints, next_wrist_roll_deg = solve_cartesian_motion(

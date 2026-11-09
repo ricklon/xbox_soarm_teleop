@@ -704,9 +704,8 @@ def run_teleoperation(
                             frame_safety_joint_clip = 1
                         candidate_joints = clipped_next
                     else:
-                        joint_limits_deg = np.array([180.0, 90.0, 90.0, 90.0])
                         candidate_joints = np.clip(
-                            candidate_joints, -joint_limits_deg, joint_limits_deg
+                            candidate_joints, ik_joint_lower_limits, ik_joint_upper_limits
                         )
                 else:
                     # IK-based control: solve IK for target pose
