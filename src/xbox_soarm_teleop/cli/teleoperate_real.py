@@ -44,11 +44,13 @@ from xbox_soarm_teleop.control.cartesian import (
     advance_cartesian_target,
     apply_ik_solution,
     full_joint_positions,
+    jacobian_joint_step,
     make_cartesian_state,
     solve_cartesian_motion,
     step_cartesian_home,
     step_gripper_toward,
     sync_cartesian_state,
+    use_jacobian_step,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
 from xbox_soarm_teleop.control.safety import apply_strict_safety, clip_workspace
@@ -679,22 +681,16 @@ def run_teleoperation(
                 orientation_weight = float(target_flags["orientation_weight"])
 
                 next_wrist_roll_deg = cartesian_state.wrist_roll_deg
-                if (use_jacobian and not cartesian_state.orientation_active
-                        and ee_delta.roll_target is None and abs(ee_delta.droll) <= 0.001):
+                if use_jacobian and use_jacobian_step(cartesian_state, ee_delta):
                     # Jacobian-based control: EE velocity -> joint velocity -> integrate
-                    # Use position + pitch mode (4 DOF) for optimal control with 4 joints
-                    ee_vel = np.array([ee_delta.dx, ee_delta.dy, ee_delta.dz, ee_delta.dpitch])
-                    joint_vel_deg = jacobian_ctrl.ee_vel_to_joint_vel(
-                        ee_vel, cartesian_state.ik_joint_pos_deg, mode="position_pitch"
+                    # (position + pitch), within joint limits and workspace bounds.
+                    candidate_joints = jacobian_joint_step(
+                        cartesian_state, jacobian_ctrl, ee_delta,
+                        dt=LOOP_PERIOD, joint_vel_limits_deg=ik_joint_vel_limits,
+                        clip_position=lambda pos: clip_workspace(pos, workspace_limits),
                     )
-
-                    # Apply velocity limits
-                    joint_vel_deg = np.clip(joint_vel_deg, -ik_joint_vel_limits, ik_joint_vel_limits)
-
-                    # Integrate to get new joint positions
-                    joint_delta = joint_vel_deg * LOOP_PERIOD
+                    joint_delta = candidate_joints - cartesian_state.ik_joint_pos_deg
                     clipped_delta = joint_delta.copy()
-                    candidate_joints = cartesian_state.ik_joint_pos_deg + joint_delta
 
                     # Apply conservative joint limits in strict mode.
                     if strict_safety:
@@ -703,10 +699,6 @@ def run_teleoperation(
                             safety_clip_joint_count += 1
                             frame_safety_joint_clip = 1
                         candidate_joints = clipped_next
-                    else:
-                        candidate_joints = np.clip(
-                            candidate_joints, ik_joint_lower_limits, ik_joint_upper_limits
-                        )
                 else:
                     # IK-based control: solve IK for target pose
                     _t0 = time.perf_counter()

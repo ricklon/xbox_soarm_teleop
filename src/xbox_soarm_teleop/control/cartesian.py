@@ -292,6 +292,7 @@ def jacobian_joint_step(
     *,
     dt: float,
     joint_vel_limits_deg: np.ndarray,
+    clip_position: Callable[[np.ndarray], tuple[np.ndarray, dict]] | None = None,
 ) -> np.ndarray:
     """Integrate one damped-least-squares Jacobian step for the IK chain.
 
@@ -301,17 +302,60 @@ def jacobian_joint_step(
         delta: End-effector velocity command (m/s, rad/s).
         dt: Loop period in seconds.
         joint_vel_limits_deg: Per-joint velocity limits in deg/s.
+        clip_position: Workspace clip, as passed to ``advance_cartesian_target``.
+            When given, linear velocity that would carry the tool past a bound is
+            removed per axis (the command is only ever reduced, so an arm already
+            outside is not pulled back), and a step whose tool position would end
+            further outside than now, beyond ``_WORKSPACE_TOLERANCE_M``, is held.
 
     Returns:
         Candidate IK-chain angles in degrees, clamped to configured joint limits.
     """
-    ee_vel = np.array([delta.dx, delta.dy, delta.dz, delta.dpitch])
+    linear = np.array([delta.dx, delta.dy, delta.dz], dtype=float)
+    current_pos = state.ee_pose[:3, 3]
+    if clip_position is not None and dt > 0:
+        bounded, _ = clip_position(current_pos + linear * dt)
+        allowed = (np.asarray(bounded, dtype=float) - current_pos) / dt
+        linear = np.where(
+            linear > 0,
+            np.clip(allowed, 0.0, linear),
+            np.clip(allowed, linear, 0.0),
+        )
+    ee_vel = np.array([*linear, delta.dpitch])
     joint_vel_deg = jacobian_ctrl.ee_vel_to_joint_vel(
         ee_vel, state.ik_joint_pos_deg, mode="position_pitch"
     )
     limits = np.asarray(joint_vel_limits_deg, dtype=float)
     joint_vel_deg = np.clip(joint_vel_deg, -limits, limits)
-    return clamp_to_ik_limits(state.ik_joint_pos_deg + joint_vel_deg * dt)
+    candidate = clamp_to_ik_limits(state.ik_joint_pos_deg + joint_vel_deg * dt)
+    if clip_position is None:
+        return candidate
+
+    # Linearization guard: verify the integrated step with forward kinematics.
+    kinematics = jacobian_ctrl.kin
+    try:
+        candidate_pos = kinematics.forward_kinematics(
+            candidate, wrist_roll_deg=state.wrist_roll_deg
+        )[:3, 3].copy()
+    finally:
+        kinematics.forward_kinematics(state.ik_joint_pos_deg, wrist_roll_deg=state.wrist_roll_deg)
+    candidate_violation = _workspace_violation(candidate_pos, clip_position)
+    if candidate_violation > max(
+        _workspace_violation(current_pos, clip_position), _WORKSPACE_TOLERANCE_M
+    ):
+        return state.ik_joint_pos_deg.copy()
+    return candidate
+
+
+_WORKSPACE_TOLERANCE_M = 1e-3
+
+
+def _workspace_violation(
+    pos: np.ndarray, clip_position: Callable[[np.ndarray], tuple[np.ndarray, dict]]
+) -> float:
+    """Distance in meters from a tool position to the workspace bounds (0 inside)."""
+    bounded, _ = clip_position(np.asarray(pos, dtype=float).copy())
+    return float(np.linalg.norm(np.asarray(bounded, dtype=float) - pos))
 
 
 def solve_cartesian_motion(

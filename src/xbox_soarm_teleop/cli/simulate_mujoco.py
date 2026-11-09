@@ -1792,21 +1792,20 @@ def run_with_controller(
                 )
 
             if not homing_active and not ee_delta.is_zero_motion():
+                def clip_position(pos):
+                    return (
+                        np.array(
+                            [np.clip(pos[0], 0.05, 0.5), pos[1], np.clip(pos[2], 0.05, 0.45)],
+                            dtype=float,
+                        ),
+                        {},
+                    )
+
                 target_pose, target_pos, target_flags = advance_cartesian_target(
                     cartesian_state,
                     ee_delta,
                     dt=LOOP_PERIOD,
-                    clip_position=lambda pos: (
-                        np.array(
-                            [
-                                np.clip(pos[0], 0.05, 0.5),
-                                pos[1],
-                                np.clip(pos[2], 0.05, 0.45),
-                            ],
-                            dtype=float,
-                        ),
-                        {},
-                    ),
+                    clip_position=clip_position,
                     pitch_limit_rad=np.pi / 2,
                     yaw_limit_rad=np.pi,
                 )
@@ -1819,6 +1818,7 @@ def run_with_controller(
                     candidate_joints = jacobian_joint_step(
                         cartesian_state, jacobian_ctrl, ee_delta,
                         dt=LOOP_PERIOD, joint_vel_limits_deg=ik_joint_vel_limits,
+                        clip_position=clip_position,
                     )
                 else:
                     # IK for 4 joints (also handles roll and orientation in Jacobian mode)

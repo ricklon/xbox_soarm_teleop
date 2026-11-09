@@ -51,12 +51,13 @@ from xbox_soarm_teleop.config.joints import (
 from xbox_soarm_teleop.control.cartesian import (
     advance_cartesian_target,
     apply_ik_solution,
-    clamp_to_ik_limits,
     full_joint_positions,
+    jacobian_joint_step,
     make_cartesian_state,
     solve_cartesian_motion,
     step_cartesian_home,
     step_gripper_toward,
+    use_jacobian_step,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
 from xbox_soarm_teleop.control.units import deg_to_normalized
@@ -423,11 +424,8 @@ def run_dual_mode(
                     )
 
                 if not homing_active and not ee_delta.is_zero_motion():
-                    target_pose, _target_pos, target_flags = advance_cartesian_target(
-                        cartesian_state,
-                        ee_delta,
-                        dt=LOOP_PERIOD,
-                        clip_position=lambda pos: (
+                    def clip_position(pos):
+                        return (
                             np.array(
                                 [
                                     np.clip(pos[0], -0.1, 0.5),
@@ -437,32 +435,27 @@ def run_dual_mode(
                                 dtype=float,
                             ),
                             {},
-                        ),
+                        )
+
+                    target_pose, _target_pos, target_flags = advance_cartesian_target(
+                        cartesian_state,
+                        ee_delta,
+                        dt=LOOP_PERIOD,
+                        clip_position=clip_position,
                         pitch_limit_rad=np.pi / 2,
                         yaw_limit_rad=np.pi,
                     )
                     orientation_weight = float(target_flags["orientation_weight"])
 
                     next_wrist_roll_deg = cartesian_state.wrist_roll_deg
-                    if (use_jacobian and not cartesian_state.orientation_active
-                            and ee_delta.roll_target is None and abs(ee_delta.droll) <= 0.001):
+                    if use_jacobian and use_jacobian_step(cartesian_state, ee_delta):
                         # Jacobian-based control: EE velocity -> joint velocity -> integrate
-                        # Use position + pitch mode (4 DOF) for optimal control with 4 joints
-                        ee_vel = np.array([ee_delta.dx, ee_delta.dy, ee_delta.dz, ee_delta.dpitch])
-                        joint_vel_deg = jacobian_ctrl.ee_vel_to_joint_vel(
-                            ee_vel, cartesian_state.ik_joint_pos_deg, mode="position_pitch"
+                        # (position + pitch), within joint limits and workspace bounds.
+                        candidate_joints = jacobian_joint_step(
+                            cartesian_state, jacobian_ctrl, ee_delta,
+                            dt=LOOP_PERIOD, joint_vel_limits_deg=ik_joint_vel_limits,
+                            clip_position=clip_position,
                         )
-
-                        # Apply velocity limits
-                        joint_vel_deg = np.clip(
-                            joint_vel_deg, -ik_joint_vel_limits, ik_joint_vel_limits
-                        )
-
-                        # Integrate to get new joint positions
-                        candidate_joints = cartesian_state.ik_joint_pos_deg + joint_vel_deg * LOOP_PERIOD
-
-                        # Apply joint limits
-                        candidate_joints = clamp_to_ik_limits(candidate_joints)
                     else:
                         # IK-based control: solve IK for target pose
                         new_joints, next_wrist_roll_deg = solve_cartesian_motion(
