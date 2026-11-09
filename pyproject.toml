@@ -26,8 +26,15 @@ dev = [
     "ruff>=0.4.0",
     "pre-commit",
 ]
+keyboard = [
+    "evdev>=1.6; platform_system == 'Linux'",
+    "pynput>=1.7; platform_system != 'Linux'",
+]
 joycon = [
-    "evdev>=1.6",
+    "evdev>=1.6; platform_system == 'Linux'",
+    "joycon-python>=0.2.4; platform_system == 'Darwin'",
+    "hidapi>=0.15; platform_system == 'Darwin'",
+    "pyglm>=2.8.3; platform_system == 'Darwin'",
 ]
 pygame = [
     "pygame>=2.5.0",

@@ -1,6 +1,7 @@
 """Xbox controller teleoperator for SO-ARM teleoperation."""
 
 import math
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -59,7 +60,9 @@ class XboxController:
         self.config = config or XboxConfig()
         self._state = XboxState()
         self._prev_state = XboxState()
+        self._backend = self._resolve_backend()
         self._gamepad: Any = None
+        self._sdl_controller: Any = None
         self._raw_state: dict[str, int] = {}
         self._raw_state_lock = threading.Lock()
         self._connected = False
@@ -72,29 +75,14 @@ class XboxController:
         Returns:
             True if connection successful, False otherwise.
         """
-        try:
-            import inputs
-
-            gamepads = inputs.devices.gamepads
-            if not gamepads:
-                return False
-
-            if self.config.device_index >= len(gamepads):
-                return False
-
-            self._gamepad = gamepads[self.config.device_index]
-            self._connected = True
-
-            # Start background reader thread
-            self._stop_event.clear()
-            self._reader_thread = threading.Thread(target=self._read_events_loop, daemon=True)
-            self._reader_thread.start()
-
-            return True
-        except ImportError:
-            raise ImportError("inputs library not found. Install with: pip install inputs")
-        except Exception:
-            return False
+        self._backend = self._resolve_backend()
+        if self._backend == "inputs":
+            return self._connect_inputs()
+        if self._backend == "sdl":
+            return self._connect_sdl()
+        raise RuntimeError(
+            f"Unsupported Xbox backend '{self._backend}'. Use one of: auto, inputs, sdl."
+        )
 
     def disconnect(self) -> None:
         """Disconnect from the controller."""
@@ -105,6 +93,12 @@ class XboxController:
             except KeyboardInterrupt:
                 pass
             self._reader_thread = None
+        if self._sdl_controller is not None:
+            try:
+                self._sdl_controller.quit()
+            except Exception:
+                pass
+            self._sdl_controller = None
         self._gamepad = None
         self._connected = False
         with self._raw_state_lock:
@@ -128,6 +122,74 @@ class XboxController:
             return XboxState()
 
         # Store previous state for edge detection
+        self._snapshot_previous_state()
+        if self._backend == "sdl":
+            self._read_sdl_state()
+        else:
+            self._read_inputs_state()
+        self._apply_edge_detection()
+
+        return self._state
+
+    def _resolve_backend(self) -> str:
+        """Pick the controller backend to use for the current platform."""
+        if self.config.backend != "auto":
+            return self.config.backend
+        if sys.platform in {"darwin", "win32"}:
+            return "sdl"
+        return "inputs"
+
+    def _connect_inputs(self) -> bool:
+        """Connect using the legacy inputs backend."""
+        try:
+            import inputs
+
+            gamepads = inputs.devices.gamepads
+            if not gamepads:
+                return False
+
+            if self.config.device_index >= len(gamepads):
+                return False
+
+            self._gamepad = gamepads[self.config.device_index]
+            self._connected = True
+
+            self._stop_event.clear()
+            self._reader_thread = threading.Thread(target=self._read_events_loop, daemon=True)
+            self._reader_thread.start()
+            return True
+        except ImportError as exc:
+            raise ImportError("inputs library not found. Install with: pip install inputs") from exc
+        except Exception:
+            return False
+
+    def _connect_sdl(self) -> bool:
+        """Connect using SDL game-controller support via pygame."""
+        try:
+            import pygame
+            from pygame._sdl2 import controller as sdl_controller
+
+            pygame.init()
+            sdl_controller.init()
+            controller_indices = [
+                index
+                for index in range(sdl_controller.get_count())
+                if sdl_controller.is_controller(index)
+            ]
+            if self.config.device_index >= len(controller_indices):
+                return False
+            self._sdl_controller = sdl_controller.Controller(
+                controller_indices[self.config.device_index]
+            )
+            self._connected = bool(self._sdl_controller.attached())
+            return self._connected
+        except ImportError as exc:
+            raise ImportError("pygame SDL controller support is not available.") from exc
+        except Exception:
+            return False
+
+    def _snapshot_previous_state(self) -> None:
+        """Store the previous logical state for button edge detection."""
         self._prev_state = XboxState(
             left_stick_x=self._state.left_stick_x,
             left_stick_y=self._state.left_stick_y,
@@ -141,11 +203,16 @@ class XboxController:
             dpad_y=self._state.dpad_y,
         )
 
-        # Get current raw state (thread-safe)
+    def _apply_edge_detection(self) -> None:
+        """Populate rising-edge button flags after a fresh state read."""
+        self._state.a_button_pressed = self._state.a_button and not self._prev_state.a_button
+        self._state.y_button_pressed = self._state.y_button and not self._prev_state.y_button
+
+    def _read_inputs_state(self) -> None:
+        """Read and normalize state from the legacy inputs backend."""
         with self._raw_state_lock:
             raw_copy = self._raw_state.copy()
 
-        # Normalize stick values (without deadzone - applied radially below)
         left_x = self._normalize_stick_raw(
             raw_copy.get(self.config.left_stick_x_axis, 0),
             invert=self.config.invert_x,
@@ -163,32 +230,69 @@ class XboxController:
             invert=self.config.invert_z,
         )
 
-        # Apply radial deadzone to each stick (treats both axes together)
         self._state.left_stick_x, self._state.left_stick_y = self._apply_radial_deadzone(
             left_x, left_y
         )
         self._state.right_stick_x, self._state.right_stick_y = self._apply_radial_deadzone(
             right_x, right_y
         )
-
         self._state.right_trigger = self._normalize_trigger(
             raw_copy.get(self.config.right_trigger_axis, 0)
         )
-
-        # Buttons
         self._state.left_bumper = bool(raw_copy.get(self.config.deadman_button, 0))
         self._state.a_button = bool(raw_copy.get(self.config.home_button, 0))
         self._state.y_button = bool(raw_copy.get(self.config.aux_button, 0))
-
-        # D-pad (HAT switch) - values are -1, 0, or 1
         self._state.dpad_x = float(raw_copy.get(self.config.dpad_x_axis, 0))
         self._state.dpad_y = float(raw_copy.get(self.config.dpad_y_axis, 0))
 
-        # Edge detection - True only on rising edge
-        self._state.a_button_pressed = self._state.a_button and not self._prev_state.a_button
-        self._state.y_button_pressed = self._state.y_button and not self._prev_state.y_button
+    def _read_sdl_state(self) -> None:
+        """Read and normalize state from the SDL controller backend."""
+        import pygame
 
-        return self._state
+        if self._sdl_controller is None or not self._sdl_controller.attached():
+            self._connected = False
+            return
+
+        pygame.event.pump()
+        left_x = self._normalize_stick_raw(
+            self._sdl_controller.get_axis(pygame.CONTROLLER_AXIS_LEFTX),
+            invert=self.config.invert_x,
+        )
+        left_y = self._normalize_stick_raw(
+            self._sdl_controller.get_axis(pygame.CONTROLLER_AXIS_LEFTY),
+            invert=self.config.invert_y,
+        )
+        right_x = self._normalize_stick_raw(
+            self._sdl_controller.get_axis(pygame.CONTROLLER_AXIS_RIGHTX),
+            invert=self.config.invert_roll,
+        )
+        right_y = self._normalize_stick_raw(
+            self._sdl_controller.get_axis(pygame.CONTROLLER_AXIS_RIGHTY),
+            invert=self.config.invert_z,
+        )
+
+        self._state.left_stick_x, self._state.left_stick_y = self._apply_radial_deadzone(
+            left_x, left_y
+        )
+        self._state.right_stick_x, self._state.right_stick_y = self._apply_radial_deadzone(
+            right_x, right_y
+        )
+        self._state.right_trigger = self._normalize_sdl_trigger(
+            self._sdl_controller.get_axis(pygame.CONTROLLER_AXIS_TRIGGERRIGHT)
+        )
+        self._state.left_bumper = bool(
+            self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_LEFTSHOULDER)
+        )
+        self._state.a_button = bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_A))
+        self._state.y_button = bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_Y))
+        self._state.dpad_x = float(
+            bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_DPAD_RIGHT))
+            - bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_DPAD_LEFT))
+        )
+        self._state.dpad_y = float(
+            bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_DPAD_DOWN))
+            - bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_DPAD_UP))
+        )
 
     def _read_events_loop(self) -> None:
         """Background thread that reads controller events."""
@@ -294,3 +398,7 @@ class XboxController:
         if max_val == min_val:
             return 0.0
         return max(0.0, min(1.0, (value - min_val) / (max_val - min_val)))
+
+    def _normalize_sdl_trigger(self, value: int) -> float:
+        """Normalize an SDL trigger axis value to [0, 1]."""
+        return max(0.0, min(1.0, value / 32767.0))

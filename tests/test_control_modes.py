@@ -178,7 +178,7 @@ def test_crane_processor_gripper_passthrough():
     from xbox_soarm_teleop.config.joints import JOINT_LIMITS_DEG
 
     proc = CraneProcessor()
-    result = proc(_state(right_trigger=1.0))
+    result = proc(_state(left_bumper=True, right_trigger=1.0))
     g_lo, _ = JOINT_LIMITS_DEG["gripper"]
     assert abs(result.goals_deg["gripper"] - g_lo) < 0.1
 
@@ -186,7 +186,7 @@ def test_crane_processor_gripper_passthrough():
 def test_crane_processor_a_button_resets_home():
     proc = CraneProcessor(pan_vel_deg_s=10.0, loop_dt=0.1)
     proc._pan_deg = 50.0
-    result = proc(_state(a_button_pressed=True))
+    result = proc(_state(left_bumper=True, a_button_pressed=True))
     home = HOME_POSITION_DEG["shoulder_pan"]
     assert abs(result.goals_deg["shoulder_pan"] - home) < abs(50.0 - home)
     assert abs(result.goals_deg["shoulder_pan"] - home) > 0.1
@@ -226,7 +226,7 @@ def test_crane_processor_reset():
 
 def test_crane_processor_handles_ik_none():
     class _DummyIK:
-        def inverse_kinematics(self, *args, **kwargs):
+        def inverse_cylindrical(self, *args, **kwargs):
             return None
 
     proc = CraneProcessor()
@@ -234,3 +234,19 @@ def test_crane_processor_handles_ik_none():
     # Force the IK path with deadman held
     result = proc(_state(left_bumper=True, left_stick_y=-1.0, right_stick_y=-1.0))
     assert isinstance(result, JointCommand)
+
+
+def test_crane_rejected_ik_cannot_complete_homing():
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    processor = CraneProcessor()
+    processor._planar_ik = SimpleNamespace(
+        inverse_cylindrical=lambda seed, *args, **kwargs: np.asarray(seed).copy(),
+        last_ik_result=SimpleNamespace(accepted=False),
+    )
+    processor._homing_active = True
+    processor._step_home()
+    assert processor._homing_active
+    assert processor._solve_planar_target(processor._reach_m, processor._height_m) is None

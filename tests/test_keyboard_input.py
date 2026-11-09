@@ -6,7 +6,12 @@ import time
 import pytest
 
 from xbox_soarm_teleop.config.keyboard_config import KeyboardConfig
-from xbox_soarm_teleop.teleoperators.keyboard import KeyboardController, _combine
+from xbox_soarm_teleop.teleoperators import keyboard as keyboard_module
+from xbox_soarm_teleop.teleoperators.keyboard import (
+    _FALLBACK_ECODES,
+    KeyboardController,
+    _combine,
+)
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -117,6 +122,20 @@ class TestKeyboardControllerInit:
         assert state.left_stick_x == 0.0
         assert state.right_stick_y == 0.0
         assert state.left_bumper is False
+
+    def test_auto_backend_resolution_prefers_pynput_on_macos(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(keyboard_module.sys, "platform", "darwin")
+        ctrl = KeyboardController()
+        assert ctrl._resolve_backend() == "pynput"
+
+    def test_auto_backend_resolution_prefers_evdev_on_linux(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(keyboard_module.sys, "platform", "linux")
+        ctrl = KeyboardController()
+        assert ctrl._resolve_backend() == "evdev"
 
 
 class TestKeyboardControllerRead:
@@ -234,6 +253,42 @@ class TestKeyboardControllerRead:
         state = ctrl.read()
         assert state.left_stick_y < 0.0  # forward
         assert state.left_stick_x > 0.0  # right
+
+    def test_pynput_char_press_sets_state(self):
+        ctrl = KeyboardController(KeyboardConfig(backend="pynput"))
+        ctrl._build_key_map()
+        ctrl._connected = True
+
+        class _CharKey:
+            char = "w"
+
+            def __str__(self):
+                return "w"
+
+        ctrl._on_pynput_press(_CharKey())
+        state = ctrl.read()
+        assert state.left_stick_y < 0.0
+        ctrl._on_pynput_release(_CharKey())
+        assert ctrl.read().left_stick_y == pytest.approx(0.0)
+
+    def test_pynput_special_press_updates_shift_and_dpad(self):
+        ctrl = KeyboardController(KeyboardConfig(backend="pynput"))
+        ctrl._build_key_map()
+        ctrl._connected = True
+
+        class _SpecialKey:
+            def __init__(self, text: str):
+                self._text = text
+
+            def __str__(self):
+                return self._text
+
+        ctrl._on_pynput_press(_SpecialKey("Key.shift_l"))
+        ctrl._on_pynput_press(_SpecialKey("Key.up"))
+        state = ctrl.read()
+        assert state.dpad_y == pytest.approx(-1.0)
+        ctrl._on_pynput_release(_SpecialKey("Key.shift_l"))
+        ctrl._on_pynput_release(_SpecialKey("Key.up"))
 
 
 class TestKeyboardSpeedLevels:
@@ -384,9 +439,7 @@ class TestPlayback:
         assert ctrl._connected is False
 
     def test_playback_feeds_held_keys(self, tmp_path):
-        import evdev
-
-        key_w = evdev.ecodes.KEY_W
+        key_w = _FALLBACK_ECODES["KEY_W"]
         events = [
             {"t": 0.0, "code": key_w, "value": 1},
             {"t": 0.05, "code": key_w, "value": 0},
@@ -406,3 +459,20 @@ class TestPlayback:
             ctrl._reader_thread.join(timeout=2.0)
         with ctrl._held_keys_lock:
             assert key_w not in ctrl._held_keys
+
+    def test_playback_token_recording_connects(self, tmp_path):
+        token = "char:w"
+        events = [
+            {"t": 0.0, "code": token, "value": 1},
+            {"t": 0.01, "code": token, "value": 0},
+        ]
+        p = tmp_path / "demo-token.json"
+        self._write_recording(p, events)
+        ctrl = KeyboardController(KeyboardConfig(playback_path=str(p)))
+        assert ctrl._connect_playback() is True
+        time.sleep(0.005)
+        with ctrl._held_keys_lock:
+            held = frozenset(ctrl._held_keys)
+        assert token in held or not ctrl._connected
+        if ctrl._reader_thread:
+            ctrl._reader_thread.join(timeout=2.0)

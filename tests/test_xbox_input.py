@@ -1,9 +1,11 @@
 """Tests for Xbox controller input handling."""
 
+import pygame
 import pytest
 
 from xbox_soarm_teleop.config.xbox_config import XboxConfig
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, MapDualJoyConToEEDelta, MapXboxToEEDelta
+from xbox_soarm_teleop.teleoperators import xbox as xbox_module
 from xbox_soarm_teleop.teleoperators.xbox import XboxController, XboxState
 
 
@@ -53,6 +55,16 @@ class TestXboxController:
         """Controller should accept custom config."""
         controller = XboxController(xbox_config)
         assert controller.config is xbox_config
+
+    def test_auto_backend_resolution_prefers_sdl_on_macos(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(xbox_module.sys, "platform", "darwin")
+        controller = XboxController(XboxConfig())
+        assert controller._resolve_backend() == "sdl"
+
+    def test_auto_backend_resolution_prefers_inputs_on_linux(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(xbox_module.sys, "platform", "linux")
+        controller = XboxController(XboxConfig())
+        assert controller._resolve_backend() == "inputs"
 
     def test_radial_deadzone_filters_small_values(self, xbox_controller: XboxController):
         """Radial deadzone should filter values below threshold."""
@@ -139,6 +151,59 @@ class TestXboxController:
         assert isinstance(state, XboxState)
         assert state.left_stick_x == 0.0
         assert state.left_bumper is False
+
+    def test_read_sdl_backend_maps_buttons_axes_and_trigger(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        class _FakeSDLController:
+            def __init__(self):
+                self.axes = {
+                    pygame.CONTROLLER_AXIS_LEFTX: 16000,
+                    pygame.CONTROLLER_AXIS_LEFTY: -20000,
+                    pygame.CONTROLLER_AXIS_RIGHTX: 8000,
+                    pygame.CONTROLLER_AXIS_RIGHTY: -12000,
+                    pygame.CONTROLLER_AXIS_TRIGGERRIGHT: 16384,
+                }
+                self.buttons = {
+                    pygame.CONTROLLER_BUTTON_LEFTSHOULDER: 1,
+                    pygame.CONTROLLER_BUTTON_A: 1,
+                    pygame.CONTROLLER_BUTTON_Y: 0,
+                    pygame.CONTROLLER_BUTTON_DPAD_RIGHT: 1,
+                    pygame.CONTROLLER_BUTTON_DPAD_LEFT: 0,
+                    pygame.CONTROLLER_BUTTON_DPAD_DOWN: 0,
+                    pygame.CONTROLLER_BUTTON_DPAD_UP: 1,
+                }
+
+            def attached(self) -> bool:
+                return True
+
+            def get_axis(self, axis: int) -> int:
+                return self.axes.get(axis, 0)
+
+            def get_button(self, button: int) -> int:
+                return self.buttons.get(button, 0)
+
+            def quit(self) -> None:
+                return None
+
+        monkeypatch.setattr(pygame.event, "pump", lambda: None)
+        controller = XboxController(XboxConfig(backend="sdl"))
+        controller._connected = True
+        controller._sdl_controller = _FakeSDLController()
+
+        state = controller.read()
+
+        assert state.left_stick_x > 0.0
+        assert state.left_stick_y < 0.0
+        assert state.right_stick_x > 0.0
+        assert state.right_stick_y < 0.0
+        assert state.right_trigger == pytest.approx(0.5, abs=0.05)
+        assert state.left_bumper is True
+        assert state.a_button is True
+        assert state.a_button_pressed is True
+        assert state.y_button is False
+        assert state.dpad_x == 1.0
+        assert state.dpad_y == -1.0
 
 
 class TestEEDelta:

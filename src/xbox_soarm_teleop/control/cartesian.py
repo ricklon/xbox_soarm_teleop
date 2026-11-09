@@ -7,6 +7,7 @@ from typing import Callable
 
 import numpy as np
 
+from xbox_soarm_teleop.config.joints import JOINT_LIMITS_DEG
 from xbox_soarm_teleop.control.home import (
     array_reached,
     scalar_reached,
@@ -31,6 +32,7 @@ class CartesianControlState:
     last_target_pose: np.ndarray
     last_ee_pose: np.ndarray
     gripper_pos: float
+    orientation_active: bool = False
 
 
 def make_cartesian_state(
@@ -44,7 +46,7 @@ def make_cartesian_state(
 ) -> CartesianControlState:
     """Create cartesian control state from the current IK joint position."""
     joints = np.asarray(ik_joint_pos_deg, dtype=float).copy()
-    ee_pose = kinematics.forward_kinematics(joints)
+    ee_pose = kinematics.forward_kinematics(joints, wrist_roll_deg=wrist_roll_deg)
     return CartesianControlState(
         ik_joint_pos_deg=joints,
         wrist_roll_deg=float(wrist_roll_deg),
@@ -54,6 +56,7 @@ def make_cartesian_state(
         last_target_pose=ee_pose.copy(),
         last_ee_pose=ee_pose.copy(),
         gripper_pos=float(gripper_pos),
+        orientation_active=bool(target_pitch != 0 or target_yaw != 0),
     )
 
 
@@ -77,7 +80,9 @@ def sync_cartesian_state(
         state.target_yaw = float(target_yaw)
     if gripper_pos is not None:
         state.gripper_pos = float(gripper_pos)
-    state.ee_pose = kinematics.forward_kinematics(state.ik_joint_pos_deg)
+    state.ee_pose = kinematics.forward_kinematics(
+        state.ik_joint_pos_deg, wrist_roll_deg=state.wrist_roll_deg
+    )
     state.last_target_pose = state.ee_pose.copy()
     state.last_ee_pose = state.ee_pose.copy()
 
@@ -152,7 +157,14 @@ def advance_cartesian_target(
 
     target_pose = state.ee_pose.copy()
     target_pose[:3, 3] = target_pos
-    has_orientation_target = abs(state.target_pitch) > 0.01 or abs(state.target_yaw) > 0.01
+    if (
+        ee_delta.pitch_target is not None
+        or ee_delta.yaw_target is not None
+        or abs(ee_delta.dpitch) > 0.001
+        or abs(ee_delta.dyaw) > 0.001
+    ):
+        state.orientation_active = True
+    has_orientation_target = state.orientation_active
     orientation_weight = 0.0
     if has_orientation_target:
         target_pose[:3, :3] = euler_to_rotation_matrix(0.0, state.target_pitch, state.target_yaw)
@@ -178,7 +190,9 @@ def apply_ik_solution(
     state.ik_joint_pos_deg = np.asarray(ik_joint_pos_deg, dtype=float).copy()
     if wrist_roll_deg is not None:
         state.wrist_roll_deg = float(wrist_roll_deg)
-    state.ee_pose = kinematics.forward_kinematics(state.ik_joint_pos_deg)
+    state.ee_pose = kinematics.forward_kinematics(
+        state.ik_joint_pos_deg, wrist_roll_deg=state.wrist_roll_deg
+    )
     state.last_ee_pose = state.ee_pose.copy()
     state.last_target_pose = target_pose.copy() if target_pose is not None else state.ee_pose.copy()
 
@@ -220,7 +234,7 @@ def step_cartesian_home(
     state.target_pitch = step_scalar_toward(state.target_pitch, target_pitch, np.pi * dt)
     state.target_yaw = step_scalar_toward(state.target_yaw, target_yaw, np.pi * dt)
 
-    home_pose = kinematics.forward_kinematics(home_joints)
+    home_pose = kinematics.forward_kinematics(home_joints, wrist_roll_deg=home_wrist_roll_deg)
     apply_ik_solution(
         state,
         kinematics,
@@ -228,10 +242,71 @@ def step_cartesian_home(
         wrist_roll_deg=next_wrist_roll,
         target_pose=home_pose,
     )
-    return (
+    done = (
         array_reached(state.ik_joint_pos_deg, home_joints)
         and scalar_reached(state.wrist_roll_deg, home_wrist_roll_deg)
         and scalar_reached(state.gripper_pos, home_gripper_pos)
         and scalar_reached(state.target_pitch, target_pitch)
         and scalar_reached(state.target_yaw, target_yaw)
     )
+
+    if done:
+        state.orientation_active = False
+    return done
+
+
+def solve_cartesian_motion(
+    state: CartesianControlState,
+    kinematics,
+    target_pose: np.ndarray,
+    delta: EEDelta,
+    *,
+    dt: float,
+    orientation_weight: float,
+    position_weight: float = 1.0,
+    max_joint_step_deg: np.ndarray | None = None,
+) -> tuple[np.ndarray, float]:
+    """Plan selected joints and roll against one tool target without committing state.
+
+    Solve with roll fixed at its proposed value, so IK compensates its tool
+    offset. A rejected solve holds both the chain and roll. Optional joint step
+    limits scale the entire coupled step uniformly; intermediate poses along
+    that joint-space interpolation need not lie exactly on a Cartesian line.
+    The shared model is restored to the current state after planning.
+    """
+    limits = None
+    if max_joint_step_deg is not None:
+        limits = np.asarray(max_joint_step_deg, dtype=float)
+        if (
+            limits.shape != state.ik_joint_pos_deg.shape
+            or not np.all(np.isfinite(limits))
+            or np.any(limits < 0)
+        ):
+            raise ValueError("Joint step limits must be finite, nonnegative, and match the chain")
+    roll = step_wrist_roll(state.wrist_roll_deg, delta.droll, dt=dt, roll_target=delta.roll_target)
+    roll = float(np.clip(roll, *JOINT_LIMITS_DEG["wrist_roll"]))
+    try:
+        kinematics.forward_kinematics(state.ik_joint_pos_deg, wrist_roll_deg=roll)
+        joints = kinematics.inverse_kinematics(
+            state.ik_joint_pos_deg,
+            target_pose,
+            position_weight=position_weight,
+            orientation_weight=orientation_weight,
+        )
+        status = getattr(kinematics, "last_ik_result", None)
+        if status is not None and not status.accepted:
+            return state.ik_joint_pos_deg.copy(), state.wrist_roll_deg
+        joints = np.asarray(joints, dtype=float)[: len(state.ik_joint_pos_deg)]
+        change = joints - state.ik_joint_pos_deg
+        if limits is not None:
+            moving = np.abs(change) > 1e-12
+            scale = (
+                min(1.0, float(np.min(limits[moving] / np.abs(change[moving]))))
+                if np.any(moving)
+                else 1.0
+            )
+            joints = state.ik_joint_pos_deg + change * scale
+            roll = state.wrist_roll_deg + (roll - state.wrist_roll_deg) * scale
+        return joints, roll
+    finally:
+        kinematics.forward_kinematics(state.ik_joint_pos_deg, wrist_roll_deg=state.wrist_roll_deg)

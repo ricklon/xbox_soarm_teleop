@@ -8,6 +8,8 @@ class KeyboardConfig:
     """Configuration for keyboard teleoperator.
 
     Key names match evdev KEY_ constants (e.g. "KEY_W", "KEY_UP").
+    backend selects the live keyboard backend. "auto" currently resolves to
+    the existing Linux evdev path unless playback is active.
 
     Speed levels (1–5 keys):
         1 = 25%   2 = 50%   3 = 75% (default)   4 = 100%   5 = 150%
@@ -31,6 +33,7 @@ class KeyboardConfig:
     # Speed levels — fraction of full stick deflection
     speed_levels: tuple = field(default_factory=lambda: (0.25, 0.50, 0.75, 1.00, 1.50))
     default_speed_level: int = 2  # 0-indexed → level 3 = 0.75
+    backend: str = "auto"
 
     # Shift multiplier applied on top of current speed level
     shift_multiplier: float = 2.0

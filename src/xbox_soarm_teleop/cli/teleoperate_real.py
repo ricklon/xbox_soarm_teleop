@@ -45,9 +45,9 @@ from xbox_soarm_teleop.control.cartesian import (
     apply_ik_solution,
     full_joint_positions,
     make_cartesian_state,
+    solve_cartesian_motion,
     step_cartesian_home,
     step_gripper_toward,
-    step_wrist_roll,
     sync_cartesian_state,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
@@ -129,6 +129,7 @@ def run_teleoperation(
     deadzone: float = 0.15,
     linear_scale: float | None = None,
     controller_type: str = "xbox",
+    controller_backend: str = "auto",
     keyboard_grab: bool = False,
     keyboard_record: str | None = None,
     keyboard_playback: str | None = None,
@@ -238,6 +239,7 @@ def run_teleoperation(
 
     runtime = build_control_runtime(
         controller_type=controller_type,
+        controller_backend=controller_backend,
         mode=mode,
         deadzone=deadzone,
         linear_scale=linear_scale,
@@ -676,7 +678,9 @@ def run_teleoperation(
                     yaw_sat_count += 1
                 orientation_weight = float(target_flags["orientation_weight"])
 
-                if use_jacobian:
+                next_wrist_roll_deg = cartesian_state.wrist_roll_deg
+                if (use_jacobian and not cartesian_state.orientation_active
+                        and ee_delta.roll_target is None and abs(ee_delta.droll) <= 0.001):
                     # Jacobian-based control: EE velocity -> joint velocity -> integrate
                     # Use position + pitch mode (4 DOF) for optimal control with 4 joints
                     ee_vel = np.array([ee_delta.dx, ee_delta.dy, ee_delta.dz, ee_delta.dpitch])
@@ -707,11 +711,10 @@ def run_teleoperation(
                 else:
                     # IK-based control: solve IK for target pose
                     _t0 = time.perf_counter()
-                    new_joints = kinematics.inverse_kinematics(
-                        cartesian_state.ik_joint_pos_deg,
-                        target_pose,
-                        position_weight=1.0,
-                        orientation_weight=orientation_weight,
+                    new_joints, next_wrist_roll_deg = solve_cartesian_motion(
+                        cartesian_state, kinematics, target_pose, ee_delta,
+                        dt=LOOP_PERIOD, orientation_weight=orientation_weight,
+                        max_joint_step_deg=ik_joint_vel_limits * LOOP_PERIOD,
                     )
                     ik_ms = (time.perf_counter() - _t0) * 1000.0
                     ik_result = new_joints[:4]
@@ -749,12 +752,6 @@ def run_teleoperation(
                             clipped_this = True
                             candidate_joints = cartesian_state.ik_joint_pos_deg.copy()
 
-                next_wrist_roll_deg = step_wrist_roll(
-                    cartesian_state.wrist_roll_deg,
-                    ee_delta.droll,
-                    dt=LOOP_PERIOD,
-                    roll_target=ee_delta.roll_target,
-                )
                 apply_ik_solution(
                     cartesian_state,
                     kinematics,
@@ -985,6 +982,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["xbox", "joycon", "dual_joycon", "keyboard"],
         default="xbox",
         help="Controller type: xbox, joycon, dual_joycon, or keyboard. Default: xbox.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["auto", "inputs", "sdl", "evdev", "pynput", "mujoco"],
+        default="auto",
+        help="Input backend override. Default: auto.",
     )
     parser.add_argument(
         "--keyboard-grab",
@@ -1294,6 +1297,7 @@ def main() -> None:
         deadzone=args.deadzone,
         linear_scale=args.linear_scale,
         controller_type=args.controller,
+        controller_backend=args.backend,
         keyboard_grab=args.keyboard_grab,
         keyboard_record=args.record,
         keyboard_playback=args.playback,

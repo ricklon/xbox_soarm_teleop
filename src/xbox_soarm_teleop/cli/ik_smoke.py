@@ -45,7 +45,7 @@ def run_smoke_test(
         return 2
 
     try:
-        from lerobot.model.kinematics import RobotKinematics
+        from xbox_soarm_teleop.kinematics.constrained import RobotKinematics
     except Exception as exc:  # pragma: no cover - import error path
         print(f"ERROR: Failed to import RobotKinematics: {exc}")
         return 2

@@ -21,6 +21,7 @@ def test_controller_label_values():
 def test_build_control_runtime_joint_keyboard():
     runtime = build_control_runtime(
         controller_type="keyboard",
+        controller_backend="auto",
         mode="joint",
         deadzone=0.15,
         linear_scale=0.2,
@@ -40,12 +41,14 @@ def test_build_control_runtime_joint_keyboard():
     assert runtime.jacobian_controller is None
     assert runtime.processor_config.linear_scale == 0.2
     assert runtime.gripper_rate == 2.0
+    assert runtime.controller.config.backend == "auto"
 
 
 def test_build_control_runtime_cartesian_with_jacobian():
     urdf_path = Path(__file__).resolve().parents[1] / "assets" / "so101_abs.urdf"
     runtime = build_control_runtime(
         controller_type="xbox",
+        controller_backend="sdl",
         mode="cartesian",
         deadzone=0.15,
         linear_scale=None,
@@ -60,12 +63,14 @@ def test_build_control_runtime_cartesian_with_jacobian():
     assert runtime.control_mode is ControlMode.CARTESIAN
     assert runtime.kinematics is not None
     assert runtime.jacobian_controller is not None
+    assert runtime.controller.config.backend == "sdl"
 
 
 def test_build_control_runtime_dual_joycon_cartesian():
     urdf_path = Path(__file__).resolve().parents[1] / "assets" / "so101_abs.urdf"
     runtime = build_control_runtime(
         controller_type="dual_joycon",
+        controller_backend="auto",
         mode="cartesian",
         deadzone=0.15,
         linear_scale=0.2,

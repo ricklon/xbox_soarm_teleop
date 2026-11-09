@@ -21,7 +21,7 @@ from xbox_soarm_teleop.config.joints import (
 # Skip if placo not available
 placo = pytest.importorskip("placo")
 
-URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
+URDF_PATH = Path(__file__).parent.parent / "assets" / "so101.urdf"
 EE_FRAME = "gripper_frame_link"
 
 
@@ -31,7 +31,7 @@ def kinematics():
     if not URDF_PATH.exists():
         pytest.skip(f"URDF not found at {URDF_PATH}")
 
-    from lerobot.model.kinematics import RobotKinematics
+    from xbox_soarm_teleop.kinematics.constrained import RobotKinematics
 
     return RobotKinematics(
         urdf_path=str(URDF_PATH),
@@ -57,11 +57,11 @@ class TestWristFlexLimits:
         assert upper >= 70.0, f"wrist_flex upper limit {upper}° < 70° (should be ~72°)"
         print(f"✓ wrist_flex limit: [{lower:.1f}°, {upper:.1f}°]")
 
-    def test_wrist_flex_72_reachable(self, kinematics, home_joints):
-        """FK/IK roundtrip at wrist_flex = 72° should work."""
-        # Set wrist_flex to 72° (at hardware limit)
+    def test_wrist_flex_configured_upper_limit_reachable(self, kinematics, home_joints):
+        """Roundtrip at the exact configured upper limit (~72 degrees)."""
+        # Use the exact limit: 1.256 radians is slightly less than 72 degrees.
         test_joints = home_joints.copy()
-        test_joints[3] = 72.0  # wrist_flex is 4th IK joint
+        test_joints[3] = JOINT_LIMITS_DEG["wrist_flex"][1]
 
         # Forward kinematics
         ee_pose = kinematics.forward_kinematics(test_joints)

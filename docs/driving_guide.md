@@ -60,12 +60,17 @@ joint angles.  Instead you work in three intuitive quantities:
 - **Reach** — how far out is the load? (horizontal distance from base)
 - **Height** — how high is the load?
 
-Shoulder_lift and elbow_flex are solved automatically by a 2-DOF planar IK engine;
-you never touch them.  The wrist is controlled separately as a final orientation
-layer on top.
+Shoulder_lift and elbow_flex are solved automatically for the tool's horizontal
+radius and height. The solve includes the requested pan, wrist flex, and wrist
+roll, so changing the wrist does not silently change the assumed tool geometry.
+A rejected target holds all five arm joints. Velocity limits coordinate their
+movement; intermediate tool motion need not follow an exact straight line.
 
-This separation means you can position the end-effector without worrying about
-elbow collisions, and the arm naturally folds inward as you retract.
+Home radius and height are derived from the configured home shoulder/elbow,
+pan, and roll angles with Crane wrist flex at 13 degrees. Hold the deadman for
+home and gripper commands as well as other motion. Joint-limit and pose checks
+do not establish collision clearance; the resulting trajectories still need
+simulation and physical validation.
 
 ### Xbox controls
 
@@ -276,6 +281,10 @@ wrist the gripper follows.  The link is made via the Joy-Con's built-in IMU
 
 - **Tilt hand forward / backward** → wrist_flex (gripper tips down / up)
 - **Rotate hand left / right (like twisting a door handle)** → wrist_roll
+
+The current IMU sample is included in the reach/height solve before any wrist
+command is accepted. If that combined target cannot be solved, the five arm
+joints hold their prior targets. Hold the deadman for home and gripper commands.
 
 The IMU reports orientation *relative to a neutral pose* captured when you press
 the home button (or at startup).  Hold the Joy-Con in your natural resting

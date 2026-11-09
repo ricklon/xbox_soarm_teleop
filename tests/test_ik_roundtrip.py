@@ -10,8 +10,8 @@ from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES
 # Skip all tests in this module if placo not available
 placo = pytest.importorskip("placo")
 
-# Path to SO101 URDF (with absolute mesh paths)
-URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
+# Portable URDF resolves meshes relative to its own directory.
+URDF_PATH = Path(__file__).parent.parent / "assets" / "so101.urdf"
 
 # Joint names for SO101 (excluding wrist_roll and gripper for IK)
 JOINT_NAMES = IK_JOINT_NAMES
@@ -26,7 +26,7 @@ def kinematics():
     if not URDF_PATH.exists():
         pytest.skip(f"URDF not found at {URDF_PATH}")
 
-    from lerobot.model.kinematics import RobotKinematics
+    from xbox_soarm_teleop.kinematics.constrained import RobotKinematics
 
     return RobotKinematics(
         urdf_path=str(URDF_PATH),

@@ -17,8 +17,12 @@ from xbox_soarm_teleop.config.joints import (
     JOINT_NAMES_WITH_GRIPPER,
 )
 from xbox_soarm_teleop.config.workspace import load_workspace_limits
-from xbox_soarm_teleop.control.cartesian import make_cartesian_state, step_cartesian_home
-from xbox_soarm_teleop.control.pose import euler_to_rotation_matrix
+from xbox_soarm_teleop.control.cartesian import (
+    advance_cartesian_target,
+    make_cartesian_state,
+    solve_cartesian_motion,
+    step_cartesian_home,
+)
 from xbox_soarm_teleop.control.safety import apply_strict_safety, clip_workspace
 from xbox_soarm_teleop.control.units import deg_to_normalized, normalized_to_deg
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
@@ -51,6 +55,7 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
     _target_pitch: float = field(init=False, default=0.0, repr=False)
     _target_yaw: float = field(init=False, default=0.0, repr=False)
     _gripper_pos: float = field(init=False, default=0.0, repr=False)
+    _orientation_active: bool = field(init=False, default=False, repr=False)
     _homing_active: bool = field(init=False, default=False, repr=False)
 
     last_target_pose: np.ndarray | None = field(init=False, default=None)
@@ -59,7 +64,7 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
     last_flags: dict[str, int] = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
-        from lerobot.model.kinematics import RobotKinematics
+        from xbox_soarm_teleop.kinematics.constrained import RobotKinematics
 
         self._kinematics = RobotKinematics(
             urdf_path=self.urdf_path,
@@ -100,10 +105,7 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
 
     def _seed_from_observation(self, obs: dict[str, Any]) -> None:
         ik_joints = np.array(
-            [
-                normalized_to_deg(float(obs.get(f"{name}.pos", 0.0)), name)
-                for name in IK_JOINT_NAMES
-            ],
+            [normalized_to_deg(float(obs.get(f"{name}.pos", 0.0)), name) for name in IK_JOINT_NAMES],
             dtype=float,
         )
         self._ik_joint_pos_deg = ik_joints
@@ -127,7 +129,9 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
         self._ensure_state(obs)
 
         ik_joint_pos_deg = self._ik_joint_pos_deg.copy()
-        ee_pose = self._kinematics.forward_kinematics(ik_joint_pos_deg)
+        ee_pose = self._kinematics.forward_kinematics(
+            ik_joint_pos_deg, wrist_roll_deg=self._wrist_roll_deg
+        )
         self.last_obs_pose = ee_pose.copy()
 
         delta = EEDelta(
@@ -179,6 +183,8 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
             target_pose = home_state.last_target_pose.copy()
             delta = EEDelta(gripper=self._gripper_pos)
             self._homing_active = not done
+            if done:
+                self._orientation_active = False
         else:
             if self.strict_safety:
                 delta, safety_flags = apply_strict_safety(
@@ -200,41 +206,37 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
                 self._gripper_pos = gripper_target
 
         if not self._homing_active and not delta.is_zero_motion():
-            target_pos = ee_pose[:3, 3].copy()
-            target_pos[0] += delta.dx * self.dt
-            target_pos[1] += delta.dy * self.dt
-            target_pos[2] += delta.dz * self.dt
-
-            target_pos, ws_flags = clip_workspace(target_pos, self._workspace_limits)
-            flags.update(ws_flags)
-
-            pitch_limit = np.deg2rad(25.0 if self.strict_safety else 90.0)
-            yaw_limit = np.deg2rad(45.0 if self.strict_safety else 180.0)
-            if abs(delta.dpitch) > 0.001:
-                self._target_pitch = float(
-                    np.clip(self._target_pitch + delta.dpitch * self.dt, -pitch_limit, pitch_limit)
-                )
-            if abs(delta.dyaw) > 0.001:
-                self._target_yaw = float(
-                    np.clip(self._target_yaw + delta.dyaw * self.dt, -yaw_limit, yaw_limit)
-                )
-
-            target_pose = ee_pose.copy()
-            target_pose[:3, 3] = target_pos
-            has_orientation = abs(self._target_pitch) > 0.01 or abs(self._target_yaw) > 0.01
-            if has_orientation:
-                target_pose[:3, :3] = euler_to_rotation_matrix(
-                    0.0, self._target_pitch, self._target_yaw
-                )
-                orientation_weight = self.orientation_weight
-            else:
-                orientation_weight = 0.0
-
-            new_joints = self._kinematics.inverse_kinematics(
+            motion_state = make_cartesian_state(
+                self._kinematics,
                 ik_joint_pos_deg,
+                wrist_roll_deg=self._wrist_roll_deg,
+                target_pitch=self._target_pitch,
+                target_yaw=self._target_yaw,
+            )
+            motion_state.orientation_active = (
+                self._orientation_active or motion_state.orientation_active
+            )
+            target_pose, _, target_flags = advance_cartesian_target(
+                motion_state,
+                delta,
+                dt=self.dt,
+                clip_position=lambda pos: clip_workspace(pos, self._workspace_limits),
+                pitch_limit_rad=np.deg2rad(25.0 if self.strict_safety else 90.0),
+                yaw_limit_rad=np.deg2rad(45.0 if self.strict_safety else 180.0),
+            )
+            self._target_pitch = motion_state.target_pitch
+            self._target_yaw = motion_state.target_yaw
+            self._orientation_active = motion_state.orientation_active
+            flags.update({key: int(target_flags[key]) for key in flags if key in target_flags})
+            new_joints, self._wrist_roll_deg = solve_cartesian_motion(
+                motion_state,
+                self._kinematics,
                 target_pose,
+                delta,
+                dt=self.dt,
                 position_weight=self.position_weight,
-                orientation_weight=orientation_weight,
+                orientation_weight=self.orientation_weight if self._orientation_active else 0.0,
+                max_joint_step_deg=self._ik_joint_vel_limits * self.dt,
             )
             ik_result = new_joints[: len(IK_JOINT_NAMES)]
             max_delta = self._ik_joint_vel_limits * self.dt
@@ -248,12 +250,6 @@ class SoArmCartesianIKProcessor(RobotActionProcessorStep):
                 ik_joint_pos_deg[idx] = clipped
         elif not self._homing_active:
             target_pose = ee_pose.copy()
-
-        if not self._homing_active and abs(delta.droll) > 0.001:
-            roll_delta_deg = np.rad2deg(delta.droll * self.dt)
-            self._wrist_roll_deg += roll_delta_deg
-            wr_lo, wr_hi = JOINT_LIMITS_DEG["wrist_roll"]
-            self._wrist_roll_deg = float(np.clip(self._wrist_roll_deg, wr_lo, wr_hi))
 
         self._ik_joint_pos_deg = ik_joint_pos_deg
         self.last_target_pose = target_pose.copy()

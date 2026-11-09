@@ -6,6 +6,34 @@ See also:
 - [README](../README.md)
 - [Driving Guide](driving_guide.md)
 
+## Offline calibration audit
+
+Before changing calibration, inspect the existing file without connecting the arm:
+
+```bash
+uv run python -m xbox_soarm_teleop.cli.audit_calibration --input /path/to/calibration.json
+```
+
+This prints the format, a SHA-256 fingerprint, and per-joint encoder references.
+It supports modern per-motor LeRobot JSON and older array-based calibration files.
+It never rewrites calibration or connects to hardware. Extended ROM result JSON
+must be examined separately; it is not silently interpreted as motor calibration.
+
+A calibration range does **not** prove which encoder position equals zero in the
+URDF. For modern range normalization, normalized zero is the range midpoint.
+The old DEGREE format instead applies direction and a software homing offset.
+These formats cannot be migrated by merely renaming fields.
+
+`CalibratedJointMapping` provides an offline, explicitly referenced conversion
+for modern normalized arm values. It requires the encoder reading at model zero,
+the direction of increasing model angle, and encoder ticks per revolution. The
+reference and endpoints must use the same active homing-offset coordinates.
+Do not apply the hardware offset a second time. Gripper percentages are separate.
+
+The current live-control helpers still use their historical limit-based scaling;
+replacing them awaits verified references for this arm. See the
+[audit plan](audit_plan.md) for evidence and remaining validation gates.
+
 ## What Calibration Does
 
 Calibration maps the raw encoder values from each servo to a normalized position range. It records:
