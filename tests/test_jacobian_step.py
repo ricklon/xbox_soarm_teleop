@@ -90,3 +90,58 @@ def test_simulate_mujoco_forwards_jacobian_flags(monkeypatch):
     assert result.value.code == 0
     assert calls[0]["use_jacobian"] is True
     assert calls[0]["jacobian_damping"] == pytest.approx(0.1)
+
+
+def _floor_clip(floor_z: float):
+    def clip(pos):
+        return np.array([np.clip(pos[0], 0.05, 0.5), pos[1], np.clip(pos[2], floor_z, 0.45)]), {}
+
+    return clip
+
+
+def _drive(model, ctrl, state, delta, steps, clip):
+    for _ in range(steps):
+        joints = jacobian_joint_step(
+            state, ctrl, delta, dt=DT, joint_vel_limits_deg=VEL_LIMITS, clip_position=clip
+        )
+        state.ik_joint_pos_deg = joints
+        state.ee_pose = model.forward_kinematics(joints, wrist_roll_deg=state.wrist_roll_deg)
+    return state
+
+
+def test_jacobian_step_stops_at_workspace_floor(model):
+    """Previously the arm drove ~26 mm through the floor in sim; it must stop there."""
+    ctrl = JacobianController(model, damping=0.05)
+    state = make_cartesian_state(model, np.array([0.0, 30.0, -45.0, 20.0]))
+    floor = float(state.ee_pose[2, 3]) - 0.02
+    _drive(model, ctrl, state, EEDelta(dz=-0.1), 150, _floor_clip(floor))
+    assert state.ee_pose[2, 3] >= floor - 1e-3
+
+
+def test_jacobian_step_slides_along_workspace_floor(model):
+    # A well-conditioned pose: near full reach the open-loop Jacobian step drifts
+    # down while moving forward, and the guard (correctly) holds it at the floor.
+    ctrl = JacobianController(model, damping=0.05)
+    state = make_cartesian_state(model, np.array([0.0, -20.0, 40.0, 20.0]))
+    floor = float(state.ee_pose[2, 3]) - 0.01
+    clip = _floor_clip(floor)
+    _drive(model, ctrl, state, EEDelta(dz=-0.1), 60, clip)
+    x0 = float(state.ee_pose[0, 3])
+    _drive(model, ctrl, state, EEDelta(dx=0.05, dz=-0.05), 40, clip)
+    assert state.ee_pose[0, 3] > x0 + 0.015  # still moves along the wall
+    assert state.ee_pose[2, 3] >= floor - 1e-3
+
+
+def test_jacobian_step_never_yanks_arm_already_outside_bounds(model):
+    """An arm already below the floor must not jump back up or sink further."""
+    ctrl = JacobianController(model, damping=0.05)
+    state = make_cartesian_state(model, np.array([0.0, 30.0, -45.0, 20.0]))
+    z0 = float(state.ee_pose[2, 3])
+    clip = _floor_clip(z0 + 0.03)  # current pose is 30 mm below the floor
+    _drive(model, ctrl, state, EEDelta(dx=0.05), 10, clip)
+    assert abs(state.ee_pose[2, 3] - z0) <= 2e-3
+    joints = jacobian_joint_step(
+        state, ctrl, EEDelta(dz=-0.1), dt=DT, joint_vel_limits_deg=VEL_LIMITS, clip_position=clip
+    )
+    pose = model.forward_kinematics(joints, wrist_roll_deg=state.wrist_roll_deg)
+    assert pose[2, 3] >= state.ee_pose[2, 3] - 1e-4
