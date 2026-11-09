@@ -71,6 +71,7 @@ from xbox_soarm_teleop.control.motion_feedback import (
 from xbox_soarm_teleop.control.routines import plane_offset
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
 from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
+from xbox_soarm_teleop.sim.world import DEFAULT_WORLD, WORLD_NAMES, apply_world
 
 # Project paths
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -297,15 +298,17 @@ def reset_active_scene(
 class MuJoCoSimulator:
     """MuJoCo-based SO-ARM101 simulator."""
 
-    def __init__(self, urdf_path: str, scene: str = "default"):
+    def __init__(self, urdf_path: str, scene: str = "default", world: str = DEFAULT_WORLD):
         """Initialize MuJoCo simulator.
 
         Args:
             urdf_path: Path to robot URDF file.
             scene: Scene variant to augment on top of the robot model.
+            world: Lighting/sky/floor preset (see ``xbox_soarm_teleop.sim.world``).
         """
         self.scene = scene
-        self.model = load_model_with_cameras(urdf_path, scene=scene)
+        self.world = world
+        self.model = load_model_with_cameras(urdf_path, scene=scene, world=world)
         self.data = mujoco.MjData(self.model)
         self.physics_scene_active = scene in {"stack", "pick_place_basic"}
 
@@ -528,8 +531,8 @@ class MuJoCoSimulator:
         self.set_pick_cube_pose(PICK_PLACE_CUBE_START.copy())
 
 
-def build_stack_scene_model(urdf_path: str) -> mujoco.MjModel:
-    """Compile a physical stack scene on top of the robot model."""
+def _robot_spec(urdf_path: str) -> mujoco.MjSpec:
+    """Load the robot URDF as an editable spec (meshes resolve from ``assets/``)."""
     base_model = mujoco.MjModel.from_xml_path(urdf_path)
     with tempfile.NamedTemporaryFile(
         suffix=".xml",
@@ -539,8 +542,14 @@ def build_stack_scene_model(urdf_path: str) -> mujoco.MjModel:
         tmp_path = tmp.name
     try:
         mujoco.mj_saveLastXML(tmp_path, base_model)
-        spec = mujoco.MjSpec.from_file(tmp_path)
+        return mujoco.MjSpec.from_file(tmp_path)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 
+
+def _add_stack_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
+    """Add the physical cube stack (and a grey ground plane if the world has none)."""
+    if add_floor:
         plane = spec.worldbody.add_geom()
         plane.name = "stack_ground"
         plane.type = mujoco.mjtGeom.mjGEOM_PLANE
@@ -548,37 +557,24 @@ def build_stack_scene_model(urdf_path: str) -> mujoco.MjModel:
         plane.pos = [0.2, 0.0, 0.0]
         plane.rgba = [0.45, 0.45, 0.45, 1.0]
 
-        for idx, offset in enumerate(STACK_LAYOUT_OFFSETS):
-            body = spec.worldbody.add_body()
-            body.name = f"stack_cube_{idx}"
-            body.pos = (STACK_BASE_CENTER + offset).tolist()
-            body.add_freejoint()
+    for idx, offset in enumerate(STACK_LAYOUT_OFFSETS):
+        body = spec.worldbody.add_body()
+        body.name = f"stack_cube_{idx}"
+        body.pos = (STACK_BASE_CENTER + offset).tolist()
+        body.add_freejoint()
 
-            geom = body.add_geom()
-            geom.name = f"stack_cube_{idx}_geom"
-            geom.type = mujoco.mjtGeom.mjGEOM_BOX
-            geom.size = [STACK_CUBE_HALF_EXTENT, STACK_CUBE_HALF_EXTENT, STACK_CUBE_HALF_EXTENT]
-            geom.mass = STACK_CUBE_MASS
-            geom.rgba = STACK_COLORS[idx % len(STACK_COLORS)]
-            geom.friction = [1.1, 0.02, 0.001]
-        return spec.compile()
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        geom = body.add_geom()
+        geom.name = f"stack_cube_{idx}_geom"
+        geom.type = mujoco.mjtGeom.mjGEOM_BOX
+        geom.size = [STACK_CUBE_HALF_EXTENT, STACK_CUBE_HALF_EXTENT, STACK_CUBE_HALF_EXTENT]
+        geom.mass = STACK_CUBE_MASS
+        geom.rgba = STACK_COLORS[idx % len(STACK_COLORS)]
+        geom.friction = [1.1, 0.02, 0.001]
 
 
-def build_pick_place_scene_model(urdf_path: str) -> mujoco.MjModel:
-    """Compile a simple physical pick-and-place scene on top of the robot model."""
-    base_model = mujoco.MjModel.from_xml_path(urdf_path)
-    with tempfile.NamedTemporaryFile(
-        suffix=".xml",
-        dir=str(PROJECT_ROOT / "assets"),
-        delete=False,
-    ) as tmp:
-        tmp_path = tmp.name
-    try:
-        mujoco.mj_saveLastXML(tmp_path, base_model)
-        spec = mujoco.MjSpec.from_file(tmp_path)
-
+def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
+    """Add table, cube and goal box (and a grey ground plane if the world has none)."""
+    if add_floor:
         floor = spec.worldbody.add_geom()
         floor.name = "pick_place_floor"
         floor.type = mujoco.mjtGeom.mjGEOM_PLANE
@@ -586,70 +582,89 @@ def build_pick_place_scene_model(urdf_path: str) -> mujoco.MjModel:
         floor.pos = [0.2, 0.0, 0.0]
         floor.rgba = [0.45, 0.45, 0.45, 1.0]
 
-        table = spec.worldbody.add_geom()
-        table.name = "pick_place_table"
-        table.type = mujoco.mjtGeom.mjGEOM_BOX
-        table.size = PICK_PLACE_TABLE_HALF_EXTENTS.tolist()
-        table.pos = PICK_PLACE_TABLE_CENTER.tolist()
-        table.rgba = [0.60, 0.60, 0.60, 1.0]
-        table.friction = [1.1, 0.02, 0.001]
+    table = spec.worldbody.add_geom()
+    table.name = "pick_place_table"
+    table.type = mujoco.mjtGeom.mjGEOM_BOX
+    table.size = PICK_PLACE_TABLE_HALF_EXTENTS.tolist()
+    table.pos = PICK_PLACE_TABLE_CENTER.tolist()
+    table.rgba = [0.60, 0.60, 0.60, 1.0]
+    table.friction = [1.1, 0.02, 0.001]
 
-        cube_body = spec.worldbody.add_body()
-        cube_body.name = "pick_cube"
-        cube_body.pos = PICK_PLACE_CUBE_START.tolist()
-        cube_body.add_freejoint()
-        cube_geom = cube_body.add_geom()
-        cube_geom.name = "pick_cube_geom"
-        cube_geom.type = mujoco.mjtGeom.mjGEOM_BOX
-        cube_geom.size = [PICK_PLACE_CUBE_HALF_EXTENT] * 3
-        cube_geom.mass = PICK_PLACE_CUBE_MASS
-        cube_geom.rgba = [0.85, 0.25, 0.20, 1.0]
-        cube_geom.friction = [1.1, 0.02, 0.001]
+    cube_body = spec.worldbody.add_body()
+    cube_body.name = "pick_cube"
+    cube_body.pos = PICK_PLACE_CUBE_START.tolist()
+    cube_body.add_freejoint()
+    cube_geom = cube_body.add_geom()
+    cube_geom.name = "pick_cube_geom"
+    cube_geom.type = mujoco.mjtGeom.mjGEOM_BOX
+    cube_geom.size = [PICK_PLACE_CUBE_HALF_EXTENT] * 3
+    cube_geom.mass = PICK_PLACE_CUBE_MASS
+    cube_geom.rgba = [0.85, 0.25, 0.20, 1.0]
+    cube_geom.friction = [1.1, 0.02, 0.001]
 
-        goal_parts = [
-            ("goal_base", [0.0, 0.0, 0.0], [*PICK_PLACE_GOAL_INNER_HALF_EXTENTS[:2], 0.004]),
-            (
-                "goal_wall_left",
-                [-(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS), 0.0, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-                [PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1], PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-            ),
-            (
-                "goal_wall_right",
-                [(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS), 0.0, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-                [PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1], PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-            ),
-            (
-                "goal_wall_back",
-                [0.0, -(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS), PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-                [PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-            ),
-            (
-                "goal_wall_front",
-                [0.0, (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS), PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-                [PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-            ),
-        ]
-        for name, offset, size in goal_parts:
-            geom = spec.worldbody.add_geom()
-            geom.name = name
-            geom.type = mujoco.mjtGeom.mjGEOM_BOX
-            geom.pos = (PICK_PLACE_GOAL_CENTER + np.array(offset, dtype=float)).tolist()
-            geom.size = size
-            geom.rgba = [0.10, 0.65, 0.35, 0.85]
-            geom.contype = 1
-            geom.conaffinity = 1
-        return spec.compile()
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+    goal_parts = [
+        ("goal_base", [0.0, 0.0, 0.0], [*PICK_PLACE_GOAL_INNER_HALF_EXTENTS[:2], 0.004]),
+        (
+            "goal_wall_left",
+            [-(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS), 0.0, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            [PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1], PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+        ),
+        (
+            "goal_wall_right",
+            [(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS), 0.0, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            [PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1], PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+        ),
+        (
+            "goal_wall_back",
+            [0.0, -(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS), PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            [PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+        ),
+        (
+            "goal_wall_front",
+            [0.0, (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS), PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            [PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+        ),
+    ]
+    for name, offset, size in goal_parts:
+        geom = spec.worldbody.add_geom()
+        geom.name = name
+        geom.type = mujoco.mjtGeom.mjGEOM_BOX
+        geom.pos = (PICK_PLACE_GOAL_CENTER + np.array(offset, dtype=float)).tolist()
+        geom.size = size
+        geom.rgba = [0.10, 0.65, 0.35, 0.85]
+        geom.contype = 1
+        geom.conaffinity = 1
 
 
-def load_model_with_cameras(urdf_path: str, scene: str = "default") -> mujoco.MjModel:
-    """Load the simulator model, optionally augmenting it with a physical scene."""
+def build_stack_scene_model(urdf_path: str, world: str = "plain") -> mujoco.MjModel:
+    """Compile a physical stack scene on top of the robot model."""
+    return load_model_with_cameras(urdf_path, scene="stack", world=world)
+
+
+def build_pick_place_scene_model(urdf_path: str, world: str = "plain") -> mujoco.MjModel:
+    """Compile a simple physical pick-and-place scene on top of the robot model."""
+    return load_model_with_cameras(urdf_path, scene="pick_place_basic", world=world)
+
+
+def load_model_with_cameras(
+    urdf_path: str, scene: str = "default", world: str = DEFAULT_WORLD
+) -> mujoco.MjModel:
+    """Load the simulator model with a world preset and optional physical scene.
+
+    Args:
+        urdf_path: Robot URDF.
+        scene: ``"default"``, ``"stack"`` or ``"pick_place_basic"``.
+        world: Lighting/sky/floor preset from ``xbox_soarm_teleop.sim.world``.
+    """
+    if world == "plain" and scene == "default":
+        return mujoco.MjModel.from_xml_path(urdf_path)
+    spec = _robot_spec(urdf_path)
+    world_has_floor = apply_world(spec, world)
     if scene == "stack":
-        return build_stack_scene_model(urdf_path)
-    if scene == "pick_place_basic":
-        return build_pick_place_scene_model(urdf_path)
-    return mujoco.MjModel.from_xml_path(urdf_path)
+        _add_stack_scene(spec, add_floor=not world_has_floor)
+    elif scene == "pick_place_basic":
+        _add_pick_place_scene(spec, add_floor=not world_has_floor)
+    return spec.compile()
 
 
 def available_camera_presets() -> list[str]:
@@ -2589,6 +2604,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initial viewer camera preset. Use [ and ] to cycle, ESC for free camera.",
     )
     parser.add_argument(
+        "--world",
+        choices=list(WORLD_NAMES),
+        default=DEFAULT_WORLD,
+        help="Lighting/floor preset: studio (checkered floor, shadows), bright (even, "
+        "no shadows), dark (single spot light), plain (bare model, old look). "
+        f"Default: {DEFAULT_WORLD}.",
+    )
+    parser.add_argument(
         "--scene",
         choices=["default", "pick_place_basic"],
         default="default",
@@ -2952,7 +2975,7 @@ def main() -> None:
 
     scene = "stack" if args.challenge and args.challenge_layout == "stack" else args.scene
     print("Loading MuJoCo model...", flush=True)
-    sim = MuJoCoSimulator(str(URDF_PATH), scene=scene)
+    sim = MuJoCoSimulator(str(URDF_PATH), scene=scene, world=args.world)
     print("Model loaded!", flush=True)
 
     if args.routine_square_period is not None:
