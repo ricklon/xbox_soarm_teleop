@@ -36,6 +36,7 @@ import signal
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import mujoco
@@ -54,11 +55,13 @@ from xbox_soarm_teleop.control.cartesian import (
     advance_cartesian_target,
     apply_ik_solution,
     full_joint_positions,
+    jacobian_joint_step,
     make_cartesian_state,
     solve_cartesian_motion,
     step_cartesian_home,
     step_gripper_toward,
     sync_cartesian_state,
+    use_jacobian_step,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
@@ -1324,6 +1327,8 @@ def run_with_controller(
     mode: str = "crane",
     controller_type: str = "xbox",
     controller_backend: str = "auto",
+    use_jacobian: bool = False,
+    jacobian_damping: float = 0.05,
     keyboard_grab: bool = False,
     keyboard_record: str | None = None,
     keyboard_playback: str | None = None,
@@ -1369,9 +1374,17 @@ def run_with_controller(
         loop_dt=LOOP_PERIOD,
         urdf_path=str(URDF_PATH),
         keyboard_focus_target="this window",
+        use_jacobian=use_jacobian,
+        jacobian_damping=jacobian_damping,
     )
     control_mode = runtime.control_mode
     print(f"Control mode: {control_mode.value.upper()}", flush=True)
+    jacobian_ctrl = runtime.jacobian_controller
+    if use_jacobian:
+        if control_mode == ControlMode.CARTESIAN:
+            print(f"Kinematics: JACOBIAN (damping={jacobian_damping})", flush=True)
+        else:
+            print("NOTE: --jacobian only applies to cartesian mode; ignoring.", flush=True)
     kinematics = runtime.kinematics
     controller = runtime.controller
     processor = runtime.processor
@@ -1753,6 +1766,9 @@ def run_with_controller(
 
             ee_delta = mapper(state)
             ee_delta = apply_axis_mapping(ee_delta, swap_xy=False)
+            if jacobian_ctrl is not None and abs(ee_delta.dyaw) > 1e-6:
+                # Jacobian mode is position + pitch only; drop yaw like the real-robot path.
+                ee_delta = replace(ee_delta, dyaw=0.0)
             assert cartesian_state is not None
             if homing_active:
                 homing_active = not step_cartesian_home(
@@ -1796,24 +1812,32 @@ def run_with_controller(
                 )
                 orientation_weight = float(target_flags["orientation_weight"])
 
-                # Solve IK for 4 joints
                 _t0 = time.perf_counter()
-                new_joints, next_wrist_roll_deg = solve_cartesian_motion(
-                    cartesian_state, kinematics, target_pose, ee_delta,
-                    dt=LOOP_PERIOD, orientation_weight=orientation_weight,
-                    max_joint_step_deg=ik_joint_vel_limits * LOOP_PERIOD,
-                )
+                if jacobian_ctrl is not None and use_jacobian_step(cartesian_state, ee_delta):
+                    # Jacobian: EE velocity -> joint velocity -> integrate (position + pitch)
+                    next_wrist_roll_deg = cartesian_state.wrist_roll_deg
+                    candidate_joints = jacobian_joint_step(
+                        cartesian_state, jacobian_ctrl, ee_delta,
+                        dt=LOOP_PERIOD, joint_vel_limits_deg=ik_joint_vel_limits,
+                    )
+                else:
+                    # IK for 4 joints (also handles roll and orientation in Jacobian mode)
+                    new_joints, next_wrist_roll_deg = solve_cartesian_motion(
+                        cartesian_state, kinematics, target_pose, ee_delta,
+                        dt=LOOP_PERIOD, orientation_weight=orientation_weight,
+                        max_joint_step_deg=ik_joint_vel_limits * LOOP_PERIOD,
+                    )
+                    # Apply joint velocity limiting to smooth IK output
+                    max_delta = ik_joint_vel_limits * LOOP_PERIOD
+                    joint_delta = new_joints[:4] - cartesian_state.ik_joint_pos_deg
+                    candidate_joints = cartesian_state.ik_joint_pos_deg + np.clip(
+                        joint_delta, -max_delta, max_delta
+                    )
                 ik_ms = (time.perf_counter() - _t0) * 1000.0
-                ik_result = new_joints[:4]
-
-                # Apply joint velocity limiting to smooth IK output
-                max_delta = ik_joint_vel_limits * LOOP_PERIOD
-                joint_delta = ik_result - cartesian_state.ik_joint_pos_deg
-                joint_delta = np.clip(joint_delta, -max_delta, max_delta)
                 apply_ik_solution(
                     cartesian_state,
                     kinematics,
-                    cartesian_state.ik_joint_pos_deg + joint_delta,
+                    candidate_joints,
                     wrist_roll_deg=next_wrist_roll_deg,
                     target_pose=target_pose,
                 )
@@ -2444,6 +2468,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Input backend override. Default: auto.",
     )
     parser.add_argument(
+        "--jacobian",
+        action="store_true",
+        help="Use Jacobian-based control instead of IK (cartesian mode only). "
+        "Roll and pitch/yaw orientation still go through IK.",
+    )
+    parser.add_argument(
+        "--jacobian-damping",
+        type=float,
+        default=0.05,
+        help="Damping factor for Jacobian pseudo-inverse. Default: 0.05.",
+    )
+    parser.add_argument(
         "--keyboard-grab",
         action="store_true",
         help="Grab keyboard device exclusively (keyboard mode only). "
@@ -2927,6 +2963,8 @@ def main() -> None:
             mode=args.mode,
             controller_type=args.controller,
             controller_backend=args.backend,
+            use_jacobian=args.jacobian,
+            jacobian_damping=args.jacobian_damping,
             keyboard_grab=args.keyboard_grab,
             keyboard_record=args.record,
             keyboard_playback=args.playback,

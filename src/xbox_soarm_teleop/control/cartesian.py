@@ -271,6 +271,49 @@ def clamp_to_ik_limits(ik_joint_pos_deg: np.ndarray) -> np.ndarray:
     return joints
 
 
+def use_jacobian_step(state: CartesianControlState, delta: EEDelta) -> bool:
+    """Return True when a Jacobian step can handle this delta.
+
+    The 4-DOF Jacobian step covers position and pitch only. Wrist roll and
+    active pitch/yaw orientation targets go through IK instead, which applies
+    roll before solving so the tool offset is compensated.
+    """
+    return (
+        not state.orientation_active
+        and delta.roll_target is None
+        and abs(delta.droll) <= 0.001
+    )
+
+
+def jacobian_joint_step(
+    state: CartesianControlState,
+    jacobian_ctrl,
+    delta: EEDelta,
+    *,
+    dt: float,
+    joint_vel_limits_deg: np.ndarray,
+) -> np.ndarray:
+    """Integrate one damped-least-squares Jacobian step for the IK chain.
+
+    Args:
+        state: Current cartesian state (not modified).
+        jacobian_ctrl: ``JacobianController`` for the IK chain.
+        delta: End-effector velocity command (m/s, rad/s).
+        dt: Loop period in seconds.
+        joint_vel_limits_deg: Per-joint velocity limits in deg/s.
+
+    Returns:
+        Candidate IK-chain angles in degrees, clamped to configured joint limits.
+    """
+    ee_vel = np.array([delta.dx, delta.dy, delta.dz, delta.dpitch])
+    joint_vel_deg = jacobian_ctrl.ee_vel_to_joint_vel(
+        ee_vel, state.ik_joint_pos_deg, mode="position_pitch"
+    )
+    limits = np.asarray(joint_vel_limits_deg, dtype=float)
+    joint_vel_deg = np.clip(joint_vel_deg, -limits, limits)
+    return clamp_to_ik_limits(state.ik_joint_pos_deg + joint_vel_deg * dt)
+
+
 def solve_cartesian_motion(
     state: CartesianControlState,
     kinematics,
