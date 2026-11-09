@@ -476,3 +476,60 @@ class TestPlayback:
         assert token in held or not ctrl._connected
         if ctrl._reader_thread:
             ctrl._reader_thread.join(timeout=2.0)
+
+
+# ── pynput connect / macOS trust check ───────────────────────────────────────
+
+
+def _fake_pynput(monkeypatch, *, trusted: bool):
+    """Install a fake pynput that mirrors macOS pynput's trust attribute.
+
+    Like the real darwin listener, the class attribute is always False and the
+    instance value is only set once the listener thread is ready (``wait()``).
+    """
+    import sys
+    from types import ModuleType
+
+    class FakeListener:
+        IS_TRUSTED = False
+        instances: list = []
+
+        def __init__(self, on_press=None, on_release=None):
+            self.started = self.stopped = False
+            FakeListener.instances.append(self)
+
+        def start(self):
+            self.started = True
+
+        def wait(self):
+            self.IS_TRUSTED = trusted
+
+        def stop(self):
+            self.stopped = True
+
+    keyboard_mod = ModuleType("pynput.keyboard")
+    keyboard_mod.Listener = FakeListener
+    pynput_mod = ModuleType("pynput")
+    pynput_mod.keyboard = keyboard_mod
+    monkeypatch.setitem(sys.modules, "pynput", pynput_mod)
+    monkeypatch.setitem(sys.modules, "pynput.keyboard", keyboard_mod)
+    return FakeListener
+
+
+class TestPynputConnect:
+    def test_trusted_listener_connects_despite_false_class_attribute(self, monkeypatch):
+        """Regression: macOS always failed because the class attribute was checked."""
+        listener_cls = _fake_pynput(monkeypatch, trusted=True)
+        ctrl = KeyboardController(KeyboardConfig(backend="pynput"))
+        assert ctrl.connect() is True
+        assert ctrl.is_connected
+        assert listener_cls.instances[-1].started
+        ctrl.disconnect()
+
+    def test_untrusted_listener_raises_and_stops(self, monkeypatch):
+        listener_cls = _fake_pynput(monkeypatch, trusted=False)
+        ctrl = KeyboardController(KeyboardConfig(backend="pynput"))
+        with pytest.raises(RuntimeError, match="not trusted"):
+            ctrl.connect()
+        assert listener_cls.instances[-1].stopped
+        assert not ctrl.is_connected
