@@ -1,6 +1,10 @@
 # Agent Control Interface and MCP Server — Design
 
-Status: **Draft** (2026-11-09) · Scope: **v1 = simulation, cartesian mode**
+Status: **Draft, partly implemented** (2026-11-09) · Scope: **v1 = simulation, cartesian mode**
+
+> **Implementation notes (workshop build).** `twin/service.py` implements §3–§9
+> with the amendments marked *Amended* below; `control/step.py` is the shared
+> step (D2). Workshop students use Apple Silicon Macs or Linux.
 Parent plan: [`audit_plan.md` → "MCP and simulation-first milestones"](audit_plan.md)
 
 ## 1. Goal
@@ -65,6 +69,21 @@ Decisions:
   event with a timeout; it never steps the simulation itself.
 - Headless by default. A viewer may be attached for humans, but the control
   thread must not depend on it (reuse `_HeadlessViewer`).
+- *Amended:* the control thread is the process's **main Python thread**, which
+  also syncs the viewer and owns offscreen rendering (camera requests are
+  queued like commands, at most one render per tick). Under `mjpython` on macOS
+  the viewer owns the **OS** main thread and Python runs on a secondary one, so
+  nothing in the twin process may call SDL/Cocoa event APIs: the Xbox pad is
+  read by a helper process (`teleoperators/xbox_helper.py`, the `subprocess`
+  backend), whose stale or missing reports release the deadman.
+- *Amended:* `stop()` sets a flag checked before the command queue is drained,
+  so a move queued just before a stop is rejected, not started. Commands
+  resolve `concurrent.futures.Future`s; shutdown fails pending ones and wakes
+  every waiter.
+- *Amended:* time is `frame × dt` (control time). Each tick runs
+  `dt / timestep` physics substeps with the kinematically posed arm
+  interpolated across them, so sim time equals control time and contacts see
+  small steps.
 
 ## 4. Actions
 
@@ -134,6 +153,9 @@ limits).
 - **`reset_stop()` must be deliberate**: it requires the current owner (§7) and
   an explicit confirmation argument; it never clears implicitly (no
   auto-reset on reconnect, new action, or timeout).
+- *Amended:* the Xbox **B** button latches the stop and **Start** releases it.
+  A stop latched on the controller can only be released on the controller;
+  agents get `not_owner` ("press Start"). Observations report `stop_latched_by`.
 - Read-only calls (`observe`, `status`, `get_log`) keep working while latched.
 - Hardware later adds an **independent physical stop**; the virtual stop is not
   a substitute (§11).
@@ -143,6 +165,18 @@ limits).
 - **D7. Single owner via lease.** Motion commands require holding the control
   lease (`acquire_control(client_id)` → `lease_id`, renewed by heartbeat or by
   any command). Observation needs no lease.
+- *Amended for LLM agents:* agents think for tens of seconds between calls, so
+  the lease is **60 s**, motion commands **acquire it automatically** when it
+  is free, and a different client may take over whenever the owner has no
+  running action (a restarted agent is not locked out). Expiry only frees
+  ownership; it does not cancel (actions have their own capped timeouts). The
+  MCP adapter keys clients by the `mcp-session-id` header.
+- *Amended (human override):* holding **LB**, or pressing **A** (home) / **Y**
+  (reset scene), cancels the agent's action (`preempted`, detail `human`) and
+  blocks agent motion (`not_owner`, detail `human`) until the controller has
+  been idle for 2 s. The trigger is absolute, so on takeover the gripper holds
+  until the trigger reaches it (no dropped cube); on handback the agent keeps
+  the human's gripper position.
 - Lease expiry (heartbeat missed for `lease_timeout`, default 2 s) or client
   disconnect **cancels the running action and holds** (does not latch stop, but
   does not resume anything either).

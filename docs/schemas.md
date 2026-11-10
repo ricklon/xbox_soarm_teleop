@@ -71,7 +71,8 @@ Produced by `Observation.to_dict()`:
 | `last_ik` | object \| null | `{accepted, reason, position_error_m}` |
 | `limit` | str | human-readable stop reason, e.g. `"at floor"` |
 | `workspace` | {x,y,z: [min,max]} | bounds actually enforced (from `workspace_limits.yaml`) |
-| `scene` | object | scene name and object positions |
+| `scene` | object | `{name, objects: {name: {xyz_m, attached}}}` |
+| `control` | object | `{stop_latched_by, human_in_control, controller_connected, events}` (added in v1; additive) |
 
 ## Agent action request — `soarm.action/v1`
 

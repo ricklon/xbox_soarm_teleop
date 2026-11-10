@@ -1,0 +1,542 @@
+"""The digital twin service: one owner of the simulator for humans and agents.
+
+``TwinService`` owns the MuJoCo simulator and the cartesian control state.
+Exactly one thread -- the loop that calls :meth:`TwinService.tick` -- steps
+physics or mutates state (design D3). Any other thread (the MCP server, tests)
+only:
+
+- enqueues commands, which run at the start of the next tick and resolve a
+  ``concurrent.futures.Future``;
+- reads :meth:`observe`, an immutable snapshot published after each tick;
+- calls :meth:`stop`, which takes effect before any queued command runs.
+
+Human and agent share one motion path (``control.step.cartesian_step``):
+
+- The human (Xbox) wins: holding LB, or pressing A (home) / Y (reset scene),
+  cancels the agent's action (``preempted``/``human``) and blocks agent motion
+  until the controller has been idle for ``HUMAN_IDLE_S``.
+- B latches the virtual stop; Start releases it. A stop latched on the
+  controller can only be released on the controller.
+- Agents take control automatically when it is free; a different client can
+  take over whenever the owner has no running action, or after the lease
+  (``LEASE_TIMEOUT_S``) lapses. Expiry only frees ownership; actions keep
+  their own timeouts.
+
+Time is ``frame * dt`` (simulated control time), so timeouts are deterministic
+in tests and do not fire early if the loop runs slow.
+"""
+
+from __future__ import annotations
+
+import math
+import queue
+import threading
+from collections import deque
+from concurrent.futures import Future
+from dataclasses import replace
+from typing import Any, Callable
+
+import mujoco
+import numpy as np
+
+from xbox_soarm_teleop.config.joints import IK_JOINT_VEL_LIMITS_ARRAY
+from xbox_soarm_teleop.control.cartesian import make_cartesian_state, sync_cartesian_state
+from xbox_soarm_teleop.control.pose import rotation_matrix_to_euler
+from xbox_soarm_teleop.control.step import CartesianStepConfig, CartesianStepResult, cartesian_step
+from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
+from xbox_soarm_teleop.schemas.agent import (
+    ActionRequest,
+    ActionState,
+    ActionStatus,
+    EEPose,
+    IKStatus,
+    Observation,
+    ReasonCode,
+)
+from xbox_soarm_teleop.teleoperators.xbox import XboxState
+from xbox_soarm_teleop.twin.actions import (
+    Action,
+    ActionRejected,
+    command_for,
+    start_action,
+    update_action,
+)
+from xbox_soarm_teleop.twin.grasp import AssistedGrasp
+
+ARM_JOINT_NAMES = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
+HUMAN_IDLE_S = 2.0
+LEASE_TIMEOUT_S = 60.0
+GRIPPER_PICKUP_TOLERANCE = 0.05
+RECENT_EVENTS = 8
+KEPT_ACTIONS = 200
+
+
+class TwinClosed(RuntimeError):
+    """The twin loop has shut down."""
+
+
+class TwinService:
+    """Owns the simulator; arbitrates human (Xbox) and agent control.
+
+    Args:
+        sim: ``MuJoCoSimulator`` (any scene).
+        kinematics: Constrained ``RobotKinematics`` for the IK chain.
+        mapper: Xbox state -> ``EEDelta`` mapper (``MapXboxToEEDelta``).
+        workspace_bounds: Bounds the control step enforces, ``{"x": (lo, hi), ...}``.
+        clip_position: The matching ``clip_position`` callback.
+        gripper_rate: Gripper change per second (0..1 range).
+        dt: Control period (s).
+        jacobian_ctrl: Optional Jacobian controller (otherwise IK).
+        substeps: Physics steps per tick; default keeps sim time = control time.
+        controller: Optional Xbox controller read each tick when ``tick`` is
+            not given a state explicitly.
+    """
+
+    def __init__(
+        self,
+        sim,
+        kinematics,
+        *,
+        mapper,
+        workspace_bounds: dict,
+        clip_position: Callable,
+        gripper_rate: float = 2.0,
+        dt: float = 0.02,
+        jacobian_ctrl=None,
+        substeps: int | None = None,
+        controller=None,
+    ) -> None:
+        self.sim = sim
+        self.kinematics = kinematics
+        self.mapper = mapper
+        self.controller = controller
+        self.jacobian_ctrl = jacobian_ctrl
+        self.dt = dt
+        self.workspace_bounds = workspace_bounds
+        self.step_config = CartesianStepConfig(
+            dt=dt,
+            joint_vel_limits_deg=IK_JOINT_VEL_LIMITS_ARRAY,
+            gripper_rate=gripper_rate,
+            clip_position=clip_position,
+            workspace_bounds=workspace_bounds,
+        )
+        if substeps is None:
+            substeps = max(1, round(dt / sim.model.opt.timestep)) if sim.physics_scene_active else 1
+        self.substeps = substeps
+        self.grasp = AssistedGrasp(sim.model, sim.data)
+        self.state = make_cartesian_state(kinematics, np.zeros(4))
+
+        self.frame = 0
+        self.homing = False
+        self.action: Action | None = None
+        self._actions: dict[str, Action] = {}
+        self.agent_gripper = 0.0
+        self.owner: str | None = None
+        self._owner_seen_s = -math.inf
+        self._human_active_s = -math.inf
+        self._gripper_following = False
+        self.stop_latched_by: str | None = None
+        self._stop_flag = threading.Event()
+        self._stop_by = "api"
+        self._commands: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
+        self._closed = False
+        self.controller_connected = False
+        self.events: deque[str] = deque(maxlen=RECENT_EVENTS)
+        self.last_step: CartesianStepResult | None = None
+        self._last_cmd = (np.zeros(5), 0.0)
+        self._apply_command(np.zeros(5), 0.0)
+        self._snapshot = self._build_observation()
+
+    # ------------------------------------------------------------------ time
+    @property
+    def now_s(self) -> float:
+        """Control time: ticks elapsed times the control period."""
+        return self.frame * self.dt
+
+    # ------------------------------------------------- thread-safe client API
+    def call(self, fn: Callable[[], Any]) -> Future:
+        """Run ``fn`` on the loop thread at the next tick; return its Future."""
+        future: Future = Future()
+        if self._closed:
+            future.set_exception(TwinClosed("twin is not running"))
+            return future
+        self._commands.put((fn, future))
+        return future
+
+    def submit(
+        self, request: dict | ActionRequest, *, client_id: str = "agent", preempt: bool = False
+    ) -> Future:
+        """Start an action. Resolves to its ``ActionStatus`` or raises ``ActionRejected``."""
+        return self.call(lambda: self._submit(request, client_id, preempt))
+
+    def cancel(self, *, client_id: str = "agent") -> Future:
+        """Cancel the running action, if the caller owns it."""
+        return self.call(lambda: self._cancel(client_id))
+
+    def stop(self, *, by: str = "agent") -> None:
+        """Latch the virtual stop. Takes effect before any queued command."""
+        self._stop_by = by
+        self._stop_flag.set()
+
+    def reset_stop(self, *, client_id: str = "agent", confirm: bool = False) -> Future:
+        """Release a stop latched by an agent (requires ``confirm=True``)."""
+        return self.call(lambda: self._reset_stop(client_id, confirm))
+
+    def acquire_control(self, *, client_id: str, force: bool = False) -> Future:
+        return self.call(lambda: self._acquire(client_id, force))
+
+    def release_control(self, *, client_id: str) -> Future:
+        return self.call(lambda: self._release(client_id))
+
+    def reset_scene(self, *, client_id: str = "agent") -> Future:
+        """Home the arm and restore the scene's objects."""
+        return self.call(lambda: self._reset_scene_cmd(client_id))
+
+    def observe(self) -> dict[str, Any]:
+        """Latest ``soarm.observation/v1`` snapshot (do not mutate)."""
+        return self._snapshot
+
+    def wait(self, action_id: str, timeout_s: float) -> ActionStatus:
+        """Block until an action ends or ``timeout_s`` elapses; return its status."""
+        action = self._actions.get(action_id)
+        if action is None:
+            raise KeyError(f"unknown action '{action_id}'")
+        action.done.wait(timeout_s)
+        return action.status()
+
+    def close(self) -> None:
+        """Shut down: fail pending commands and wake every waiter."""
+        self._closed = True
+        self._fail_pending()
+        for action in list(self._actions.values()):
+            action.finish(ActionState.CANCELLED, ReasonCode.CANCELLED, "shutdown")
+
+    # ------------------------------------------------------------- the loop
+    def tick(self, human: XboxState | None = None) -> None:
+        """Advance one control period. Call only from the loop thread.
+
+        Args:
+            human: Controller state this tick. If None and a controller was
+                given, it is read here; with neither, no human is present.
+        """
+        if self._closed:
+            return
+        if human is None and self.controller is not None:
+            human = self.controller.read()
+            self.controller_connected = bool(self.controller.is_connected)
+            if not self.controller_connected:
+                human = None
+        else:
+            self.controller_connected = human is not None
+        now = self.now_s
+        if self._stop_flag.is_set():
+            self._stop_flag.clear()
+            self._latch_stop(self._stop_by)
+        self._drain_commands()
+
+        delta = self._decide_command(human, now)
+        step = cartesian_step(
+            self.state,
+            self.kinematics,
+            delta,
+            self.step_config,
+            homing=self.homing,
+            jacobian_ctrl=self.jacobian_ctrl,
+        )
+        self.homing = step.homing
+        self.last_step = step
+        self._apply_command(step.joints_deg, step.gripper)
+
+        action = self.action
+        if action is not None and not action.state.terminal:
+            update_action(
+                action,
+                step,
+                now_s=now + self.dt,
+                tool_xyz=self.tool_xyz(),
+                wrist_roll_rad=math.radians(self.state.wrist_roll_deg),
+                gripper=self.state.gripper_pos,
+                gripper_target=self.agent_gripper,
+            )
+            if action.type == "home" and action.state.terminal:
+                self.homing = False
+            if action.state.terminal:
+                self.events.append(f"{action.id} {action.type}: {action.state.value}")
+        if (
+            self.owner is not None
+            and now - self._owner_seen_s > LEASE_TIMEOUT_S
+            and not self._owner_busy()
+        ):
+            self.owner = None
+        self.frame += 1
+        self._snapshot = self._build_observation()
+
+    # --------------------------------------------------------------- helpers
+    def tool_xyz(self) -> np.ndarray:
+        """Control tool point (m, base frame): what actions target."""
+        return self.state.ee_pose[:3, 3].copy()
+
+    def _drain_commands(self) -> None:
+        while True:
+            try:
+                fn, future = self._commands.get_nowait()
+            except queue.Empty:
+                return
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(fn())
+            except BaseException as exc:  # noqa: BLE001 - delivered to the caller
+                future.set_exception(exc)
+
+    def _fail_pending(self) -> None:
+        while True:
+            try:
+                _, future = self._commands.get_nowait()
+            except queue.Empty:
+                return
+            if future.set_running_or_notify_cancel():
+                future.set_exception(TwinClosed("twin stopped"))
+
+    def _human_in_control(self, now: float) -> bool:
+        return now - self._human_active_s < HUMAN_IDLE_S
+
+    def _owner_busy(self) -> bool:
+        action = self.action
+        return action is not None and not action.state.terminal and action.client_id == self.owner
+
+    def _ensure_owner(self, client_id: str) -> None:
+        now = self.now_s
+        if self._human_in_control(now):
+            raise ActionRejected(ReasonCode.NOT_OWNER, "human")
+        if self.owner is not None and self.owner != client_id:
+            if self._owner_busy() and now - self._owner_seen_s < LEASE_TIMEOUT_S:
+                raise ActionRejected(ReasonCode.NOT_OWNER, self.owner)
+        self.owner = client_id
+        self._owner_seen_s = now
+
+    def _end_action(self, state: ActionState, reason: ReasonCode, detail: str = "") -> None:
+        action = self.action
+        if action is None or action.state.terminal:
+            return
+        action.finish(state, reason, detail)
+        if action.type == "home":
+            self.homing = False
+        self.events.append(f"{action.id} {action.type}: {state.value} ({reason.value})")
+
+    def _latch_stop(self, by: str) -> None:
+        if self.stop_latched_by is None or by == "human":
+            self.stop_latched_by = by
+        self._end_action(ActionState.STOPPED, ReasonCode.STOPPED, by)
+        self.homing = False
+        self.events.append(f"stop latched by {by}")
+
+    def _release_stop(self, by: str) -> None:
+        self.stop_latched_by = None
+        self.events.append(f"stop released by {by}")
+
+    # ------------------------------------------------------ command bodies
+    def _submit(self, request: dict | ActionRequest, client_id: str, preempt: bool) -> ActionStatus:
+        if not isinstance(request, ActionRequest):
+            try:
+                request = ActionRequest.from_dict(request)
+            except ValueError as exc:
+                raise ActionRejected(ReasonCode.INVALID_REQUEST, str(exc)) from exc
+        if self.stop_latched_by is not None:
+            raise ActionRejected(ReasonCode.STOPPED, f"latched by {self.stop_latched_by}")
+        self._ensure_owner(client_id)
+        if self.action is not None and not self.action.state.terminal:
+            if not preempt:
+                raise ActionRejected(ReasonCode.BUSY, self.action.id)
+            self._end_action(ActionState.CANCELLED, ReasonCode.PREEMPTED, "agent")
+        action = start_action(
+            request,
+            client_id=client_id,
+            now_s=self.now_s,
+            tool_xyz=self.tool_xyz(),
+            wrist_roll_rad=math.radians(self.state.wrist_roll_deg),
+            workspace_bounds=self.workspace_bounds,
+        )
+        if request.type == "set_gripper":
+            self.agent_gripper = float(request.params["position"])
+        if request.type == "home":
+            self.homing = True
+        self.action = action
+        self._actions[action.id] = action
+        while len(self._actions) > KEPT_ACTIONS:
+            self._actions.pop(next(iter(self._actions)))
+        return action.status()
+
+    def _cancel(self, client_id: str) -> ActionStatus | None:
+        if self.action is None or self.action.state.terminal:
+            return self.action.status() if self.action else None
+        if self.action.client_id != client_id:
+            raise ActionRejected(ReasonCode.NOT_OWNER, self.action.client_id)
+        self._end_action(ActionState.CANCELLED, ReasonCode.CANCELLED)
+        return self.action.status()
+
+    def _reset_stop(self, client_id: str, confirm: bool) -> bool:
+        if self.stop_latched_by is None:
+            return False
+        if not confirm:
+            raise ActionRejected(ReasonCode.INVALID_REQUEST, "reset_stop requires confirm=true")
+        if self.stop_latched_by == "human":
+            raise ActionRejected(
+                ReasonCode.NOT_OWNER, "human (stop was latched on the controller; press Start)"
+            )
+        self._ensure_owner(client_id)
+        self._release_stop(client_id)
+        return True
+
+    def _acquire(self, client_id: str, force: bool) -> str:
+        if force and not self._human_in_control(self.now_s):
+            self.owner = None
+        self._ensure_owner(client_id)
+        return client_id
+
+    def _release(self, client_id: str) -> bool:
+        if self.owner != client_id:
+            return False
+        self.owner = None
+        return True
+
+    def _reset_scene_cmd(self, client_id: str) -> bool:
+        if self.stop_latched_by is not None:
+            raise ActionRejected(ReasonCode.STOPPED, f"latched by {self.stop_latched_by}")
+        self._ensure_owner(client_id)
+        self._reset_scene()
+        return True
+
+    def _reset_scene(self) -> None:
+        self._end_action(ActionState.CANCELLED, ReasonCode.CANCELLED, "scene reset")
+        self.grasp.reset()
+        self.homing = False
+        self.agent_gripper = 0.0
+        sim = self.sim
+        sim.go_home()
+        if sim.has_stack_scene():
+            sim.reset_stack_scene()
+        elif sim.has_pick_place_scene():
+            sim.reset_pick_place_scene()
+        sync_cartesian_state(
+            self.state,
+            self.kinematics,
+            np.zeros(4),
+            wrist_roll_deg=0.0,
+            target_pitch=0.0,
+            target_yaw=0.0,
+            gripper_pos=0.0,
+        )
+        self.state.orientation_active = False
+        self._last_cmd = (np.zeros(5), 0.0)
+        self._apply_command(np.zeros(5), 0.0)
+        self.events.append("scene reset")
+
+    # ---------------------------------------------------- per-tick decision
+    def _decide_command(self, human: XboxState | None, now: float) -> EEDelta:
+        hold = EEDelta(gripper=self.state.gripper_pos)
+        if human is not None:
+            if human.b_button_pressed:
+                self._latch_stop("human")
+            if human.start_button_pressed and self.stop_latched_by is not None:
+                self._release_stop("human")
+            engaged = human.left_bumper or human.a_button_pressed or human.y_button_pressed
+            if engaged and self.stop_latched_by is None:
+                self._human_active_s = now
+                if self.action is not None and not self.action.state.terminal:
+                    self._end_action(ActionState.CANCELLED, ReasonCode.PREEMPTED, "human")
+        if self.stop_latched_by is not None:
+            self.homing = False
+            return hold
+
+        if human is not None and self._human_in_control(now):
+            if human.y_button_pressed:
+                self._reset_scene()
+                return EEDelta(gripper=self.state.gripper_pos)
+            if human.a_button_pressed:
+                self.homing = True
+            delta = apply_axis_mapping(self.mapper(human), swap_xy=False)
+            # Soft takeover: the trigger is absolute, so only follow it once it
+            # reaches the current gripper position (no sudden drop of a cube).
+            if not self._gripper_following:
+                if abs(delta.gripper - self.state.gripper_pos) <= GRIPPER_PICKUP_TOLERANCE:
+                    self._gripper_following = True
+                else:
+                    delta = replace(delta, gripper=self.state.gripper_pos)
+            return delta
+
+        if self._gripper_following:
+            # Control passes back: the agent keeps whatever the human left.
+            self._gripper_following = False
+            self.agent_gripper = self.state.gripper_pos
+        action = self.action
+        if action is not None and not action.state.terminal:
+            return command_for(
+                action,
+                tool_xyz=self.tool_xyz(),
+                wrist_roll_rad=math.radians(self.state.wrist_roll_deg),
+                gripper=self.agent_gripper,
+            )
+        return EEDelta(gripper=self.agent_gripper)
+
+    # ------------------------------------------------------------ physics
+    def _apply_command(self, joints_deg: np.ndarray, gripper: float) -> None:
+        """Send the arm command, interpolated across physics substeps."""
+        sim = self.sim
+        prev_joints, prev_gripper = self._last_cmd
+        joints_deg = np.asarray(joints_deg, dtype=float)
+        for k in range(1, self.substeps + 1):
+            alpha = k / self.substeps
+            sim.set_joint_targets(prev_joints + (joints_deg - prev_joints) * alpha)
+            sim.set_gripper(prev_gripper + (gripper - prev_gripper) * alpha)
+            mujoco.mj_kinematics(sim.model, sim.data)
+            self.grasp.carry(sim.get_ee_position())
+            sim.step()
+        self._last_cmd = (joints_deg.copy(), float(gripper))
+        for event in self.grasp.update(sim.get_ee_position(), gripper):
+            self.events.append(event)
+
+    # -------------------------------------------------------- observation
+    def _build_observation(self) -> dict[str, Any]:
+        pose = self.state.ee_pose
+        joints = self.sim.get_joint_positions_deg()
+        ik = getattr(self.kinematics, "last_ik_result", None)
+        step = self.last_step
+        observation = Observation(
+            frame=self.frame,
+            sim_time_s=round(self.now_s, 6),
+            mode="cartesian",
+            ee=EEPose(
+                xyz_m=tuple(round(float(v), 5) for v in pose[:3, 3]),
+                rpy_rad=tuple(round(v, 4) for v in rotation_matrix_to_euler(pose[:3, :3])),
+            ),
+            joints_deg={n: round(float(v), 3) for n, v in zip(ARM_JOINT_NAMES, joints)},
+            gripper=round(float(self.state.gripper_pos), 4),
+            stop_latched=self.stop_latched_by is not None,
+            owner=self.owner,
+            action=self.action.status() if self.action is not None else None,
+            last_ik=(
+                IKStatus(bool(ik.accepted), str(ik.reason), float(ik.position_error_m))
+                if ik is not None
+                else None
+            ),
+            limit=step.limit if step is not None else "",
+            workspace=self.workspace_bounds,
+            scene={
+                "name": self.sim.scene,
+                "objects": {
+                    name: {
+                        "xyz_m": [round(float(v), 4) for v in xyz],
+                        "attached": name == self.grasp.attached,
+                    }
+                    for name, xyz in self.grasp.positions().items()
+                },
+            },
+            control={
+                "stop_latched_by": self.stop_latched_by,
+                "human_in_control": self._human_in_control(self.now_s),
+                "controller_connected": self.controller_connected,
+                "events": list(self.events),
+            },
+        )
+        return observation.to_dict()

@@ -250,6 +250,8 @@ class Observation:
         limit: Human-readable stop reason (``describe_motion_limit``), or "".
         workspace: Enforced workspace bounds ``{"x"|"y"|"z": (min, max)}`` in m.
         scene: Scene name and object positions.
+        control: Arbitration state: ``stop_latched_by``, ``human_in_control``,
+            ``controller_connected`` and recent ``events``. Additive in v1.
     """
 
     frame: int
@@ -265,6 +267,7 @@ class Observation:
     limit: str
     workspace: dict[str, tuple[float, float]]
     scene: dict[str, Any]
+    control: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         valid_modes = {m.value for m in ControlMode}

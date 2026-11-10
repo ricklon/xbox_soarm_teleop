@@ -18,3 +18,12 @@ def euler_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarra
             [-sp, cp * sr, cp * cr],
         ]
     )
+
+
+def rotation_matrix_to_euler(rotation: np.ndarray) -> tuple[float, float, float]:
+    """Invert :func:`euler_to_rotation_matrix`: return (roll, pitch, yaw) in radians."""
+    r = np.asarray(rotation, dtype=float)
+    pitch = float(-np.arcsin(np.clip(r[2, 0], -1.0, 1.0)))
+    roll = float(np.arctan2(r[2, 1], r[2, 2]))
+    yaw = float(np.arctan2(r[1, 0], r[0, 0]))
+    return roll, pitch, yaw
