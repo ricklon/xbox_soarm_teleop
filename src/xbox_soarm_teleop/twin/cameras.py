@@ -38,15 +38,36 @@ FORMATS = {"jpeg": "JPEG", "png": "PNG"}
 
 
 class CameraRig:
-    """Renders named views of a model (create and use on the loop thread)."""
+    """Renders named views of a model (create and use on the loop thread).
 
-    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    Args:
+        model: The model to draw.
+        data: The state drawn when ``render`` is not given one.
+        reflections: Draw floor reflections. They are most of the cost of a
+            frame (about 12 ms against 4 ms without), so a rig that serves
+            many viewers turns them off.
+    """
+
+    def __init__(
+        self, model: mujoco.MjModel, data: mujoco.MjData | None = None, *, reflections: bool = True
+    ) -> None:
         self.model = model
         self.data = data
+        self.reflections = reflections
         self._renderers: dict[tuple[int, int], mujoco.Renderer] = {}
 
-    def render(self, view: str, width: int, height: int) -> np.ndarray:
-        """Return an RGB image (height x width x 3, uint8)."""
+    def render(
+        self, view: str, width: int, height: int, data: mujoco.MjData | None = None
+    ) -> np.ndarray:
+        """Return an RGB image (height x width x 3, uint8).
+
+        Args:
+            view: One of ``VIEWS``.
+            width: Image width in pixels.
+            height: Image height in pixels.
+            data: State to draw; any ``MjData`` of this rig's model, so one rig
+                can serve several simulators that share the model.
+        """
         if view not in VIEWS:
             raise ValueError(f"Unknown view '{view}'. Known: {', '.join(VIEWS)}")
         if not (16 <= width <= MAX_SIZE[0] and 16 <= height <= MAX_SIZE[1]):
@@ -54,10 +75,11 @@ class CameraRig:
         renderer = self._renderers.get((width, height))
         if renderer is None:
             renderer = mujoco.Renderer(self.model, height, width)
+            renderer.scene.flags[mujoco.mjtRndFlag.mjRND_REFLECTION] = int(self.reflections)
             self._renderers[(width, height)] = renderer
         camera = mujoco.MjvCamera()
         point_camera(camera, self.model, view)
-        renderer.update_scene(self.data, camera=camera)
+        renderer.update_scene(self.data if data is None else data, camera=camera)
         return renderer.render()
 
     def close(self) -> None:

@@ -98,6 +98,9 @@ class TwinService:
         log: Optional session log (design §10). Every request, response,
             status transition, stop, ownership change and a downsampled
             observation stream are written to it.
+        cameras: Optional camera rig shared with other twins of the same
+            model. The caller owns it: this service draws its own state with
+            it and never closes it. Created on first use when None.
     """
 
     def __init__(
@@ -115,8 +118,10 @@ class TwinService:
         controller=None,
         table_top_z: float | None = None,
         log: SessionLog | None = None,
+        cameras: CameraRig | None = None,
     ) -> None:
         self.log = log
+        self._shared_cameras = cameras is not None
         self._status_logged: tuple | None = None
         self._control_logged: tuple = (None, False)
         self._log_error_reported = False
@@ -156,7 +161,7 @@ class TwinService:
         self._stop_client: str | None = None
         self._commands: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
         self._renders: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
-        self._cameras: CameraRig | None = None
+        self._cameras: CameraRig | None = cameras
         self._loop_thread: int | None = None
         self._closed = False
         self.controller_connected = False
@@ -262,7 +267,7 @@ class TwinService:
         def draw() -> bytes:
             if self._cameras is None:
                 self._cameras = CameraRig(self.sim.model, self.sim.data)
-            return encode(self._cameras.render(view, width, height), fmt)
+            return encode(self._cameras.render(view, width, height, self.sim.data), fmt)
 
         self._log("request", client_id=client_id, type="camera", view=view, size=[width, height])
         self._renders.put((draw, future))
@@ -300,12 +305,27 @@ class TwinService:
             self.log.close()
 
     # ------------------------------------------------------------- the loop
-    def tick(self, human: XboxState | None = None) -> None:
+    @property
+    def render_waiting(self) -> bool:
+        """True when a camera image has been requested and not drawn yet."""
+        return not self._renders.empty()
+
+    def render_pending(self) -> bool:
+        """Draw one requested camera image now; False if none was waiting.
+
+        Call only from the loop thread. For loops that tick several twins and
+        ration rendering between them (``tick(render=False)``).
+        """
+        return self._run_one(self._renders)
+
+    def tick(self, human: XboxState | None = None, *, render: bool = True) -> None:
         """Advance one control period. Call only from the loop thread.
 
         Args:
             human: Controller state this tick. If None and a controller was
                 given, it is read here; with neither, no human is present.
+            render: Draw at most one requested camera image after the step.
+                Pass False to draw later with :meth:`render_pending`.
         """
         self._loop_thread = threading.get_ident()
         if self._closed:
@@ -369,7 +389,8 @@ class TwinService:
             if self.log.error is not None and not self._log_error_reported:
                 self._log_error_reported = True
                 self.events.append(f"session log stopped: {self.log.error}")
-        self._run_one(self._renders)
+        if render:
+            self._run_one(self._renders)
 
     # --------------------------------------------------------------- helpers
     def tool_xyz(self) -> np.ndarray:
@@ -465,7 +486,7 @@ class TwinService:
             pass
 
     def _close_cameras(self) -> None:
-        if self._cameras is not None:
+        if self._cameras is not None and not self._shared_cameras:
             self._cameras.close()
             self._cameras = None
 
