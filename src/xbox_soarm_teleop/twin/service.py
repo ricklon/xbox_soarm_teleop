@@ -61,6 +61,7 @@ from xbox_soarm_teleop.twin.actions import (
     start_action,
     update_action,
 )
+from xbox_soarm_teleop.twin.cameras import DEFAULT_SIZE, VIEWS, CameraRig, encode
 from xbox_soarm_teleop.twin.grasp import AssistedGrasp
 
 ARM_JOINT_NAMES = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
@@ -139,6 +140,8 @@ class TwinService:
         self._stop_flag = threading.Event()
         self._stop_by = "api"
         self._commands: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
+        self._renders: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
+        self._cameras: CameraRig | None = None
         self._closed = False
         self.controller_connected = False
         self.events: deque[str] = deque(maxlen=RECENT_EVENTS)
@@ -192,6 +195,34 @@ class TwinService:
         """Home the arm and restore the scene's objects."""
         return self.call(lambda: self._reset_scene_cmd(client_id))
 
+    def render(
+        self,
+        view: str = "wrist",
+        *,
+        width: int = DEFAULT_SIZE[0],
+        height: int = DEFAULT_SIZE[1],
+        fmt: str = "jpeg",
+    ) -> Future:
+        """Render a camera view after the next tick; resolves to encoded bytes.
+
+        Views: ``wrist`` (on the gripper), ``overhead``, ``front``, ``side``.
+        At most one image is rendered per tick to protect the control rate.
+        """
+        if view not in VIEWS:
+            raise ValueError(f"Unknown view '{view}'. Known: {', '.join(VIEWS)}")
+        future: Future = Future()
+        if self._closed:
+            future.set_exception(TwinClosed("twin is not running"))
+            return future
+
+        def draw() -> bytes:
+            if self._cameras is None:
+                self._cameras = CameraRig(self.sim.model, self.sim.data)
+            return encode(self._cameras.render(view, width, height), fmt)
+
+        self._renders.put((draw, future))
+        return future
+
     def observe(self) -> dict[str, Any]:
         """Latest ``soarm.observation/v1`` snapshot (do not mutate)."""
         return self._snapshot
@@ -208,6 +239,9 @@ class TwinService:
         """Shut down: fail pending commands and wake every waiter."""
         self._closed = True
         self._fail_pending()
+        if self._cameras is not None:
+            self._cameras.close()
+            self._cameras = None
         for action in list(self._actions.values()):
             action.finish(ActionState.CANCELLED, ReasonCode.CANCELLED, "shutdown")
 
@@ -270,6 +304,7 @@ class TwinService:
             self.owner = None
         self.frame += 1
         self._snapshot = self._build_observation()
+        self._run_one(self._renders)
 
     # --------------------------------------------------------------- helpers
     def tool_xyz(self) -> np.ndarray:
@@ -277,26 +312,32 @@ class TwinService:
         return self.state.ee_pose[:3, 3].copy()
 
     def _drain_commands(self) -> None:
-        while True:
-            try:
-                fn, future = self._commands.get_nowait()
-            except queue.Empty:
-                return
-            if not future.set_running_or_notify_cancel():
-                continue
+        while self._run_one(self._commands):
+            pass
+
+    @staticmethod
+    def _run_one(pending: queue.SimpleQueue) -> bool:
+        """Run one queued callable into its Future; False if none was waiting."""
+        try:
+            fn, future = pending.get_nowait()
+        except queue.Empty:
+            return False
+        if future.set_running_or_notify_cancel():
             try:
                 future.set_result(fn())
             except BaseException as exc:  # noqa: BLE001 - delivered to the caller
                 future.set_exception(exc)
+        return True
 
     def _fail_pending(self) -> None:
-        while True:
-            try:
-                _, future = self._commands.get_nowait()
-            except queue.Empty:
-                return
-            if future.set_running_or_notify_cancel():
-                future.set_exception(TwinClosed("twin stopped"))
+        for pending in (self._commands, self._renders):
+            while True:
+                try:
+                    _, future = pending.get_nowait()
+                except queue.Empty:
+                    break
+                if future.set_running_or_notify_cancel():
+                    future.set_exception(TwinClosed("twin stopped"))
 
     def _human_in_control(self, now: float) -> bool:
         return now - self._human_active_s < HUMAN_IDLE_S

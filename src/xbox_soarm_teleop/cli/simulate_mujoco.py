@@ -550,7 +550,30 @@ def _robot_spec(urdf_path: str) -> mujoco.MjSpec:
     # filter world-vs-child contacts. The convex hulls of the base meshes
     # overlap the shoulder, which wedged the arm in physics scenes.
     spec.add_exclude(bodyname1="world", bodyname2="shoulder_link")
+    _add_wrist_camera(spec)
     return spec
+
+
+# Wrist camera on gripper_link (local frame: -z points along the gripper toward
+# the tool, +x is "up" when the gripper is level). Mounted beside and above the
+# fixed jaw and tilted down so the jaws, tool point and object are in view.
+WRIST_CAMERA_POS = (0.05, 0.035, -0.06)
+WRIST_CAMERA_TILT_DEG = 55.0
+WRIST_CAMERA_FOVY_DEG = 80.0
+
+
+def _add_wrist_camera(spec: mujoco.MjSpec) -> None:
+    """Add the ``wrist`` camera that moves with the gripper."""
+    tilt = np.deg2rad(WRIST_CAMERA_TILT_DEG)
+    forward = np.array([0.0, 0.0, -1.0])
+    up = np.array([1.0, 0.0, 0.0])
+    right = np.array([0.0, -1.0, 0.0])
+    camera = spec.body("gripper_link").add_camera()
+    camera.name = "wrist"
+    camera.pos = WRIST_CAMERA_POS
+    camera.alt.type = mujoco.mjtOrientation.mjORIENTATION_XYAXES
+    camera.alt.xyaxes = np.concatenate([right, up * np.cos(tilt) + forward * np.sin(tilt)])
+    camera.fovy = WRIST_CAMERA_FOVY_DEG
 
 
 def _add_stack_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
@@ -662,8 +685,6 @@ def load_model_with_cameras(
         scene: ``"default"``, ``"stack"`` or ``"pick_place_basic"``.
         world: Lighting/sky/floor preset from ``xbox_soarm_teleop.sim.world``.
     """
-    if world == "plain" and scene == "default":
-        return mujoco.MjModel.from_xml_path(urdf_path)
     spec = _robot_spec(urdf_path)
     world_has_floor = apply_world(spec, world)
     if scene == "stack":
