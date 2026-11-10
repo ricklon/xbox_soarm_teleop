@@ -2850,8 +2850,10 @@ def _mjpython_env(base_env: Mapping[str, str], native: Path) -> dict[str, str]:
     return env
 
 
-def _maybe_reexec_under_mjpython(args: argparse.Namespace) -> None:
-    """Relaunch under mjpython when macOS viewer support requires it."""
+def _maybe_reexec_under_mjpython(
+    args: argparse.Namespace, module: str = "xbox_soarm_teleop.cli.simulate_mujoco"
+) -> None:
+    """Relaunch ``module`` under mjpython when macOS viewer support requires it."""
     if sys.platform != "darwin" or args.headless or _running_under_mjpython():
         return
 
@@ -2880,7 +2882,7 @@ def _maybe_reexec_under_mjpython(args: argparse.Namespace) -> None:
         [
             venv_python,
             "-m",
-            "xbox_soarm_teleop.cli.simulate_mujoco",
+            module,
             *sys.argv[1:],
         ],
         env,

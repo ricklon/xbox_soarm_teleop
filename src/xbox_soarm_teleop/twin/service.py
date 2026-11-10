@@ -142,6 +142,7 @@ class TwinService:
         self._commands: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
         self._renders: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
         self._cameras: CameraRig | None = None
+        self._loop_thread: int | None = None
         self._closed = False
         self.controller_connected = False
         self.events: deque[str] = deque(maxlen=RECENT_EVENTS)
@@ -236,12 +237,15 @@ class TwinService:
         return action.status()
 
     def close(self) -> None:
-        """Shut down: fail pending commands and wake every waiter."""
+        """Shut down: fail pending commands and wake every waiter.
+
+        Safe from any thread. OpenGL resources belong to the loop thread, so
+        when called elsewhere they are released by the loop's next ``tick``.
+        """
         self._closed = True
         self._fail_pending()
-        if self._cameras is not None:
-            self._cameras.close()
-            self._cameras = None
+        if self._loop_thread in (None, threading.get_ident()):
+            self._close_cameras()
         for action in list(self._actions.values()):
             action.finish(ActionState.CANCELLED, ReasonCode.CANCELLED, "shutdown")
 
@@ -253,7 +257,9 @@ class TwinService:
             human: Controller state this tick. If None and a controller was
                 given, it is read here; with neither, no human is present.
         """
+        self._loop_thread = threading.get_ident()
         if self._closed:
+            self._close_cameras()
             return
         if human is None and self.controller is not None:
             human = self.controller.read()
@@ -314,6 +320,11 @@ class TwinService:
     def _drain_commands(self) -> None:
         while self._run_one(self._commands):
             pass
+
+    def _close_cameras(self) -> None:
+        if self._cameras is not None:
+            self._cameras.close()
+            self._cameras = None
 
     @staticmethod
     def _run_one(pending: queue.SimpleQueue) -> bool:
