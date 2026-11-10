@@ -30,6 +30,13 @@ def test_refuses_a_busy_port(capsys):
     assert "in use" in capsys.readouterr().out
 
 
+def test_tick_deadlines_stay_on_a_fixed_grid():
+    dt = 0.02
+    assert twin_cli._next_deadline(1.00, 1.005, dt) == 1.02  # on time: next grid point
+    assert twin_cli._next_deadline(1.00, 1.03, dt) == 1.02  # a little late: catch up
+    assert twin_cli._next_deadline(1.00, 1.50, dt) == 1.50  # stalled: restart, no burst
+
+
 def test_new_event_count():
     assert twin_cli._new_count([], ["a"]) == 1
     assert twin_cli._new_count(["a", "b"], ["a", "b", "c"]) == 1

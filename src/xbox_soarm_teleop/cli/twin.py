@@ -128,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
 
     shown_events: list[str] = []
     started = time.monotonic()
+    next_tick = started
     viewer_ctx = (
         _HeadlessViewer()
         if args.headless
@@ -145,7 +146,8 @@ def main(argv: list[str] | None = None) -> int:
                 shown_events = list(events)
                 if args.max_seconds is not None and tick_start - started >= args.max_seconds:
                     break
-                time.sleep(max(0.0, service.dt - (time.monotonic() - tick_start)))
+                next_tick = _next_deadline(next_tick, time.monotonic(), service.dt)
+                time.sleep(max(0.0, next_tick - time.monotonic()))
     finally:
         service.close()
         service.tick()  # release GL resources on this (the loop) thread
@@ -153,6 +155,18 @@ def main(argv: list[str] | None = None) -> int:
             controller.disconnect()
     print("Twin stopped.", flush=True)
     return 0
+
+
+def _next_deadline(deadline: float, now: float, dt: float) -> float:
+    """When the next tick is due, on a fixed grid so sleep overshoot cannot add up.
+
+    Sleeping ``dt - work`` every tick runs slow by however much each sleep
+    overshoots (about 15% at 50 Hz on macOS). A tick that is less than one
+    period late is caught up; a longer stall restarts the grid instead of
+    bursting.
+    """
+    deadline += dt
+    return deadline if deadline > now - dt else now
 
 
 def _new_count(previous: list[str], current: list[str]) -> int:
