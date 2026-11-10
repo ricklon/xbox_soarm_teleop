@@ -65,6 +65,7 @@ class WebController:
         self._presses: list[str] = []
         self._updated_at = -float("inf")
         self._was_engaged = False
+        self._pressed_at = -float("inf")
         self._trigger = 0.0
         self.gripper_feedback: Callable[[], float] = lambda: 0.0
         """Where the gripper is now; set by the hub once the twin exists."""
@@ -78,10 +79,22 @@ class WebController:
             if isinstance(presses, list):
                 self._presses.extend(p for p in presses if isinstance(p, str) and p in PRESSES)
 
+    def press(self, button: str) -> None:
+        """Press a one-shot button from the server side (the instructor's stop).
+
+        Delivered on the next tick even when no page is open.
+        """
+        if button not in PRESSES:
+            raise ValueError(f"Unknown button '{button}'. Known: {', '.join(PRESSES)}")
+        with self._lock:
+            self._presses.append(button)
+            self._pressed_at = self._clock()
+
     @property
     def is_connected(self) -> bool:
-        """A page has posted recently."""
-        return self._clock() - self._updated_at <= self.GONE_S
+        """A page has posted recently (or a server-side press is being delivered)."""
+        now = self._clock()
+        return now - self._updated_at <= self.GONE_S or now - self._pressed_at <= 0.2
 
     def read(self) -> XboxState:
         """The controller state for this tick."""
@@ -172,6 +185,8 @@ class Hub:
         self._closed = False
         self.ticks = 0
         self.late_ticks = 0
+        self.loop_hz = 0.0
+        """Measured loop rate, updated about once a second while running."""
 
     # ---------------------------------------------------------------- roster
     @staticmethod
@@ -228,9 +243,14 @@ class Hub:
         self._thread.start()
 
     def _run(self) -> None:
-        next_tick = time.monotonic()
+        next_tick = measured_from = time.monotonic()
+        measured_ticks = self.ticks
         while self._running.is_set():
             self.tick()
+            if next_tick - measured_from >= 1.0:
+                elapsed = time.monotonic() - measured_from
+                self.loop_hz = (self.ticks - measured_ticks) / elapsed
+                measured_from, measured_ticks = time.monotonic(), self.ticks
             next_tick += self.dt
             now = time.monotonic()
             if next_tick <= now - self.dt:  # stalled: restart the grid, no burst

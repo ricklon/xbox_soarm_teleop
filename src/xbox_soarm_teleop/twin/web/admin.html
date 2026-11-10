@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workshop arms</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --panel: #ffffff; --ink: #1d2126; --muted: #5d6670; --line: #d9d5cc;
+    --accent: #0b6e69; --stop: #c2271d; --warn: #9a5b00; --key: #ece8df;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181b; --panel: #1f2428; --ink: #e9e6df; --muted: #a0a8b0; --line: #343b42;
+      --accent: #3fb8b0; --stop: #ef5a4e; --warn: #e3a444; --key: #2a3036;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 14px; padding: 14px 20px; flex-wrap: wrap; }
+  header h1 { font-size: 20px; margin: 0; flex: 1; }
+  #load { color: var(--muted); font-variant-numeric: tabular-nums; }
+  button {
+    font: inherit; color: var(--ink); background: var(--key); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 12px; cursor: pointer;
+  }
+  button.stop { background: var(--stop); color: #fff; border-color: var(--stop); font-weight: 700; }
+  #rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; padding: 4px 20px 28px; }
+  .room { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+  .room img { width: 100%; aspect-ratio: 4 / 3; background: #0d0f11; border-radius: 6px; display: block; }
+  .room h2 { font-size: 15px; margin: 8px 0 2px; display: flex; justify-content: space-between; gap: 8px; }
+  .room .who { font-weight: 400; color: var(--muted); font-size: 13px; }
+  .room .state { font-weight: 600; }
+  .room .state.stopped { color: var(--stop); }
+  .room .state.agent { color: var(--warn); }
+  .room .last { color: var(--muted); font-size: 13px; min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .room .links { display: flex; gap: 10px; font-size: 13px; margin-top: 6px; }
+  a { color: var(--accent); }
+  .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Workshop arms</h1>
+  <span id="load"></span>
+  <button id="copyAll">Copy all student links</button>
+  <button id="releaseAll">Release all stops</button>
+  <button id="stopAll" class="stop">STOP ALL</button>
+</header>
+<div id="rooms"></div>
+<script>
+(() => {
+  const base = location.pathname.replace(/\/$/, "");
+  const cards = new Map();
+  let rooms = [];
+  const link = (r) => `${location.origin}/r/${r.token}`;
+
+  function card(r) {
+    const el = document.createElement("div");
+    el.className = "room";
+    el.innerHTML = `<img alt=""><h2><span class="name"></span><span class="who"></span></h2>
+      <div class="state"></div><div class="last"></div>
+      <div class="links"><a target="_blank" rel="noopener">Open</a>
+      <button class="linkbtn">Copy link</button></div>`;
+    el.querySelector("a").href = link(r);
+    el.querySelector("button").addEventListener("click", () => navigator.clipboard.writeText(link(r)));
+    document.getElementById("rooms").append(el);
+    return el;
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch(base + "/rooms", { cache: "no-store" });
+      const data = await res.json();
+      rooms = data.rooms;
+      document.getElementById("load").textContent =
+        `${rooms.length} arms, loop ${data.loop_hz.toFixed(0)} Hz`;
+      for (const r of rooms) {
+        if (!cards.has(r.token)) cards.set(r.token, card(r));
+        const el = cards.get(r.token);
+        el.querySelector(".name").textContent = r.name;
+        el.querySelector(".who").textContent =
+          [r.page_open ? "page open" : "", r.agent ? "agent connected" : ""].filter(Boolean).join(", ") || "nobody here";
+        const state = el.querySelector(".state");
+        state.textContent = r.status[0];
+        state.className = "state" + (r.stop ? " stopped" : r.status[0].startsWith("Agent") ? " agent" : "");
+        el.querySelector(".last").textContent = r.last_event || "";
+      }
+    } catch (err) { document.getElementById("load").textContent = "not connected"; }
+  }
+
+  // One thumbnail at a time, round the room, so watching costs the hub little.
+  let turn = 0;
+  async function thumb() {
+    if (rooms.length && !document.hidden) {
+      const r = rooms[turn++ % rooms.length];
+      try {
+        const res = await fetch(`/r/${r.token}/camera.jpg?view=overhead&w=240&h=180`, { cache: "no-store" });
+        if (res.ok) {
+          const img = cards.get(r.token).querySelector("img"), old = img.src;
+          img.src = URL.createObjectURL(await res.blob());
+          if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+        }
+      } catch (err) { /* shown by refresh */ }
+    }
+    setTimeout(thumb, 250);
+  }
+
+  const post = (path) => fetch(base + path, { method: "POST" }).then(refresh);
+  document.getElementById("stopAll").addEventListener("click", () => post("/stop_all"));
+  document.getElementById("releaseAll").addEventListener("click", () => post("/release_all"));
+  document.getElementById("copyAll").addEventListener("click", () =>
+    navigator.clipboard.writeText(rooms.map((r) => `${r.name}: ${link(r)}`).join("\n")));
+
+  setInterval(refresh, 1000);
+  refresh(); thumb();
+})();
+</script>
+</body>
+</html>

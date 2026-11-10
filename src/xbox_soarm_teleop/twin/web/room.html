@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your robot arm</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --panel: #ffffff; --ink: #1d2126; --muted: #5d6670; --line: #d9d5cc;
+    --accent: #0b6e69; --accent-ink: #ffffff; --stop: #c2271d; --warn: #9a5b00; --key: #ece8df;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181b; --panel: #1f2428; --ink: #e9e6df; --muted: #a0a8b0; --line: #343b42;
+      --accent: #3fb8b0; --accent-ink: #06201f; --stop: #ef5a4e; --warn: #e3a444; --key: #2a3036;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; padding: 14px 20px 6px; flex-wrap: wrap; }
+  header h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  header .scene { color: var(--muted); }
+  main {
+    display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr);
+    gap: 16px; padding: 10px 20px 28px; max-width: 1280px; margin: 0 auto;
+  }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 10px 12px 24px; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .panel h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+    margin: 0 0 10px; font-weight: 600;
+  }
+  .stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+  #status { border-left: 6px solid var(--accent); padding: 8px 14px; margin-bottom: 12px; }
+  #status .headline { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
+  #status .detail { color: var(--muted); min-height: 1.45em; }
+  #status.stopped { border-color: var(--stop); }
+  #status.stopped .headline { color: var(--stop); }
+  #status.agent { border-color: var(--warn); }
+  #status.offline { border-color: var(--muted); }
+
+  .views { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+  .views button { flex: 1; min-width: 70px; }
+  #camera {
+    width: 100%; aspect-ratio: 4 / 3; background: #0d0f11; border-radius: 8px;
+    display: block; object-fit: contain;
+  }
+  .readout {
+    display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .readout b { color: var(--ink); font-weight: 600; }
+
+  button {
+    font: inherit; color: var(--ink); background: var(--key); border: 1px solid var(--line);
+    border-radius: 8px; padding: 9px 10px; cursor: pointer; touch-action: none; user-select: none;
+  }
+  button:hover { border-color: var(--accent); }
+  button.on, button[aria-pressed="true"] {
+    background: var(--accent); color: var(--accent-ink); border-color: var(--accent);
+  }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button kbd { opacity: 0.65; font: 12px ui-monospace, Menlo, monospace; margin-left: 4px; }
+  .jog { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .jog .gap { visibility: hidden; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .row > button { flex: 1; }
+  .cols { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
+  .sub { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+  label.speed { display: flex; align-items: center; gap: 10px; color: var(--muted); margin-top: 12px; }
+  label.speed input { flex: 1; accent-color: var(--accent); }
+  #stop {
+    background: var(--stop); color: #fff; border-color: var(--stop); font-weight: 700;
+    font-size: 17px; padding: 14px; letter-spacing: 0.04em;
+  }
+  code, .copy {
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--key);
+    border-radius: 6px;
+  }
+  .copy {
+    display: block; padding: 8px 10px; white-space: pre-wrap; word-break: break-all;
+    border: 1px solid var(--line); margin: 4px 0 10px; position: relative; cursor: copy;
+  }
+  .copy::after { content: "click to copy"; position: absolute; right: 8px; top: 6px; color: var(--muted); font-size: 11px; }
+  .copy.copied::after { content: "copied"; color: var(--accent); }
+  #events { list-style: none; margin: 0; padding: 0; color: var(--muted); max-height: 9.5em; overflow: auto; }
+  #events li { padding: 2px 0; border-bottom: 1px dashed var(--line); }
+  #events li:last-child { color: var(--ink); border-bottom: 0; }
+  a { color: var(--accent); }
+  p { margin: 0 0 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Your robot arm</h1>
+  <span class="scene" id="scene"></span>
+</header>
+<main>
+  <div class="stack">
+    <section class="panel">
+      <div id="status" class="offline" role="status" aria-live="polite">
+        <div class="headline">Connecting...</div>
+        <div class="detail"></div>
+      </div>
+      <div class="views" role="group" aria-label="Camera">
+        <button data-view="overhead" aria-pressed="true">Overhead</button>
+        <button data-view="front">Front</button>
+        <button data-view="side">Side</button>
+        <button data-view="wrist">Wrist</button>
+      </div>
+      <img id="camera" alt="Live view of the arm">
+      <div class="readout">
+        <span>Tool <b id="ee">-</b> m</span>
+        <span>Gripper <b id="grip">-</b></span>
+        <span>Cube <b id="cube">-</b></span>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>What happened</h2>
+      <ul id="events"><li>Nothing yet.</li></ul>
+    </section>
+  </div>
+
+  <div class="stack">
+    <section class="panel">
+      <h2>Drive</h2>
+      <div class="cols">
+        <div>
+          <p class="sub">Across the table</p>
+          <div class="jog">
+            <button class="gap" tabindex="-1" aria-hidden="true">.</button>
+            <button data-axis="fwd" data-dir="1">Forward<kbd>W</kbd></button>
+            <button class="gap" tabindex="-1" aria-hidden="true">.</button>
+            <button data-axis="left" data-dir="1">Left<kbd>A</kbd></button>
+            <button data-axis="fwd" data-dir="-1">Back<kbd>S</kbd></button>
+            <button data-axis="left" data-dir="-1">Right<kbd>D</kbd></button>
+          </div>
+        </div>
+        <div>
+          <p class="sub">Height and wrist</p>
+          <div class="jog" style="grid-template-columns: 1fr 1fr">
+            <button data-axis="up" data-dir="1">Up<kbd>R</kbd></button>
+            <button data-axis="roll" data-dir="-1">Roll<kbd>Q</kbd></button>
+            <button data-axis="up" data-dir="-1">Down<kbd>F</kbd></button>
+            <button data-axis="roll" data-dir="1">Roll<kbd>E</kbd></button>
+          </div>
+        </div>
+      </div>
+      <label class="speed">Speed
+        <input id="speed" type="range" min="0.2" max="1" step="0.1" value="0.6" aria-label="Speed">
+        <span id="speedText">6 cm/s</span>
+      </label>
+      <p class="sub" style="margin-top: 12px">The arm moves only while you hold a button or key.</p>
+      <div class="row" style="margin-top: 10px">
+        <button id="open">Open gripper<kbd>O</kbd></button>
+        <button id="close">Close gripper<kbd>C</kbd></button>
+      </div>
+      <div class="row" style="margin-top: 6px">
+        <button data-press="home">Home</button>
+        <button data-press="reset">Reset scene</button>
+      </div>
+      <div class="row" style="margin-top: 12px">
+        <button id="stop" data-press="stop">STOP<kbd>Space</kbd></button>
+      </div>
+      <div class="row" style="margin-top: 6px">
+        <button id="release" data-press="release">Release stop</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Connect an AI agent</h2>
+      <p>Your agent drives this same arm. You can take over or stop it at any time.</p>
+      <p class="sub">Address</p>
+      <code class="copy" id="mcpUrl"></code>
+      <p class="sub">Your key (keep it to yourself)</p>
+      <code class="copy" id="token"></code>
+      <p class="sub">Claude Code, in a terminal</p>
+      <code class="copy" id="claudeCmd"></code>
+      <p id="notebookLine" hidden>Or open the <a id="notebook" target="_blank" rel="noopener">workshop notebook</a>
+        and paste the address and key into its first cell.</p>
+    </section>
+  </div>
+</main>
+<script>
+(() => {
+  const base = location.pathname.replace(/\/$/, "");
+  const token = base.split("/").pop();
+  const $ = (id) => document.getElementById(id);
+  const axes = { fwd: 0, left: 0, up: 0, roll: 0 };
+  const held = new Map();          // source (key or button) -> [axis, dir]
+  let presses = [];
+  let grip = null;                 // {target, until}
+  let view = "overhead";
+  let reportedGrip = 0;
+
+  // --- what to tell the server -------------------------------------------
+  function wanted() {
+    for (const k in axes) axes[k] = 0;
+    for (const [axis, dir] of held.values()) axes[axis] = dir;
+    const speed = Number($("speed").value);
+    const body = {};
+    for (const k in axes) body[k] = axes[k] * speed;
+    if (grip) {
+      const done = Math.abs(reportedGrip - grip.target) < 0.03 || performance.now() > grip.until;
+      if (done) grip = null; else { body.hold = true; body.grip = grip.target; }
+    }
+    if (presses.length) { body.press = presses; presses = []; }
+    return body;
+  }
+
+  async function post() {
+    if (document.hidden) return;   // a hidden tab must not keep the arm moving
+    try {
+      const res = await fetch(base + "/pad", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(wanted()),
+      });
+      if (!res.ok) throw new Error(res.status);
+      show(await res.json());
+    } catch (err) {
+      setStatus("offline", "Not connected", "Trying again...");
+    }
+  }
+
+  // --- what the server says ----------------------------------------------
+  function setStatus(kind, headline, detail) {
+    const box = $("status");
+    box.className = kind;
+    box.querySelector(".headline").textContent = headline;
+    box.querySelector(".detail").textContent = detail;
+  }
+  const fmt = (v) => v.map((n) => n.toFixed(3)).join(", ");
+  let lastEvents = "";
+  function show(s) {
+    const kind = s.stop ? "stopped" : s.status[0].startsWith("Agent") ? "agent" : "";
+    setStatus(kind, s.status[0], s.status[1]);
+    $("title").textContent = s.name;
+    $("scene").textContent = s.scene;
+    $("ee").textContent = fmt(s.ee);
+    reportedGrip = s.gripper;
+    $("grip").textContent = s.gripper < 0.1 ? "open" : s.gripper > 0.9 ? "closed" : s.gripper.toFixed(2);
+    const cube = Object.entries(s.objects)[0];
+    $("cube").textContent = cube
+      ? (cube[1].attached ? "in the gripper" : cube[1].off_table ? "off the table" : fmt(cube[1].xyz_m))
+      : "-";
+    const joined = s.events.join("|");
+    if (joined !== lastEvents && s.events.length) {
+      lastEvents = joined;
+      $("events").replaceChildren(...s.events.map((e) => {
+        const li = document.createElement("li"); li.textContent = e; return li;
+      }));
+    }
+    if (s.notebook_url && $("notebookLine").hidden) {
+      $("notebook").href = s.notebook_url; $("notebookLine").hidden = false;
+    }
+  }
+
+  // --- camera ---------------------------------------------------------------
+  async function frame() {
+    if (!document.hidden) {
+      try {
+        const res = await fetch(`${base}/camera.jpg?view=${view}&w=480&h=360`, { cache: "no-store" });
+        if (res.ok) {
+          const url = URL.createObjectURL(await res.blob());
+          const img = $("camera"), old = img.src;
+          img.src = url;
+          if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+        }
+      } catch (err) { /* the status line already says we are offline */ }
+    }
+    setTimeout(frame, 130);
+  }
+  document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => {
+    view = b.dataset.view;
+    document.querySelectorAll("[data-view]").forEach((o) => o.setAttribute("aria-pressed", o === b));
+  }));
+
+  // --- hold-to-move buttons and keys ---------------------------------------
+  const release = (source, el) => { held.delete(source); if (el) el.classList.remove("on"); };
+  document.querySelectorAll("[data-axis]").forEach((b, i) => {
+    const source = "btn" + i;
+    b.addEventListener("pointerdown", (e) => {
+      b.setPointerCapture(e.pointerId);
+      held.set(source, [b.dataset.axis, Number(b.dataset.dir)]); b.classList.add("on");
+    });
+    for (const name of ["pointerup", "pointercancel", "lostpointercapture"])
+      b.addEventListener(name, () => release(source, b));
+  });
+  const keys = {
+    w: ["fwd", 1], s: ["fwd", -1], a: ["left", 1], d: ["left", -1],
+    r: ["up", 1], f: ["up", -1], q: ["roll", -1], e: ["roll", 1],
+  };
+  const buttonFor = (axis, dir) => document.querySelector(`[data-axis="${axis}"][data-dir="${dir}"]`);
+  addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === " ") { e.preventDefault(); if (!e.repeat) presses.push("stop"); return; }
+    if (e.repeat) return;
+    if (k === "o") return setGrip(0);
+    if (k === "c") return setGrip(1);
+    if (keys[k]) { held.set("key" + k, keys[k]); buttonFor(...keys[k]).classList.add("on"); }
+  });
+  addEventListener("keyup", (e) => {
+    const k = e.key.toLowerCase();
+    if (keys[k]) release("key" + k, buttonFor(...keys[k]));
+  });
+  const letGo = () => { held.clear(); document.querySelectorAll(".on").forEach((b) => b.classList.remove("on")); };
+  addEventListener("blur", letGo);
+  document.addEventListener("visibilitychange", letGo);
+
+  function setGrip(target) { grip = { target, until: performance.now() + 2500 }; }
+  $("open").addEventListener("click", () => setGrip(0));
+  $("close").addEventListener("click", () => setGrip(1));
+  document.querySelectorAll("[data-press]").forEach((b) =>
+    b.addEventListener("click", () => presses.push(b.dataset.press)));
+  $("speed").addEventListener("input", () => {
+    $("speedText").textContent = Math.round($("speed").value * 10) + " cm/s";
+  });
+
+  // --- the agent card -------------------------------------------------------
+  const mcp = location.origin + "/mcp";
+  $("mcpUrl").textContent = mcp;
+  $("token").textContent = token;
+  $("claudeCmd").textContent =
+    `claude mcp add --transport http soarm-arm ${mcp} --header "Authorization: Bearer ${token}"`;
+  document.querySelectorAll(".copy").forEach((el) => el.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(el.textContent); } catch (err) { return; }
+    el.classList.add("copied"); setTimeout(() => el.classList.remove("copied"), 1500);
+  }));
+
+  setInterval(post, 100);
+  post(); frame();
+})();
+</script>
+</body>
+</html>
