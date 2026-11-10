@@ -114,3 +114,38 @@ Terminal: `SUCCEEDED`, `FAILED`, `CANCELLED`, `STOPPED`.
 
 `reason_from_feedback(limit, ik_result)` performs the mapping; a test fails if a
 new stop message is added without one.
+
+## Twin session log — `soarm.session_log/v1`
+
+`soarm-twin` writes one JSONL file per run to `twin_logs/` (`--log-dir`,
+`--no-log`). Code: `xbox_soarm_teleop.twin.session_log`; load a file with
+`read_session_log(path)`. Every line has the same keys:
+
+| Key | Meaning |
+|---|---|
+| `t` | Control time in seconds (`frame * dt`) |
+| `wall_s` | Wall-clock seconds since the log was opened |
+| `frame` | Control tick counter |
+| `kind` | See below |
+| `client_id` | Client concerned (MCP session id), or null |
+| `action_id` | Action concerned, or null |
+| `data` | Payload for the kind |
+
+| `kind` | When | `data` |
+|---|---|---|
+| `header` | First line | `schemas`, `started_utc`, `git` (`commit`, `dirty`), `backend`, `urdf`, `urdf_sha256`, `scene`, `world`, `limits`, `calibration` (null in simulation) |
+| `request` | A client asks for something | `type` (`submit`, `cancel`, `reset_stop`, `acquire_control`, `release_control`, `reset_scene`, `camera`) and its arguments; `submit` carries the `soarm.action/v1` request |
+| `response` | The request was answered | `type`, `ok`, then `result` or `reason` + `detail` |
+| `status` | An action changed state | `type`, `state`, `reason`, `detail`, `progress` |
+| `stop` | The virtual stop was latched | `by` (`human`, `agent`, `api`), `latched_by` |
+| `stop_reset` | The stop was released | `by` |
+| `ownership` | The owner or human override changed | `owner`, `previous_owner`, `human_in_control`, `cause` |
+| `event` | Scene reset, object attached/released | `text` |
+| `observation` | See below | `soarm.observation/v1` without `workspace` (it is in the header `limits`) |
+| `shutdown` | Last line of a clean exit | — |
+
+Observations are written at 10 Hz, at every tick for 0.5 s after any other
+line (plus the tick just before it), and at 1 Hz while nothing in the
+observation changes. `camera` requests have no `response` line (the image is
+not logged). If the file cannot be written the twin keeps running and reports
+`session log stopped` in the observation's events.

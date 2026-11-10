@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from xbox_soarm_teleop.twin.actions import ActionRejected
 from xbox_soarm_teleop.twin.service import TwinClosed, TwinService
 
@@ -41,11 +43,14 @@ def build_twin(
     controller_backend: str = "auto",
     deadzone: float = 0.15,
     with_controller: bool = True,
+    log_path: str | Path | None = None,
 ) -> TwinService:
     """Create a twin with the same kinematics, mapping and bounds as teleop.
 
     The controller (if any) is created but not connected; call
     ``service.controller.connect()`` from the loop's process.
+
+    With ``log_path`` the session is recorded as JSONL (``twin.session_log``).
     """
     from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
     from xbox_soarm_teleop.control.safety import make_workspace_clipper
@@ -66,6 +71,24 @@ def build_twin(
     kwargs = {"world": world} if world is not None else {}
     sim = sim_cli.MuJoCoSimulator(str(sim_cli.URDF_PATH), scene=scene, **kwargs)
     bounds = scene_workspace(scene)
+    log = None
+    if log_path is not None:
+        from xbox_soarm_teleop.twin import service as twin_service
+        from xbox_soarm_teleop.twin.session_log import SessionLog, session_header
+
+        header = session_header(
+            scene=scene,
+            world=sim.world,
+            urdf_path=sim_cli.URDF_PATH,
+            limits={
+                "workspace": bounds,
+                "dt_s": sim_cli.LOOP_PERIOD,
+                "gripper_rate_per_s": runtime.gripper_rate,
+                "lease_timeout_s": twin_service.LEASE_TIMEOUT_S,
+                "human_idle_s": twin_service.HUMAN_IDLE_S,
+            },
+        )
+        log = SessionLog(log_path, header, dt=sim_cli.LOOP_PERIOD)
     return TwinService(
         sim,
         runtime.kinematics,
@@ -76,4 +99,5 @@ def build_twin(
         gripper_rate=runtime.gripper_rate,
         dt=sim_cli.LOOP_PERIOD,
         controller=runtime.controller if with_controller else None,
+        log=log,
     )

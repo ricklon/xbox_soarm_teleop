@@ -93,3 +93,6 @@ MUJOCO_LOG.TXT
 ik_error*.csv
 joint_diag*.csv
 calibration/
+
+# soarm-twin session logs
+twin_logs/

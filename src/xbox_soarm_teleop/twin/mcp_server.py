@@ -179,10 +179,10 @@ def build_mcp_server(service: TwinService) -> MCPServer:
         return {"ok": True, "action": _status_dict(result) if result else None}
 
     @server.tool()
-    def stop() -> dict[str, Any]:
+    def stop(ctx: Context | None = None) -> dict[str, Any]:
         """Latch the virtual emergency stop: cancels motion and refuses new
         motion until reset_stop. Always allowed."""
-        service.stop(by="agent")
+        service.stop(by="agent", client_id=_client_id(ctx))
         return {"ok": True, "stop_latched": True}
 
     @server.tool()
@@ -205,13 +205,17 @@ def build_mcp_server(service: TwinService) -> MCPServer:
         return {"ok": True, "released": bool(result)} if ok else result
 
     @server.tool()
-    def camera(view: str = "wrist", width: int = 320, height: int = 240) -> Image | dict[str, Any]:
+    def camera(
+        view: str = "wrist", width: int = 320, height: int = 240, ctx: Context | None = None
+    ) -> Image | dict[str, Any]:
         """Look at the scene. Views: "wrist" (on the gripper, looking past the
         jaw), "overhead" (map view: robot base at the bottom, forward up, robot's
         left on the left), "front" (facing the robot, so its left is on your
         right), "side" (from the robot's left). Max 640x480."""
         try:
-            data = service.render(view, width=width, height=height).result(timeout=COMMAND_TIMEOUT_S)
+            data = service.render(view, width=width, height=height, client_id=_client_id(ctx)).result(
+                timeout=COMMAND_TIMEOUT_S
+            )
         except Exception as exc:  # noqa: BLE001 - reported to the agent
             return _rejection(exc)
         return Image(data=data, format="jpeg")

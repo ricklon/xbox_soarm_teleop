@@ -9,16 +9,21 @@ on localhost in a background thread.
     uv run soarm-twin --scene stack
     uv run soarm-twin --headless --no-controller   # agent only
 
+Each run is recorded to twin_logs/twin-*.jsonl (see docs/schemas.md); --no-log
+turns that off.
+
 Connect Claude Code:  claude mcp add --transport http soarm-twin http://127.0.0.1:8765/mcp
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import socket
 import sys
 import time
+from pathlib import Path
 
 SCENES = ("pick_place_basic", "stack", "default")
 
@@ -51,6 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deadzone", type=float, default=0.15)
     parser.add_argument("--headless", action="store_true", help="No viewer window")
     parser.add_argument(
+        "--log-dir", default="twin_logs", help="Directory for the session JSONL log (one per run)"
+    )
+    parser.add_argument("--no-log", action="store_true", help="Do not write a session log")
+    parser.add_argument(
         "--max-seconds", type=float, default=None, help="Exit after this long (automation)"
     )
     return parser
@@ -74,13 +83,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: port {args.port} is in use (another twin running?). Use --port.", flush=True)
         return 2
 
+    log_path = None
+    if not args.no_log:
+        log_path = Path(args.log_dir) / f"twin-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.jsonl"
     service = build_twin(
+        log_path=log_path,
         scene=args.scene,
         world=args.world,
         controller_backend=args.controller_backend,
         deadzone=args.deadzone,
         with_controller=not args.no_controller,
     )
+    if service.log is not None:
+        print(f"Session log: {service.log.path}", flush=True)
     controller = service.controller
     if controller is not None:
         controller.connect()

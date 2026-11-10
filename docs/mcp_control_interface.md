@@ -233,6 +233,9 @@ should be defined together with the per-mode action/observation schemas in
 - Each line has `t`, `frame`, `kind`, `client_id`, `action_id`, payload. The
   file header records schema versions, git commit, URDF hash, world/scene,
   limits in force, and calibration identity (from `audit_calibration`).
+- **Implemented** in `twin/session_log.py` as `soarm.session_log/v1`; the
+  line format is specified in `docs/schemas.md`. `soarm-twin` writes
+  `twin_logs/twin-<date>-<time>-<pid>.jsonl` unless `--no-log` is given.
 - This log is the milestone evidence and the basis for later sim-vs-hardware
   comparison (audit plan gate 5).
 

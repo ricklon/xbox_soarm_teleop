@@ -63,6 +63,7 @@ from xbox_soarm_teleop.twin.actions import (
 )
 from xbox_soarm_teleop.twin.cameras import DEFAULT_SIZE, VIEWS, CameraRig, encode
 from xbox_soarm_teleop.twin.grasp import AssistedGrasp
+from xbox_soarm_teleop.twin.session_log import SessionLog
 
 ARM_JOINT_NAMES = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 HUMAN_IDLE_S = 2.0
@@ -94,6 +95,9 @@ class TwinService:
             objects that fall below it are reported ``off_table``.
         controller: Optional Xbox controller read each tick when ``tick`` is
             not given a state explicitly.
+        log: Optional session log (design §10). Every request, response,
+            status transition, stop, ownership change and a downsampled
+            observation stream are written to it.
     """
 
     def __init__(
@@ -110,7 +114,12 @@ class TwinService:
         substeps: int | None = None,
         controller=None,
         table_top_z: float | None = None,
+        log: SessionLog | None = None,
     ) -> None:
+        self.log = log
+        self._status_logged: tuple | None = None
+        self._control_logged: tuple = (None, False)
+        self._log_error_reported = False
         self.sim = sim
         self.kinematics = kinematics
         self.mapper = mapper
@@ -144,6 +153,7 @@ class TwinService:
         self.stop_latched_by: str | None = None
         self._stop_flag = threading.Event()
         self._stop_by = "api"
+        self._stop_client: str | None = None
         self._commands: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
         self._renders: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
         self._cameras: CameraRig | None = None
@@ -155,6 +165,8 @@ class TwinService:
         self._last_cmd = (np.zeros(5), 0.0)
         self._apply_command(np.zeros(5), 0.0)
         self._snapshot = self._build_observation()
+        if log is not None:
+            log.observation(self._snapshot)
 
     # ------------------------------------------------------------------ time
     @property
@@ -176,30 +188,54 @@ class TwinService:
         self, request: dict | ActionRequest, *, client_id: str = "agent", preempt: bool = False
     ) -> Future:
         """Start an action. Resolves to its ``ActionStatus`` or raises ``ActionRejected``."""
-        return self.call(lambda: self._submit(request, client_id, preempt))
+        payload = {
+            "request": request.to_dict() if isinstance(request, ActionRequest) else request,
+            "preempt": preempt,
+        }
+        return self.call(
+            self._logged(
+                "submit", client_id, payload, lambda: self._submit(request, client_id, preempt)
+            )
+        )
 
     def cancel(self, *, client_id: str = "agent") -> Future:
         """Cancel the running action, if the caller owns it."""
-        return self.call(lambda: self._cancel(client_id))
+        return self.call(self._logged("cancel", client_id, {}, lambda: self._cancel(client_id)))
 
-    def stop(self, *, by: str = "agent") -> None:
+    def stop(self, *, by: str = "agent", client_id: str | None = None) -> None:
         """Latch the virtual stop. Takes effect before any queued command."""
         self._stop_by = by
+        self._stop_client = client_id
         self._stop_flag.set()
 
     def reset_stop(self, *, client_id: str = "agent", confirm: bool = False) -> Future:
         """Release a stop latched by an agent (requires ``confirm=True``)."""
-        return self.call(lambda: self._reset_stop(client_id, confirm))
+        return self.call(
+            self._logged(
+                "reset_stop",
+                client_id,
+                {"confirm": confirm},
+                lambda: self._reset_stop(client_id, confirm),
+            )
+        )
 
     def acquire_control(self, *, client_id: str, force: bool = False) -> Future:
-        return self.call(lambda: self._acquire(client_id, force))
+        return self.call(
+            self._logged(
+                "acquire_control", client_id, {"force": force}, lambda: self._acquire(client_id, force)
+            )
+        )
 
     def release_control(self, *, client_id: str) -> Future:
-        return self.call(lambda: self._release(client_id))
+        return self.call(
+            self._logged("release_control", client_id, {}, lambda: self._release(client_id))
+        )
 
     def reset_scene(self, *, client_id: str = "agent") -> Future:
         """Home the arm and restore the scene's objects."""
-        return self.call(lambda: self._reset_scene_cmd(client_id))
+        return self.call(
+            self._logged("reset_scene", client_id, {}, lambda: self._reset_scene_cmd(client_id))
+        )
 
     def render(
         self,
@@ -208,6 +244,7 @@ class TwinService:
         width: int = DEFAULT_SIZE[0],
         height: int = DEFAULT_SIZE[1],
         fmt: str = "jpeg",
+        client_id: str | None = None,
     ) -> Future:
         """Render a camera view after the next tick; resolves to encoded bytes.
 
@@ -226,6 +263,7 @@ class TwinService:
                 self._cameras = CameraRig(self.sim.model, self.sim.data)
             return encode(self._cameras.render(view, width, height), fmt)
 
+        self._log("request", client_id=client_id, type="camera", view=view, size=[width, height])
         self._renders.put((draw, future))
         return future
 
@@ -247,12 +285,18 @@ class TwinService:
         Safe from any thread. OpenGL resources belong to the loop thread, so
         when called elsewhere they are released by the loop's next ``tick``.
         """
+        if self._closed:
+            return
         self._closed = True
         self._fail_pending()
         if self._loop_thread in (None, threading.get_ident()):
             self._close_cameras()
         for action in list(self._actions.values()):
             action.finish(ActionState.CANCELLED, ReasonCode.CANCELLED, "shutdown")
+        if self.log is not None:
+            self._log_status(self.action)
+            self._log("shutdown")
+            self.log.close()
 
     # ------------------------------------------------------------- the loop
     def tick(self, human: XboxState | None = None) -> None:
@@ -307,20 +351,112 @@ class TwinService:
                 self.homing = False
             if action.state.terminal:
                 self.events.append(f"{action.id} {action.type}: {action.state.value}")
+            self._log_status(action)
         if (
             self.owner is not None
             and now - self._owner_seen_s > LEASE_TIMEOUT_S
             and not self._owner_busy()
         ):
             self.owner = None
+            self._log_control("lease_expired")
+        self._log_control("human")
         self.frame += 1
         self._snapshot = self._build_observation()
+        if self.log is not None:
+            self.log.observation(self._snapshot)
+            if self.log.error is not None and not self._log_error_reported:
+                self._log_error_reported = True
+                self.events.append(f"session log stopped: {self.log.error}")
         self._run_one(self._renders)
 
     # --------------------------------------------------------------- helpers
     def tool_xyz(self) -> np.ndarray:
         """Control tool point (m, base frame): what actions target."""
         return self.state.ee_pose[:3, 3].copy()
+
+    def _log(
+        self, kind: str, *, client_id: str | None = None, action_id: str | None = None, **data: Any
+    ) -> None:
+        if self.log is not None:
+            self.log.event(
+                kind, t=self.now_s, frame=self.frame, client_id=client_id, action_id=action_id, **data
+            )
+
+    def _logged(
+        self, name: str, client_id: str, payload: dict[str, Any], fn: Callable[[], Any]
+    ) -> Callable[[], Any]:
+        """Wrap a command body so its request and response are logged."""
+        if self.log is None:
+            return fn
+
+        def run() -> Any:
+            self._log("request", client_id=client_id, type=name, **payload)
+            try:
+                result = fn()
+            except ActionRejected as exc:
+                self._log(
+                    "response",
+                    client_id=client_id,
+                    type=name,
+                    ok=False,
+                    reason=exc.reason.value,
+                    detail=exc.detail,
+                )
+                raise
+            finally:
+                self._log_control(name)
+            self._log(
+                "response",
+                client_id=client_id,
+                action_id=result.id if isinstance(result, ActionStatus) else None,
+                type=name,
+                ok=True,
+                result=result,
+            )
+            return result
+
+        return run
+
+    def _log_status(self, action: Action | None) -> None:
+        """Log an action's state if it changed since the last status line."""
+        if self.log is None or action is None:
+            return
+        status = action.status()
+        key = (status.id, status.state, status.reason)
+        if key == self._status_logged:
+            return
+        self._status_logged = key
+        self._log(
+            "status",
+            client_id=action.client_id,
+            action_id=status.id,
+            type=status.type,
+            state=status.state,
+            reason=status.reason,
+            detail=status.detail,
+            progress=round(status.progress, 4),
+        )
+
+    def _log_control(self, cause: str) -> None:
+        """Log who is in control (agent owner, human override) when it changes."""
+        if self.log is None:
+            return
+        current = (self.owner, self._human_in_control(self.now_s))
+        if current == self._control_logged:
+            return
+        previous, self._control_logged = self._control_logged, current
+        self._log(
+            "ownership",
+            client_id=self.owner,
+            owner=self.owner,
+            previous_owner=previous[0],
+            human_in_control=current[1],
+            cause=cause,
+        )
+
+    def _event(self, text: str) -> None:
+        self.events.append(text)
+        self._log("event", text=text)
 
     def _drain_commands(self) -> None:
         while self._run_one(self._commands):
@@ -380,6 +516,7 @@ class TwinService:
         if action.type == "home":
             self.homing = False
         self.events.append(f"{action.id} {action.type}: {state.value} ({reason.value})")
+        self._log_status(action)
 
     def _latch_stop(self, by: str) -> None:
         if self.stop_latched_by is None or by == "human":
@@ -387,10 +524,13 @@ class TwinService:
         self._end_action(ActionState.STOPPED, ReasonCode.STOPPED, by)
         self.homing = False
         self.events.append(f"stop latched by {by}")
+        client_id = None if by == "human" else self._stop_client
+        self._log("stop", client_id=client_id, by=by, latched_by=self.stop_latched_by)
 
     def _release_stop(self, by: str) -> None:
         self.stop_latched_by = None
         self.events.append(f"stop released by {by}")
+        self._log("stop_reset", client_id=None if by == "human" else by, by=by)
 
     # ------------------------------------------------------ command bodies
     def _submit(self, request: dict | ActionRequest, client_id: str, preempt: bool) -> ActionStatus:
@@ -420,6 +560,7 @@ class TwinService:
             self.homing = True
         self.action = action
         self._actions[action.id] = action
+        self._log_status(action)
         while len(self._actions) > KEPT_ACTIONS:
             self._actions.pop(next(iter(self._actions)))
         return action.status()
@@ -487,7 +628,7 @@ class TwinService:
         self.state.orientation_active = False
         self._last_cmd = (np.zeros(5), 0.0)
         self._apply_command(np.zeros(5), 0.0)
-        self.events.append("scene reset")
+        self._event("scene reset")
 
     # ---------------------------------------------------- per-tick decision
     def _decide_command(self, human: XboxState | None, now: float) -> EEDelta:
@@ -551,7 +692,7 @@ class TwinService:
             sim.step()
         self._last_cmd = (joints_deg.copy(), float(gripper))
         for event in self.grasp.update(sim.get_ee_position(), gripper):
-            self.events.append(event)
+            self._event(event)
 
     # -------------------------------------------------------- observation
     def _build_observation(self) -> dict[str, Any]:

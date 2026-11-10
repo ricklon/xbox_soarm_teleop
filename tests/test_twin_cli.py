@@ -13,7 +13,9 @@ def _free_port() -> int:
 
 def test_headless_run_exits_cleanly(capsys):
     port = _free_port()
-    code = twin_cli.main(["--headless", "--no-controller", "--max-seconds", "0.5", "--port", str(port)])
+    code = twin_cli.main(
+        ["--headless", "--no-controller", "--max-seconds", "0.5", "--port", str(port), "--no-log"]
+    )
     out = capsys.readouterr().out
     assert code == 0
     assert f"http://127.0.0.1:{port}/mcp" in out and "Twin stopped." in out
@@ -24,7 +26,7 @@ def test_refuses_a_busy_port(capsys):
         busy.bind(("127.0.0.1", 0))
         busy.listen()
         port = busy.getsockname()[1]
-        assert twin_cli.main(["--headless", "--no-controller", "--port", str(port)]) == 2
+        assert twin_cli.main(["--headless", "--no-controller", "--port", str(port), "--no-log"]) == 2
     assert "in use" in capsys.readouterr().out
 
 
