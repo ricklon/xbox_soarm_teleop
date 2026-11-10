@@ -73,6 +73,11 @@ The top-left corner of the window always says where you stand: `Ready`,
 `You are driving`, `Agent: ...`, `STOPPED` or `No controller`, with what to
 press next. The controls are listed in the bottom-left corner.
 
+The D-pad changes what you see, not what the arm does: it needs no LB and does
+not interrupt an agent. The wrist, overhead, front and side views are the same
+ones the agent gets from its `camera` tool, so you can look through its eyes.
+The current camera is named in the top-right corner.
+
 **If the arm will not move, you have probably pressed B.** B is the stop, and
 it stays stopped until you press Menu (☰).
 
@@ -85,6 +90,7 @@ it stays stopped until you press Menu (☰).
 | Right trigger | Gripper: released = open, pulled = closed |
 | A | Go home |
 | Y | Reset the scene (cube back where it started) |
+| D-pad left/right | Change the camera: free (mouse), wrist, overhead, front, side |
 | **B** | **STOP**: freezes everything, including the agent |
 | **Menu** (☰, right of the Xbox logo; "Start" on older pads) | Release the stop |
 

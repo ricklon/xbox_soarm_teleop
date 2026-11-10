@@ -30,6 +30,8 @@ FIXED_VIEWS = {
     "side": {"lookat": _LOOKAT, "distance": 0.75, "azimuth": 90.0, "elevation": -20.0},
 }
 VIEWS = ("wrist", *FIXED_VIEWS)
+# What the viewer window can show: the same views, plus the mouse-driven camera.
+WINDOW_VIEWS = ("free", *VIEWS)
 DEFAULT_SIZE = (320, 240)
 MAX_SIZE = (640, 480)  # MuJoCo's default offscreen buffer
 FORMATS = {"jpeg": "JPEG", "png": "PNG"}
@@ -53,22 +55,48 @@ class CameraRig:
         if renderer is None:
             renderer = mujoco.Renderer(self.model, height, width)
             self._renderers[(width, height)] = renderer
-        if view == "wrist":
-            renderer.update_scene(self.data, camera="wrist")
-        else:
-            preset = FIXED_VIEWS[view]
-            camera = mujoco.MjvCamera()
-            camera.lookat[:] = preset["lookat"]
-            camera.distance = preset["distance"]
-            camera.azimuth = preset["azimuth"]
-            camera.elevation = preset["elevation"]
-            renderer.update_scene(self.data, camera=camera)
+        camera = mujoco.MjvCamera()
+        point_camera(camera, self.model, view)
+        renderer.update_scene(self.data, camera=camera)
         return renderer.render()
 
     def close(self) -> None:
         for renderer in self._renderers.values():
             renderer.close()
         self._renderers.clear()
+
+
+def point_camera(camera: mujoco.MjvCamera, model: mujoco.MjModel, view: str) -> None:
+    """Point a camera (offscreen or the viewer window's) at a named view.
+
+    ``free`` hands the camera back to the mouse and leaves it where it is.
+    """
+    if view not in WINDOW_VIEWS:
+        raise ValueError(f"Unknown view '{view}'. Known: {', '.join(WINDOW_VIEWS)}")
+    if view == "wrist":
+        camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
+        camera.fixedcamid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
+        return
+    camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+    camera.fixedcamid = -1
+    if view != "free":
+        preset = FIXED_VIEWS[view]
+        camera.lookat[:] = preset["lookat"]
+        camera.distance = preset["distance"]
+        camera.azimuth = preset["azimuth"]
+        camera.elevation = preset["elevation"]
+
+
+def next_view(current: str, dpad_x: float, previous_dpad_x: float) -> str:
+    """The window view after a D-pad reading: right = next, left = previous.
+
+    Only a fresh press switches, so holding the D-pad does not spin through
+    the views.
+    """
+    if abs(dpad_x) < 0.5 or abs(previous_dpad_x) >= 0.5:
+        return current
+    step = 1 if dpad_x > 0 else -1
+    return WINDOW_VIEWS[(WINDOW_VIEWS.index(current) + step) % len(WINDOW_VIEWS)]
 
 
 def encode(pixels: np.ndarray, fmt: str = "jpeg", quality: int = 85) -> bytes:

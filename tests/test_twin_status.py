@@ -58,7 +58,7 @@ def test_agent_action_is_named():
 
 
 def test_controls_help_names_every_button():
-    for word in ("LB", "RT", "A:", "Y:", "B:", "Menu"):
+    for word in ("LB", "RT", "A:", "Y:", "B:", "Menu", "D-pad"):
         assert word in CONTROLS_HELP
 
 
@@ -82,4 +82,14 @@ def test_overlay_is_redrawn_only_when_the_status_changes():
 
 
 def test_overlay_is_skipped_without_a_window():
-    assert twin_cli._show_status(object(), obs(), None) == ("Ready", "Hold LB and move a stick")
+    shown = twin_cli._show_status(object(), obs(), None)
+    assert shown == ("Ready", "Hold LB and move a stick", "free")
+
+
+def test_overlay_names_the_camera_and_redraws_when_it_changes():
+    viewer = FakeViewer()
+    shown = twin_cli._show_status(viewer, obs(), None, "free")
+    shown = twin_cli._show_status(viewer, obs(), shown, "wrist")
+    assert len(viewer.calls) == 2
+    assert ("Camera", "free (mouse)") in [(left, right) for _f, _p, left, right in viewer.calls[0]]
+    assert ("Camera", "wrist") in [(left, right) for _f, _p, left, right in viewer.calls[1]]

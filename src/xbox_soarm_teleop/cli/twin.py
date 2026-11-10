@@ -133,7 +133,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Scene: {args.scene}. Close the window or press Ctrl+C to quit.", flush=True)
 
     shown_events: list[str] = []
-    shown_status: tuple[str, str] | None = None
+    shown_status: tuple[str, str, str] | None = None
+    view = "free"
+    dpad_x = 0.0
     pad_connected = False
     started = time.monotonic()
     next_tick = started
@@ -149,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
                 service.tick()
                 viewer.sync()
                 observation = service.observe()
-                shown_status = _show_status(viewer, observation, shown_status)
+                pad = service.last_human
+                previous_dpad_x, dpad_x = dpad_x, pad.dpad_x if pad is not None else 0.0
+                view = _switch_view(viewer, service.sim.model, view, dpad_x, previous_dpad_x)
+                shown_status = _show_status(viewer, observation, shown_status, view)
                 if controller is not None:
                     now_connected = observation["control"]["controller_connected"]
                     if now_connected != pad_connected:
@@ -173,18 +178,43 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _show_status(viewer, observation: dict, shown: tuple[str, str] | None) -> tuple[str, str]:
-    """Draw the status and the controls in the viewer when the status changes."""
+def _switch_view(viewer, model, view: str, dpad_x: float, previous_dpad_x: float) -> str:
+    """Change the window's camera on a D-pad left/right press; return the view shown.
+
+    Needs no deadman and does not take control from an agent: it only changes
+    what the person sees.
+    """
+    from xbox_soarm_teleop.twin.cameras import next_view, point_camera
+
+    chosen = next_view(view, dpad_x, previous_dpad_x)
+    camera = getattr(viewer, "cam", None)
+    if chosen == view or camera is None:
+        return view
+    with viewer.lock():
+        point_camera(camera, model, chosen)
+    return chosen
+
+
+def _show_status(
+    viewer, observation: dict, shown: tuple[str, str, str] | None, view: str = "free"
+) -> tuple[str, str, str]:
+    """Draw the status, camera and controls in the viewer when any of them changes."""
     import mujoco
 
     from xbox_soarm_teleop.twin.status import CONTROLS_HELP, status_text
 
-    status = status_text(observation)
+    status = (*status_text(observation), view)
     set_texts = getattr(viewer, "set_texts", None)
     if status != shown and callable(set_texts):
         set_texts(
             [
-                (mujoco.mjtFontScale.mjFONTSCALE_200, mujoco.mjtGridPos.mjGRID_TOPLEFT, *status),
+                (mujoco.mjtFontScale.mjFONTSCALE_200, mujoco.mjtGridPos.mjGRID_TOPLEFT, *status[:2]),
+                (
+                    mujoco.mjtFontScale.mjFONTSCALE_150,
+                    mujoco.mjtGridPos.mjGRID_TOPRIGHT,
+                    "Camera",
+                    "free (mouse)" if view == "free" else view,
+                ),
                 (
                     mujoco.mjtFontScale.mjFONTSCALE_150,
                     mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,

@@ -18,6 +18,7 @@ CONTROLS_HELP = "\n".join(
         "RT: gripper",
         "A: home    Y: reset scene",
         "B: STOP    Menu: release stop",
+        "D-pad left/right: change camera",
     ]
 )
 

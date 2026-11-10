@@ -160,6 +160,7 @@ class TwinService:
         self._loop_thread: int | None = None
         self._closed = False
         self.controller_connected = False
+        self.last_human: XboxState | None = None
         self.events: deque[str] = deque(maxlen=RECENT_EVENTS)
         self.last_step: CartesianStepResult | None = None
         self._last_cmd = (np.zeros(5), 0.0)
@@ -317,6 +318,7 @@ class TwinService:
                 human = None
         else:
             self.controller_connected = human is not None
+        self.last_human = human
         now = self.now_s
         if self._stop_flag.is_set():
             self._stop_flag.clear()
@@ -580,7 +582,8 @@ class TwinService:
             raise ActionRejected(ReasonCode.INVALID_REQUEST, "reset_stop requires confirm=true")
         if self.stop_latched_by == "human":
             raise ActionRejected(
-                ReasonCode.NOT_OWNER, "human (stop was latched on the controller; press its Menu/Start button)"
+                ReasonCode.NOT_OWNER,
+                "human (stop was latched on the controller; press its Menu/Start button)",
             )
         self._ensure_owner(client_id)
         self._release_stop(client_id)
