@@ -1,12 +1,35 @@
 """Xbox controller teleoperator for SO-ARM teleoperation."""
 
+import json
 import math
+import os
+import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import asdict, dataclass, fields
+from pathlib import Path
 from typing import Any
 
 from xbox_soarm_teleop.config.xbox_config import XboxConfig
+
+# Subprocess backend: a report older than this releases the deadman.
+SUBPROCESS_STALE_S = 0.15
+SUBPROCESS_STARTUP_S = 3.0
+
+
+def _platform_backend() -> str:
+    """In-process backend for this platform."""
+    return "sdl" if sys.platform in {"darwin", "win32"} else "inputs"
+
+
+def _plain_python() -> str:
+    """The environment's interpreter, never the mjpython launcher."""
+    for name in ("python3", "python"):
+        candidate = Path(sys.prefix) / "bin" / name
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
 
 
 @dataclass
@@ -43,6 +66,10 @@ class XboxState:
     imu_orientation_valid: bool = False
 
 
+# Level (non-edge) fields, as streamed by the subprocess helper.
+_LEVEL_FIELDS = [f.name for f in fields(XboxState) if not f.name.endswith("_pressed")]
+
+
 class XboxController:
     """Xbox controller teleoperator for SO-ARM teleoperation.
 
@@ -68,6 +95,10 @@ class XboxController:
         self._connected = False
         self._reader_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # Subprocess backend: latest helper message and when it arrived.
+        self._helper: subprocess.Popen | None = None
+        self._helper_message: dict[str, Any] | None = None
+        self._helper_received_at = 0.0
 
     def connect(self) -> bool:
         """Connect to the Xbox controller.
@@ -80,13 +111,18 @@ class XboxController:
             return self._connect_inputs()
         if self._backend == "sdl":
             return self._connect_sdl()
+        if self._backend == "subprocess":
+            return self._connect_subprocess()
         raise RuntimeError(
-            f"Unsupported Xbox backend '{self._backend}'. Use one of: auto, inputs, sdl."
+            f"Unsupported Xbox backend '{self._backend}'. "
+            "Use one of: auto, inputs, sdl, subprocess."
         )
 
     def disconnect(self) -> None:
         """Disconnect from the controller."""
         self._stop_event.set()
+        if self._helper is not None:
+            self._stop_helper()
         if self._reader_thread is not None:
             try:
                 self._reader_thread.join(timeout=1.0)
@@ -107,6 +143,8 @@ class XboxController:
     @property
     def is_connected(self) -> bool:
         """Check if controller is connected."""
+        if self._backend == "subprocess":
+            return self._fresh_helper_message() is not None
         return self._connected
 
     def read(self) -> XboxState:
@@ -125,6 +163,8 @@ class XboxController:
         self._snapshot_previous_state()
         if self._backend == "sdl":
             self._read_sdl_state()
+        elif self._backend == "subprocess":
+            self._read_subprocess_state()
         else:
             self._read_inputs_state()
         self._apply_edge_detection()
@@ -135,9 +175,95 @@ class XboxController:
         """Pick the controller backend to use for the current platform."""
         if self.config.backend != "auto":
             return self.config.backend
-        if sys.platform in {"darwin", "win32"}:
-            return "sdl"
-        return "inputs"
+        if os.environ.get("XBOX_SOARM_MJPYTHON") == "1":
+            # mjpython owns the macOS main thread; SDL can't pump events here.
+            return "subprocess"
+        return _platform_backend()
+
+    def _helper_command(self) -> list[str]:
+        """Command line for the helper process that reads the controller."""
+        config = asdict(self.config)
+        config.pop("backend")
+        return [
+            _plain_python(),
+            "-m",
+            "xbox_soarm_teleop.teleoperators.xbox_helper",
+            "--backend",
+            _platform_backend(),
+            "--config",
+            json.dumps(config),
+        ]
+
+    def _connect_subprocess(self) -> bool:
+        """Start the helper process and wait for its first report."""
+        env = os.environ.copy()
+        env.pop("XBOX_SOARM_MJPYTHON", None)
+        self._helper_message = None
+        self._helper = subprocess.Popen(
+            self._helper_command(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        self._stop_event.clear()
+        self._reader_thread = threading.Thread(target=self._read_helper_loop, daemon=True)
+        self._reader_thread.start()
+        deadline = time.monotonic() + SUBPROCESS_STARTUP_S
+        while time.monotonic() < deadline and self._helper.poll() is None:
+            if self._helper_message is not None:
+                break
+            time.sleep(0.01)
+        # Stay "connected" to the helper even before a pad is plugged in; the
+        # helper keeps retrying and is_connected reports the pad itself.
+        self._connected = self._helper_message is not None or self._helper.poll() is None
+        return self._connected
+
+    def _read_helper_loop(self) -> None:
+        """Keep the newest helper message; anything malformed is ignored."""
+        assert self._helper is not None and self._helper.stdout is not None
+        for line in self._helper.stdout:
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(message, dict):
+                self._helper_message = message
+                self._helper_received_at = time.monotonic()
+            if self._stop_event.is_set():
+                break
+
+    def _fresh_helper_message(self) -> dict[str, Any] | None:
+        """Return the latest message if it is recent and reports a controller."""
+        message = self._helper_message
+        if message is None or not message.get("connected"):
+            return None
+        if time.monotonic() - self._helper_received_at > SUBPROCESS_STALE_S:
+            return None
+        if self._helper is None or self._helper.poll() is not None:
+            return None
+        return message
+
+    def _read_subprocess_state(self) -> None:
+        """Apply the helper's state, or neutral (deadman released) if stale."""
+        message = self._fresh_helper_message()
+        state = message.get("state", {}) if message else {}
+        neutral = XboxState()
+        for name in _LEVEL_FIELDS:
+            value = state.get(name, getattr(neutral, name))
+            setattr(self._state, name, type(getattr(neutral, name))(value))
+
+    def _stop_helper(self) -> None:
+        helper, self._helper = self._helper, None
+        if helper is None:
+            return
+        try:
+            if helper.stdin is not None:
+                helper.stdin.close()
+            helper.wait(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired):
+            helper.kill()
+            helper.wait(timeout=1.0)
 
     def _connect_inputs(self) -> bool:
         """Connect using the legacy inputs backend."""
