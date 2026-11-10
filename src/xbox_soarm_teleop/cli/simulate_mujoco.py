@@ -52,6 +52,7 @@ from xbox_soarm_teleop.config.joints import (
     limits_rad_to_deg,
     parse_joint_limits,
 )
+from xbox_soarm_teleop.config.workspace import load_workspace_limits
 from xbox_soarm_teleop.control.cartesian import (
     apply_ik_solution,
     full_joint_positions,
@@ -63,6 +64,7 @@ from xbox_soarm_teleop.control.motion_feedback import (
     TrackingStats,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
+from xbox_soarm_teleop.control.safety import make_workspace_clipper
 from xbox_soarm_teleop.control.step import CartesianStepConfig, cartesian_step
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
 from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
@@ -1322,20 +1324,10 @@ def draw_workspace(
     return True
 
 
-# Cartesian workspace bounds for simulation (meters, world frame). None = unbounded.
-SIM_WORKSPACE_BOUNDS = {"x": (0.05, 0.5), "y": (None, None), "z": (0.05, 0.45)}
-
-
-def _clip_to_sim_workspace(pos: np.ndarray) -> tuple[np.ndarray, dict]:
-    """Clip a tool position to ``SIM_WORKSPACE_BOUNDS`` (``clip_position`` callback)."""
-    clipped = np.asarray(pos, dtype=float).copy()
-    for idx, key in enumerate(("x", "y", "z")):
-        low, high = SIM_WORKSPACE_BOUNDS[key]
-        if low is not None:
-            clipped[idx] = max(clipped[idx], low)
-        if high is not None:
-            clipped[idx] = min(clipped[idx], high)
-    return clipped, {}
+# Cartesian workspace bounds (meters, robot base frame), shared with the real-robot
+# paths via config/workspace_limits.yaml.
+SIM_WORKSPACE_BOUNDS, _ = load_workspace_limits()
+_clip_to_sim_workspace = make_workspace_clipper(SIM_WORKSPACE_BOUNDS)
 
 
 def _show_limit_overlay(viewer, message: str) -> None:
@@ -2218,9 +2210,7 @@ def run_demo_mode(
                 droll = 0.0
                 gripper = 0.0
 
-            target_pos[0] = np.clip(target_pos[0], -0.1, 0.5)
-            target_pos[1] = np.clip(target_pos[1], -0.3, 0.3)
-            target_pos[2] = np.clip(target_pos[2], 0.05, 0.45)
+            target_pos, _ = _clip_to_sim_workspace(target_pos)
 
             target_pose = cartesian_state.ee_pose.copy()
             target_pose[:3, 3] = target_pos
