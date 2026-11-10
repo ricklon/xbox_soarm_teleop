@@ -69,6 +69,7 @@ HUMAN_IDLE_S = 2.0
 LEASE_TIMEOUT_S = 60.0
 GRIPPER_PICKUP_TOLERANCE = 0.05
 RECENT_EVENTS = 8
+OFF_TABLE_MARGIN_M = 0.01
 KEPT_ACTIONS = 200
 
 
@@ -89,6 +90,8 @@ class TwinService:
         dt: Control period (s).
         jacobian_ctrl: Optional Jacobian controller (otherwise IK).
         substeps: Physics steps per tick; default keeps sim time = control time.
+        table_top_z: Height of the scene's table top (m), if it has one;
+            objects that fall below it are reported ``off_table``.
         controller: Optional Xbox controller read each tick when ``tick`` is
             not given a state explicitly.
     """
@@ -106,6 +109,7 @@ class TwinService:
         jacobian_ctrl=None,
         substeps: int | None = None,
         controller=None,
+        table_top_z: float | None = None,
     ) -> None:
         self.sim = sim
         self.kinematics = kinematics
@@ -114,6 +118,7 @@ class TwinService:
         self.jacobian_ctrl = jacobian_ctrl
         self.dt = dt
         self.workspace_bounds = workspace_bounds
+        self.table_top_z = table_top_z
         self.step_config = CartesianStepConfig(
             dt=dt,
             joint_vel_limits_deg=IK_JOINT_VEL_LIMITS_ARRAY,
@@ -580,6 +585,8 @@ class TwinService:
                     name: {
                         "xyz_m": [round(float(v), 4) for v in xyz],
                         "attached": name == self.grasp.attached,
+                        "off_table": self.table_top_z is not None
+                        and float(xyz[2]) < self.table_top_z - OFF_TABLE_MARGIN_M,
                     }
                     for name, xyz in self.grasp.positions().items()
                 },

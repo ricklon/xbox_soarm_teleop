@@ -157,7 +157,7 @@ def test_ownership_handover(twin):
 
 
 def test_timeout_and_unreachable_fail(twin):
-    status = resolve(twin, move(twin, [0.45, -0.25, 0.10], timeout_s=0.2))
+    status = resolve(twin, move(twin, [0.45, -0.25, 0.15], timeout_s=0.2))
     final = run_until_done(twin, status.id)
     assert (final.state, final.reason) == (ActionState.FAILED, ReasonCode.TIMEOUT)
 
@@ -283,3 +283,24 @@ def test_grasp_rearms_after_opening(twin):
         status = resolve(twin, twin.submit({"type": "set_gripper", "params": {"position": position}}))
         run_until_done(twin, status.id)
     assert twin.grasp.attached == "pick_cube"
+
+
+def test_table_is_the_floor_in_the_pick_place_scene(twin):
+    """The tool cannot be driven through the table, by agent or controller."""
+    z_min = twin.workspace_bounds["z"][0]
+    assert z_min == pytest.approx(TABLE_TOP + 0.005)
+    assert twin.observe()["workspace"]["z"][0] == pytest.approx(z_min)
+    error = rejected(twin, move(twin, [0.30, -0.10, 0.10]))
+    assert error.reason is ReasonCode.WORKSPACE_BOUND and error.detail.startswith("z_min")
+    for _ in range(150):  # hold LB, right stick down for 3 s
+        twin.tick(lb(right_stick_y=1.0))
+    assert z_min - 1e-3 <= twin.tool_xyz()[2] <= z_min + 0.01
+
+
+def test_object_knocked_off_the_table_is_flagged(twin):
+    obj = twin.grasp.objects["pick_cube"]
+    twin.sim.data.qpos[obj.qpos_adr : obj.qpos_adr + 3] = [0.48, -0.14, 0.02]
+    twin.tick()
+    assert twin.observe()["scene"]["objects"]["pick_cube"]["off_table"] is True
+    assert resolve(twin, twin.reset_scene()) is True
+    assert twin.observe()["scene"]["objects"]["pick_cube"]["off_table"] is False
