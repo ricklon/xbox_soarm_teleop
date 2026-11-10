@@ -17,6 +17,7 @@ dependencies = [
     "scservo-sdk",
     "scipy>=1.15.3",
     "pygame>=2.6.1",
+    "mcp>=2.3,<3",
 ]
 
 [project.optional-dependencies]
