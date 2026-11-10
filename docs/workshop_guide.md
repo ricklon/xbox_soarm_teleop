@@ -30,7 +30,10 @@ uv sync
 The first `uv sync` downloads a lot (MuJoCo, LeRobot, PyTorch) and can take
 several minutes. Do it before the workshop if you can.
 
-Plug in the Xbox controller by USB, or pair it over Bluetooth. No controller?
+Plug in the Xbox controller by USB, or pair it over Bluetooth: hold the small
+pair button on the top edge until the Xbox logo flashes quickly, then choose
+"Xbox Wireless Controller" in your computer's Bluetooth settings. A paired
+controller goes to sleep; press the Xbox button to wake it before you drive. No controller?
 You can still do every agent exercise; add `--no-controller` below.
 
 ## 2. Start the twin
@@ -66,6 +69,13 @@ work.
 
 Nothing moves unless you **hold LB**. Let go and the arm freezes.
 
+The top-left corner of the window always says where you stand: `Ready`,
+`You are driving`, `Agent: ...`, `STOPPED` or `No controller`, with what to
+press next. The controls are listed in the bottom-left corner.
+
+**If the arm will not move, you have probably pressed B.** B is the stop, and
+it stays stopped until you press Menu (☰).
+
 | Control | What it does |
 |---|---|
 | **LB (hold)** | Enable motion |
@@ -76,7 +86,7 @@ Nothing moves unless you **hold LB**. Let go and the arm freezes.
 | A | Go home |
 | Y | Reset the scene (cube back where it started) |
 | **B** | **STOP**: freezes everything, including the agent |
-| Start | Release the stop |
+| **Menu** (☰, right of the Xbox logo; "Start" on older pads) | Release the stop |
 
 Top speed is 10 cm/s, so nothing happens fast.
 
@@ -172,7 +182,7 @@ While the agent is in the middle of a move:
 2. **Press B.** Everything stops and stays stopped. Ask the agent to move: it
    is refused. Ask it to reset the stop: it is refused too, because a stop
    latched on the controller can only be released on the controller. Press
-   Start.
+   Menu (☰).
 3. Ask the agent to `stop` and then to reset its own stop. That is allowed,
    but only when it confirms.
 
@@ -208,9 +218,9 @@ request that was refused. The format is described in [Schemas](schemas.md).
 | What you see | What to do |
 |---|---|
 | `port 8765 is in use` | Another twin is still running. Close it, or start with `--port 8766` and use that port in the `claude mcp add` URL |
-| `Xbox controller: not found yet` | Plug it in; it is picked up while the twin runs. Sticks only work while LB is held |
-| The arm does not move for you | Is the stop latched? Press Start. Are you holding LB? |
-| The agent is refused with `stopped` | Press Start (controller stop), or ask the agent to reset its own stop |
+| `Xbox controller: not found yet` | Press the Xbox button to wake it, or plug it in. The terminal prints `Xbox controller: connected` when it is picked up; no restart needed |
+| The arm does not move for you | Look at the top-left of the window. `STOPPED`: you pressed B, so press Menu (☰). `Ready`: hold LB while you move a stick. `No controller`: press the Xbox button to wake it |
+| The agent is refused with `stopped` | Press Menu (☰) on the controller, or ask the agent to reset its own stop |
 | The agent is refused with `not_owner` / `human` | You touched the controller in the last 2 seconds. Hands off and retry |
 | The agent is refused with `workspace_bound` | The target is outside the workspace or below the table. The detail says which side |
 | The cube is on the floor (`off_table`) | Press Y, or ask the agent to `reset_scene` |

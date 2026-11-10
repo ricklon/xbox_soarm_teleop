@@ -15,7 +15,7 @@ Human and agent share one motion path (``control.step.cartesian_step``):
 - The human (Xbox) wins: holding LB, or pressing A (home) / Y (reset scene),
   cancels the agent's action (``preempted``/``human``) and blocks agent motion
   until the controller has been idle for ``HUMAN_IDLE_S``.
-- B latches the virtual stop; Start releases it. A stop latched on the
+- B latches the virtual stop; Menu (Start) releases it. A stop latched on the
   controller can only be released on the controller.
 - Agents take control automatically when it is free; a different client can
   take over whenever the owner has no running action, or after the lease
@@ -580,7 +580,7 @@ class TwinService:
             raise ActionRejected(ReasonCode.INVALID_REQUEST, "reset_stop requires confirm=true")
         if self.stop_latched_by == "human":
             raise ActionRejected(
-                ReasonCode.NOT_OWNER, "human (stop was latched on the controller; press Start)"
+                ReasonCode.NOT_OWNER, "human (stop was latched on the controller; press its Menu/Start button)"
             )
         self._ensure_owner(client_id)
         self._release_stop(client_id)

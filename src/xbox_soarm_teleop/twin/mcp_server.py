@@ -39,7 +39,7 @@ center, then set_gripper(1.0) to grab it; set_gripper(0.0) releases it.
 A human with an Xbox controller can take over at any time (reason
 `preempted`/`human`); wait until they are done. If the stop is latched, motion
 is refused until it is reset; a stop latched on the controller must be
-released there (Start button). Use `camera` to look at the scene.
+released there (Menu button, also called Start). Use `camera` to look at the scene.
 """
 
 
@@ -188,7 +188,7 @@ def build_mcp_server(service: TwinService) -> MCPServer:
     @server.tool()
     def reset_stop(confirm: bool = False, ctx: Context | None = None) -> dict[str, Any]:
         """Release a stop you latched. Requires confirm=true. A stop latched on
-        the Xbox controller can only be released there (Start button)."""
+        the Xbox controller can only be released there (Menu button, also called Start)."""
         ok, result = run_command(service.reset_stop(client_id=_client_id(ctx), confirm=confirm))
         return {"ok": True, "released": bool(result)} if ok else result
 
