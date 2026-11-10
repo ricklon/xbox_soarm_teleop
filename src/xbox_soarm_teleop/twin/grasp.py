@@ -4,6 +4,10 @@ Contact grasping with a kinematically posed arm is unreliable, so the
 workshop twin uses an assisted grasp: when the gripper closes past a threshold
 with an object's center within a radius of the tool point, the object is
 carried rigidly with the tool until the gripper opens again.
+
+Only the act of closing grabs: a gripper that is already closed can push
+objects without picking them up, and it re-arms once it opens past the
+threshold again.
 """
 
 from __future__ import annotations
@@ -55,6 +59,7 @@ class AssistedGrasp:
                     body_id, int(model.jnt_qposadr[jnt]), int(model.jnt_dofadr[jnt])
                 )
         self.attached: str | None = None
+        self._armed = True
         self._offset = np.zeros(3)
         self._quat = np.array([1.0, 0.0, 0.0, 0.0])
 
@@ -69,7 +74,12 @@ class AssistedGrasp:
     def update(self, tool_pos: np.ndarray, gripper: float) -> list[str]:
         """Attach or release based on the gripper; return event messages."""
         events: list[str] = []
-        if self.attached is None and gripper >= self.close_threshold and self.objects:
+        closing = self._armed and gripper >= self.close_threshold
+        if gripper < self.close_threshold:
+            self._armed = True
+        elif closing:
+            self._armed = False
+        if self.attached is None and closing and self.objects:
             distances = {
                 name: float(np.linalg.norm(self.position(name) - tool_pos)) for name in self.objects
             }
@@ -98,3 +108,4 @@ class AssistedGrasp:
 
     def reset(self) -> None:
         self.attached = None
+        self._armed = True

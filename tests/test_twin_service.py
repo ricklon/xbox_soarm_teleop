@@ -259,3 +259,27 @@ def test_close_fails_pending_and_wakes_waiters(twin):
         pending.result(timeout=0)
     with pytest.raises(TwinClosed):
         move(twin, [0.3, 0.0, 0.2]).result(timeout=0)
+
+
+def test_closed_gripper_pushes_without_grabbing(twin):
+    """Grasp attaches only when the gripper closes near an object, not when a
+    closed gripper sweeps past one (the push task keeps it closed)."""
+    status = resolve(twin, twin.submit({"type": "set_gripper", "params": {"position": 1.0}}))
+    assert run_until_done(twin, status.id).state is ActionState.SUCCEEDED
+    cube = twin.grasp.position("pick_cube")
+    for xyz in ([0.25, cube[1], 0.22], [0.25, cube[1], CUBE_REST_Z]):
+        status = resolve(twin, move(twin, xyz))
+        assert run_until_done(twin, status.id).state is ActionState.SUCCEEDED
+    start = twin.grasp.position("pick_cube")
+    status = resolve(twin, move(twin, [0.40, cube[1], CUBE_REST_Z], max_speed_m_s=0.05))
+    run_until_done(twin, status.id)
+    assert twin.grasp.attached is None
+    assert twin.grasp.position("pick_cube")[0] - start[0] > 0.02
+
+
+def test_grasp_rearms_after_opening(twin):
+    _pick_cube(twin)
+    for position in (0.0, 1.0):  # release, then close again on the same cube
+        status = resolve(twin, twin.submit({"type": "set_gripper", "params": {"position": position}}))
+        run_until_done(twin, status.id)
+    assert twin.grasp.attached == "pick_cube"
