@@ -33,7 +33,7 @@ import queue
 import threading
 from collections import deque
 from concurrent.futures import Future
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 import mujoco
@@ -76,6 +76,17 @@ KEPT_ACTIONS = 200
 
 class TwinClosed(RuntimeError):
     """The twin loop has shut down."""
+
+
+@dataclass
+class RenderRequest:
+    """A camera image somebody is waiting for."""
+
+    view: str
+    width: int
+    height: int
+    fmt: str
+    future: Future
 
 
 class TwinService:
@@ -160,7 +171,7 @@ class TwinService:
         self._stop_by = "api"
         self._stop_client: str | None = None
         self._commands: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
-        self._renders: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
+        self._renders: queue.SimpleQueue[RenderRequest] = queue.SimpleQueue()
         self._cameras: CameraRig | None = cameras
         self._loop_thread: int | None = None
         self._closed = False
@@ -264,13 +275,8 @@ class TwinService:
             future.set_exception(TwinClosed("twin is not running"))
             return future
 
-        def draw() -> bytes:
-            if self._cameras is None:
-                self._cameras = CameraRig(self.sim.model, self.sim.data)
-            return encode(self._cameras.render(view, width, height, self.sim.data), fmt)
-
         self._log("request", client_id=client_id, type="camera", view=view, size=[width, height])
-        self._renders.put((draw, future))
+        self._renders.put(RenderRequest(view, width, height, fmt, future))
         return future
 
     def observe(self) -> dict[str, Any]:
@@ -310,13 +316,35 @@ class TwinService:
         """True when a camera image has been requested and not drawn yet."""
         return not self._renders.empty()
 
+    def take_render_request(self) -> RenderRequest | None:
+        """Hand over the oldest waiting camera request, for a host that draws
+        for several twins itself (``twin.hub``). The host must resolve its future.
+        """
+        try:
+            return self._renders.get_nowait()
+        except queue.Empty:
+            return None
+
     def render_pending(self) -> bool:
         """Draw one requested camera image now; False if none was waiting.
 
         Call only from the loop thread. For loops that tick several twins and
         ration rendering between them (``tick(render=False)``).
         """
-        return self._run_one(self._renders)
+        request = self.take_render_request()
+        if request is None:
+            return False
+        if request.future.set_running_or_notify_cancel():
+            try:
+                if self._cameras is None:
+                    self._cameras = CameraRig(self.sim.model, self.sim.data)
+                pixels = self._cameras.render(
+                    request.view, request.width, request.height, self.sim.data
+                )
+                request.future.set_result(encode(pixels, request.fmt))
+            except BaseException as exc:  # noqa: BLE001 - delivered to the caller
+                request.future.set_exception(exc)
+        return True
 
     def tick(self, human: XboxState | None = None, *, render: bool = True) -> None:
         """Advance one control period. Call only from the loop thread.
@@ -390,7 +418,7 @@ class TwinService:
                 self._log_error_reported = True
                 self.events.append(f"session log stopped: {self.log.error}")
         if render:
-            self._run_one(self._renders)
+            self.render_pending()
 
     # --------------------------------------------------------------- helpers
     def tool_xyz(self) -> np.ndarray:
@@ -505,14 +533,17 @@ class TwinService:
         return True
 
     def _fail_pending(self) -> None:
+        waiting = []
         for pending in (self._commands, self._renders):
             while True:
                 try:
-                    _, future = pending.get_nowait()
+                    item = pending.get_nowait()
                 except queue.Empty:
                     break
-                if future.set_running_or_notify_cancel():
-                    future.set_exception(TwinClosed("twin stopped"))
+                waiting.append(item.future if isinstance(item, RenderRequest) else item[1])
+        for future in waiting:
+            if future.set_running_or_notify_cancel():
+                future.set_exception(TwinClosed("twin stopped"))
 
     def _human_in_control(self, now: float) -> bool:
         return now - self._human_active_s < HUMAN_IDLE_S

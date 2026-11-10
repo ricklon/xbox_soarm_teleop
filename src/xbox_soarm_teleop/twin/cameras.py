@@ -43,18 +43,62 @@ class CameraRig:
     Args:
         model: The model to draw.
         data: The state drawn when ``render`` is not given one.
-        reflections: Draw floor reflections. They are most of the cost of a
-            frame (about 12 ms against 4 ms without), so a rig that serves
+        reflections: Draw floor reflections.
+        shadows: Draw shadows. Reflections and shadows each cost about 5 ms
+            of a 14 ms frame, whatever the image size, so a rig that serves
             many viewers turns them off.
+
+    Drawing has two steps so that a host can split them between threads:
+    :meth:`aim` reads the simulator state (no OpenGL; call it where the state
+    is safe to read), and :meth:`capture` draws (call it on the thread that
+    created the renderer with :meth:`renderer`).
     """
 
     def __init__(
-        self, model: mujoco.MjModel, data: mujoco.MjData | None = None, *, reflections: bool = True
+        self,
+        model: mujoco.MjModel,
+        data: mujoco.MjData | None = None,
+        *,
+        reflections: bool = True,
+        shadows: bool = True,
     ) -> None:
         self.model = model
         self.data = data
         self.reflections = reflections
+        self.shadows = shadows
         self._renderers: dict[tuple[int, int], mujoco.Renderer] = {}
+
+    def has_renderer(self, width: int, height: int) -> bool:
+        return (width, height) in self._renderers
+
+    def renderer(self, width: int, height: int) -> mujoco.Renderer:
+        """The renderer for an image size, created on first use (OpenGL)."""
+        if not (16 <= width <= MAX_SIZE[0] and 16 <= height <= MAX_SIZE[1]):
+            raise ValueError(f"Image size must be within 16x16 .. {MAX_SIZE[0]}x{MAX_SIZE[1]}")
+        renderer = self._renderers.get((width, height))
+        if renderer is None:
+            renderer = mujoco.Renderer(self.model, height, width)
+            renderer.scene.flags[mujoco.mjtRndFlag.mjRND_REFLECTION] = int(self.reflections)
+            renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = int(self.shadows)
+            self._renderers[(width, height)] = renderer
+        return renderer
+
+    def aim(
+        self, view: str, width: int, height: int, data: mujoco.MjData | None = None
+    ) -> mujoco.Renderer:
+        """Load a view of ``data`` into the renderer for this size (no OpenGL)."""
+        if view not in VIEWS:
+            raise ValueError(f"Unknown view '{view}'. Known: {', '.join(VIEWS)}")
+        renderer = self.renderer(width, height)
+        camera = mujoco.MjvCamera()
+        point_camera(camera, self.model, view)
+        renderer.update_scene(self.data if data is None else data, camera=camera)
+        return renderer
+
+    @staticmethod
+    def capture(renderer: mujoco.Renderer) -> np.ndarray:
+        """Draw what :meth:`aim` loaded; returns an RGB image."""
+        return renderer.render()
 
     def render(
         self, view: str, width: int, height: int, data: mujoco.MjData | None = None
@@ -68,19 +112,7 @@ class CameraRig:
             data: State to draw; any ``MjData`` of this rig's model, so one rig
                 can serve several simulators that share the model.
         """
-        if view not in VIEWS:
-            raise ValueError(f"Unknown view '{view}'. Known: {', '.join(VIEWS)}")
-        if not (16 <= width <= MAX_SIZE[0] and 16 <= height <= MAX_SIZE[1]):
-            raise ValueError(f"Image size must be within 16x16 .. {MAX_SIZE[0]}x{MAX_SIZE[1]}")
-        renderer = self._renderers.get((width, height))
-        if renderer is None:
-            renderer = mujoco.Renderer(self.model, height, width)
-            renderer.scene.flags[mujoco.mjtRndFlag.mjRND_REFLECTION] = int(self.reflections)
-            self._renderers[(width, height)] = renderer
-        camera = mujoco.MjvCamera()
-        point_camera(camera, self.model, view)
-        renderer.update_scene(self.data if data is None else data, camera=camera)
-        return renderer.render()
+        return self.capture(self.aim(view, width, height, data))
 
     def close(self) -> None:
         for renderer in self._renderers.values():

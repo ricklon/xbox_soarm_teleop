@@ -163,11 +163,30 @@ def test_web_gripper_closes_on_the_cube_and_carries_it(hub):
 
 
 def test_camera_requests_from_every_room_are_all_served(hub):
+    import time
+
     futures = [room.service.render("overhead") for room in hub.rooms.values()]
-    for _ in range(10):
-        hub.tick()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not all(future.done() for future in futures):
+        hub.tick()  # each tick hands the painter thread at most one frame
+        time.sleep(0.005)
     images = [future.result(timeout=0) for future in futures]
     assert all(image[:2] == b"\xff\xd8" for image in images)  # JPEG
+
+
+def test_camera_sizes_are_snapped_to_a_few_renderers(hub):
+    import io
+    import time
+
+    from PIL import Image
+
+    room = next(iter(hub.rooms.values()))
+    future = room.service.render("wrist", width=300, height=200)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not future.done():
+        hub.tick()
+        time.sleep(0.005)
+    assert Image.open(io.BytesIO(future.result(timeout=0))).size == (320, 240)
 
 
 def test_each_room_writes_its_own_session_log(hub):
