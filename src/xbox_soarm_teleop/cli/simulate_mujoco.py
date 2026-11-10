@@ -34,9 +34,10 @@ import json
 import os
 import signal
 import sys
+import sysconfig
 import tempfile
 import time
-from dataclasses import replace
+from collections.abc import Mapping
 from pathlib import Path
 
 import mujoco
@@ -53,24 +54,18 @@ from xbox_soarm_teleop.config.joints import (
 )
 from xbox_soarm_teleop.config.workspace import load_workspace_limits
 from xbox_soarm_teleop.control.cartesian import (
-    advance_cartesian_target,
     apply_ik_solution,
     full_joint_positions,
-    jacobian_joint_step,
     make_cartesian_state,
     solve_cartesian_motion,
-    step_cartesian_home,
-    step_gripper_toward,
     sync_cartesian_state,
-    use_jacobian_step,
 )
 from xbox_soarm_teleop.control.motion_feedback import (
     TrackingStats,
-    commanded_progress,
-    describe_motion_limit,
 )
 from xbox_soarm_teleop.control.routines import plane_offset
 from xbox_soarm_teleop.control.safety import make_workspace_clipper
+from xbox_soarm_teleop.control.step import CartesianStepConfig, cartesian_step
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
 from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 from xbox_soarm_teleop.sim.world import DEFAULT_WORLD, WORLD_NAMES, apply_world
@@ -555,7 +550,30 @@ def _robot_spec(urdf_path: str) -> mujoco.MjSpec:
     # filter world-vs-child contacts. The convex hulls of the base meshes
     # overlap the shoulder, which wedged the arm in physics scenes.
     spec.add_exclude(bodyname1="world", bodyname2="shoulder_link")
+    _add_wrist_camera(spec)
     return spec
+
+
+# Wrist camera on gripper_link (local frame: -z points along the gripper toward
+# the tool, +x is "up" when the gripper is level). Mounted beside and above the
+# fixed jaw and tilted down so the jaws, tool point and object are in view.
+WRIST_CAMERA_POS = (0.05, 0.035, -0.06)
+WRIST_CAMERA_TILT_DEG = 55.0
+WRIST_CAMERA_FOVY_DEG = 80.0
+
+
+def _add_wrist_camera(spec: mujoco.MjSpec) -> None:
+    """Add the ``wrist`` camera that moves with the gripper."""
+    tilt = np.deg2rad(WRIST_CAMERA_TILT_DEG)
+    forward = np.array([0.0, 0.0, -1.0])
+    up = np.array([1.0, 0.0, 0.0])
+    right = np.array([0.0, -1.0, 0.0])
+    camera = spec.body("gripper_link").add_camera()
+    camera.name = "wrist"
+    camera.pos = WRIST_CAMERA_POS
+    camera.alt.type = mujoco.mjtOrientation.mjORIENTATION_XYAXES
+    camera.alt.xyaxes = np.concatenate([right, up * np.cos(tilt) + forward * np.sin(tilt)])
+    camera.fovy = WRIST_CAMERA_FOVY_DEG
 
 
 def _add_stack_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
@@ -667,8 +685,6 @@ def load_model_with_cameras(
         scene: ``"default"``, ``"stack"`` or ``"pick_place_basic"``.
         world: Lighting/sky/floor preset from ``xbox_soarm_teleop.sim.world``.
     """
-    if world == "plain" and scene == "default":
-        return mujoco.MjModel.from_xml_path(urdf_path)
     spec = _robot_spec(urdf_path)
     world_has_floor = apply_world(spec, world)
     if scene == "stack":
@@ -1554,6 +1570,13 @@ def run_with_controller(
     ik_joint_pos_deg = np.zeros(4)
     cartesian_state = make_cartesian_state(kinematics, ik_joint_pos_deg) if kinematics is not None else None
     gripper_rate = runtime.gripper_rate  # Position change per second
+    step_config = CartesianStepConfig(
+        dt=LOOP_PERIOD,
+        joint_vel_limits_deg=ik_joint_vel_limits,
+        gripper_rate=gripper_rate,
+        clip_position=_clip_to_sim_workspace,
+        workspace_bounds=SIM_WORKSPACE_BOUNDS,
+    )
     trace_points: list[np.ndarray] = []
     trace_min_step_m = max(routine_trace_step_mm / 1000.0, 0.0005)
     homing_active = False
@@ -1818,106 +1841,35 @@ def run_with_controller(
 
             ee_delta = mapper(state)
             ee_delta = apply_axis_mapping(ee_delta, swap_xy=False)
-            if jacobian_ctrl is not None and abs(ee_delta.dyaw) > 1e-6:
-                # Jacobian mode is position + pitch only; drop yaw like the real-robot path.
-                ee_delta = replace(ee_delta, dyaw=0.0)
             assert cartesian_state is not None
-            frame_phase = "homing" if homing_active else "idle"
-            frame_limit = "homing" if homing_active else ""
-            if homing_active:
-                homing_active = not step_cartesian_home(
-                    cartesian_state,
-                    kinematics,
-                    np.zeros(4, dtype=float),
-                    home_wrist_roll_deg=0.0,
-                    home_gripper_pos=0.0,
-                    ik_joint_max_step_deg=ik_joint_vel_limits,
-                    wrist_roll_vel_deg_s=90.0,
-                    gripper_rate=gripper_rate,
-                    dt=LOOP_PERIOD,
-                )
-                ee_delta = EEDelta(gripper=cartesian_state.gripper_pos)
-            else:
-                cartesian_state.gripper_pos = step_gripper_toward(
-                    cartesian_state.gripper_pos,
-                    ee_delta.gripper,
-                    gripper_rate=gripper_rate,
-                    dt=LOOP_PERIOD,
-                )
-
-            if not homing_active and not ee_delta.is_zero_motion():
-                clip_position = _clip_to_sim_workspace
-                target_pose, target_pos, target_flags = advance_cartesian_target(
-                    cartesian_state,
-                    ee_delta,
-                    dt=LOOP_PERIOD,
-                    clip_position=clip_position,
-                    pitch_limit_rad=np.pi / 2,
-                    yaw_limit_rad=np.pi,
-                )
-                orientation_weight = float(target_flags["orientation_weight"])
-
-                _t0 = time.perf_counter()
-                ran_ik = False
-                if jacobian_ctrl is not None and use_jacobian_step(cartesian_state, ee_delta):
-                    # Jacobian: EE velocity -> joint velocity -> integrate (position + pitch)
-                    next_wrist_roll_deg = cartesian_state.wrist_roll_deg
-                    candidate_joints = jacobian_joint_step(
-                        cartesian_state, jacobian_ctrl, ee_delta,
-                        dt=LOOP_PERIOD, joint_vel_limits_deg=ik_joint_vel_limits,
-                        clip_position=clip_position,
-                    )
-                else:
-                    # IK for 4 joints (also handles roll and orientation in Jacobian mode)
-                    ran_ik = True
-                    new_joints, next_wrist_roll_deg = solve_cartesian_motion(
-                        cartesian_state, kinematics, target_pose, ee_delta,
-                        dt=LOOP_PERIOD, orientation_weight=orientation_weight,
-                        max_joint_step_deg=ik_joint_vel_limits * LOOP_PERIOD,
-                    )
-                    # Apply joint velocity limiting to smooth IK output
-                    max_delta = ik_joint_vel_limits * LOOP_PERIOD
-                    joint_delta = new_joints[:4] - cartesian_state.ik_joint_pos_deg
-                    candidate_joints = cartesian_state.ik_joint_pos_deg + np.clip(
-                        joint_delta, -max_delta, max_delta
-                    )
-                ik_ms = (time.perf_counter() - _t0) * 1000.0
-                pos_before = cartesian_state.ee_pose[:3, 3].copy()
-                apply_ik_solution(
-                    cartesian_state,
-                    kinematics,
-                    candidate_joints,
-                    wrist_roll_deg=next_wrist_roll_deg,
-                    target_pose=target_pose,
-                )
-                frame_phase = "moving"
-                frame_limit = describe_motion_limit(
-                    homing=False,
-                    delta=ee_delta,
-                    target_pos=target_pos,
-                    workspace_bounds=SIM_WORKSPACE_BOUNDS,
-                    ik_joints_deg=cartesian_state.ik_joint_pos_deg,
-                    ik_result=getattr(kinematics, "last_ik_result", None) if ran_ik else None,
-                    progress=commanded_progress(
-                        pos_before, cartesian_state.ee_pose[:3, 3], ee_delta, LOOP_PERIOD
-                    ),
-                )
-
-                if debug_ik and (loop_counter % max(debug_ik_every, 1) == 0):
-                    pos_error = np.linalg.norm(target_pose[:3, 3] - cartesian_state.ee_pose[:3, 3])
-                    print(
-                        f"\nIK: target=[{target_pos[0]:.3f}, {target_pos[1]:.3f}, "
-                        f"{target_pos[2]:.3f}] actual=[{cartesian_state.ee_pose[0, 3]:.3f}, "
-                        f"{cartesian_state.ee_pose[1, 3]:.3f}, {cartesian_state.ee_pose[2, 3]:.3f}] "
-                        f"err={pos_error * 1000.0:.1f}mm",
-                        flush=True,
-                    )
-
-            # Combine base + IK joints for full 5-joint position
-            full_joint_pos_deg = full_joint_positions(
-                cartesian_state.ik_joint_pos_deg,
-                cartesian_state.wrist_roll_deg,
+            _t0 = time.perf_counter()
+            step = cartesian_step(
+                cartesian_state,
+                kinematics,
+                ee_delta,
+                step_config,
+                homing=homing_active,
+                jacobian_ctrl=jacobian_ctrl,
             )
+            ik_ms = (time.perf_counter() - _t0) * 1000.0
+            homing_active = step.homing
+            frame_phase = step.phase
+            frame_limit = step.limit
+            if (
+                debug_ik
+                and step.target_pose is not None
+                and loop_counter % max(debug_ik_every, 1) == 0
+            ):
+                target_pos = step.target_pos
+                pos_error = np.linalg.norm(step.target_pose[:3, 3] - cartesian_state.ee_pose[:3, 3])
+                print(
+                    f"\nIK: target=[{target_pos[0]:.3f}, {target_pos[1]:.3f}, "
+                    f"{target_pos[2]:.3f}] actual=[{cartesian_state.ee_pose[0, 3]:.3f}, "
+                    f"{cartesian_state.ee_pose[1, 3]:.3f}, {cartesian_state.ee_pose[2, 3]:.3f}] "
+                    f"err={pos_error * 1000.0:.1f}mm",
+                    flush=True,
+                )
+            full_joint_pos_deg = step.joints_deg
 
             # Update simulation
             sim.set_joint_targets(full_joint_pos_deg)
@@ -2866,8 +2818,42 @@ def _running_under_mjpython() -> bool:
     return os.environ.get("XBOX_SOARM_MJPYTHON") == "1"
 
 
-def _maybe_reexec_under_mjpython(args: argparse.Namespace) -> None:
-    """Relaunch under mjpython when macOS viewer support requires it."""
+def _libpython_path() -> Path:
+    """Return the shared libpython that mjpython should dlopen.
+
+    mjpython loads ``MJPYTHON_LIBPYTHON`` with dlopen. Passing the interpreter
+    executable fails for uv/python-build-standalone builds, whose binary links
+    libpython relative to its own location.
+    """
+    libdir = sysconfig.get_config_var("LIBDIR")
+    ldlibrary = sysconfig.get_config_var("LDLIBRARY")
+    if libdir and ldlibrary:
+        candidate = Path(libdir) / ldlibrary
+        if candidate.is_file():
+            return candidate
+    real_python = Path(os.path.realpath(sys.executable))
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    return real_python.parent.parent / "lib" / f"libpython{version}.dylib"
+
+
+def _mjpython_env(base_env: Mapping[str, str], native: Path) -> dict[str, str]:
+    """Build the environment for re-executing under MuJoCo's mjpython launcher."""
+    libpython = _libpython_path()
+    env = dict(base_env)
+    env["XBOX_SOARM_MJPYTHON"] = "1"
+    env["MJPYTHON_BIN"] = str(native)
+    env["MJPYTHON_LIBPYTHON"] = str(libpython)
+    fallback_parts = [str(libpython.parent), "/usr/local/lib", "/usr/lib"]
+    existing_fallback = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+    fallback_parts.extend(part for part in existing_fallback.split(":") if part)
+    env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join(dict.fromkeys(fallback_parts))
+    return env
+
+
+def _maybe_reexec_under_mjpython(
+    args: argparse.Namespace, module: str = "xbox_soarm_teleop.cli.simulate_mujoco"
+) -> None:
+    """Relaunch ``module`` under mjpython when macOS viewer support requires it."""
     if sys.platform != "darwin" or args.headless or _running_under_mjpython():
         return
 
@@ -2889,24 +2875,14 @@ def _maybe_reexec_under_mjpython(args: argparse.Namespace) -> None:
         )
 
     venv_python = str(Path(sys.executable))
-    real_python = os.path.realpath(sys.executable)
-    libpython_dir = str(Path(real_python).resolve().parent.parent / "lib")
-    env = os.environ.copy()
-    env["XBOX_SOARM_MJPYTHON"] = "1"
-    env["MJPYTHON_BIN"] = str(native)
-    env["MJPYTHON_LIBPYTHON"] = real_python
-    existing_fallback = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
-    fallback_parts = [libpython_dir, "/usr/local/lib", "/usr/lib"]
-    if existing_fallback:
-        fallback_parts.extend(part for part in existing_fallback.split(":") if part)
-    env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join(dict.fromkeys(fallback_parts))
+    env = _mjpython_env(os.environ, native)
 
     os.execve(
         str(native),
         [
             venv_python,
             "-m",
-            "xbox_soarm_teleop.cli.simulate_mujoco",
+            module,
             *sys.argv[1:],
         ],
         env,

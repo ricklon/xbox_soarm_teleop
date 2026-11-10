@@ -19,6 +19,7 @@ Built as an extension to the [HuggingFace LeRobot](https://github.com/huggingfac
 - **MuJoCo simulation** with physics
 - **Real robot control** via LeRobot
 - **Digital twin mode** - simultaneous simulation and real robot
+- **Workshop twin** - a simulated arm shared by the Xbox controller and AI agents (MCP)
 
 ## Xbox Control Mapping
 
@@ -52,6 +53,7 @@ uv pip install -e ".[dev]"
 
 | Need | Use |
 |------|-----|
+| Run a workshop: drive the simulated arm, then let an AI agent drive it | [Workshop Guide](docs/workshop_guide.md) |
 | Fastest preflight and pass/fail check | [Operator Checklist](docs/operator_checklist.md) |
 | Per-mode validation steps and failure patterns | [Mode Verification Guide](docs/mode_verification_guide.md) |
 | Split Joy-Con pairing, bring-up, and natural-motion testing | [Dual Joy-Con Test Guide](docs/dual_joycon_test_guide.md) |
@@ -127,6 +129,24 @@ uv run teleoperate-dual --port /dev/ttyUSB0
 uv run teleoperate-dual --port /dev/ttyUSB0 --motion-routine --routine-pattern square-xyz
 ```
 
+### 5. Workshop Twin (Simulation Shared With AI Agents)
+
+No robot needed. One command runs the simulated arm, the Xbox controller and an
+MCP server that AI agents connect to. The person holding the controller can take
+over or stop the arm at any time, and every run is recorded to `twin_logs/`.
+
+```bash
+uv run soarm-twin
+
+# Connect Claude Code (second terminal)
+claude mcp add --transport http soarm-twin http://127.0.0.1:8765/mcp
+
+# Check a laptop end to end: picks the cube into the goal box over MCP
+uv run python scripts/twin_smoke.py
+```
+
+See the [Workshop Guide](docs/workshop_guide.md) for controls and exercises.
+
 ## Supported Commands
 
 These are the primary commands to reach for first:
@@ -137,6 +157,7 @@ These are the primary commands to reach for first:
 | `uv run simulate-mujoco` | MuJoCo simulation |
 | `uv run teleoperate-real` | Main real-robot teleop entry point |
 | `uv run teleoperate-dual --port /dev/ttyUSB0` | Digital twin mode |
+| `uv run soarm-twin` | Workshop twin: simulated arm for the Xbox controller and AI agents |
 | `uv run record-xbox --repo-id <user/dataset> --robot-port /dev/ttyUSB0 --task \"...\"` | Record project-native teleop demonstrations |
 | `uv run python examples/lerobot_record_cartesian.py --repo-id <user/dataset> --task \"...\" --robot-port /dev/ttyUSB0` | Convenience wrapper for cartesian recording |
 

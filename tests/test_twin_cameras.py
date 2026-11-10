@@ -1,0 +1,77 @@
+"""Camera views rendered by the twin service (offscreen, on the loop thread)."""
+
+import io
+import logging
+import warnings
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from xbox_soarm_teleop.twin import TwinClosed, build_twin
+from xbox_soarm_teleop.twin.cameras import VIEWS
+
+warnings.filterwarnings("ignore")
+logging.getLogger("xbox_soarm_teleop").setLevel(logging.ERROR)
+
+
+@pytest.fixture(scope="module")
+def twin():
+    service = build_twin(scene="pick_place_basic", with_controller=False)
+    service.tick()
+    yield service
+    service.close()
+
+
+def shot(twin, view, **kw) -> np.ndarray:
+    future = twin.render(view, **kw)
+    twin.tick()
+    return np.asarray(Image.open(io.BytesIO(future.result(timeout=0))).convert("RGB"), dtype=float)
+
+
+@pytest.mark.parametrize("view", VIEWS)
+def test_views_render_the_scene(twin, view):
+    image = shot(twin, view)
+    assert image.shape == (240, 320, 3)
+    assert image.std() > 10  # not blank
+
+
+def test_wrist_view_follows_the_gripper(twin):
+    before = shot(twin, "wrist")
+    future = twin.submit({"type": "move_ee_to", "params": {"xyz_m": [0.25, 0.12, 0.25]}})
+    twin.tick()
+    action = future.result(timeout=0)
+    for _ in range(300):
+        if twin.wait(action.id, 0).state.terminal:
+            break
+        twin.tick()
+    after = shot(twin, "wrist")
+    assert np.abs(after - before).mean() > 10
+    overhead_png = twin.render("overhead", width=160, height=120, fmt="png")
+    twin.tick()
+    assert overhead_png.result(timeout=0).startswith(b"\x89PNG")
+
+
+def test_one_render_per_tick(twin):
+    first, second = twin.render("front"), twin.render("side")
+    twin.tick()
+    assert first.done() and not second.done()
+    twin.tick()
+    assert second.done()
+
+
+def test_bad_requests(twin):
+    with pytest.raises(ValueError):
+        twin.render("ceiling")
+    future = twin.render("wrist", width=4000, height=10)
+    twin.tick()
+    with pytest.raises(ValueError):
+        future.result(timeout=0)
+
+
+def test_render_after_close_fails():
+    service = build_twin(scene="default", with_controller=False)
+    pending = service.render("overhead")
+    service.close()
+    with pytest.raises(TwinClosed):
+        pending.result(timeout=0)
