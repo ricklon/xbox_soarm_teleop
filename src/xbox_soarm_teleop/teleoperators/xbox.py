@@ -50,6 +50,8 @@ class XboxState:
     left_bumper: bool = False
     a_button: bool = False
     y_button: bool = False
+    b_button: bool = False  # latch the virtual stop
+    start_button: bool = False  # release the virtual stop
 
     # D-pad state (-1, 0, or 1)
     dpad_x: float = 0.0  # -1 = left, 1 = right
@@ -58,6 +60,8 @@ class XboxState:
     # Edge detection for buttons (True only on press, not hold)
     a_button_pressed: bool = False
     y_button_pressed: bool = False
+    b_button_pressed: bool = False
+    start_button_pressed: bool = False
 
     # Optional IMU orientation (radians) for controllers that expose it.
     imu_roll: float = 0.0
@@ -325,6 +329,8 @@ class XboxController:
             left_bumper=self._state.left_bumper,
             a_button=self._state.a_button,
             y_button=self._state.y_button,
+            b_button=self._state.b_button,
+            start_button=self._state.start_button,
             dpad_x=self._state.dpad_x,
             dpad_y=self._state.dpad_y,
         )
@@ -333,6 +339,10 @@ class XboxController:
         """Populate rising-edge button flags after a fresh state read."""
         self._state.a_button_pressed = self._state.a_button and not self._prev_state.a_button
         self._state.y_button_pressed = self._state.y_button and not self._prev_state.y_button
+        self._state.b_button_pressed = self._state.b_button and not self._prev_state.b_button
+        self._state.start_button_pressed = (
+            self._state.start_button and not self._prev_state.start_button
+        )
 
     def _read_inputs_state(self) -> None:
         """Read and normalize state from the legacy inputs backend."""
@@ -368,6 +378,8 @@ class XboxController:
         self._state.left_bumper = bool(raw_copy.get(self.config.deadman_button, 0))
         self._state.a_button = bool(raw_copy.get(self.config.home_button, 0))
         self._state.y_button = bool(raw_copy.get(self.config.aux_button, 0))
+        self._state.b_button = bool(raw_copy.get(self.config.stop_button, 0))
+        self._state.start_button = bool(raw_copy.get(self.config.stop_reset_button, 0))
         self._state.dpad_x = float(raw_copy.get(self.config.dpad_x_axis, 0))
         self._state.dpad_y = float(raw_copy.get(self.config.dpad_y_axis, 0))
 
@@ -411,6 +423,10 @@ class XboxController:
         )
         self._state.a_button = bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_A))
         self._state.y_button = bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_Y))
+        self._state.b_button = bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_B))
+        self._state.start_button = bool(
+            self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_START)
+        )
         self._state.dpad_x = float(
             bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_DPAD_RIGHT))
             - bool(self._sdl_controller.get_button(pygame.CONTROLLER_BUTTON_DPAD_LEFT))

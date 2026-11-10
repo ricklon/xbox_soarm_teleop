@@ -168,6 +168,8 @@ class TestXboxController:
                     pygame.CONTROLLER_BUTTON_LEFTSHOULDER: 1,
                     pygame.CONTROLLER_BUTTON_A: 1,
                     pygame.CONTROLLER_BUTTON_Y: 0,
+                    pygame.CONTROLLER_BUTTON_B: 1,
+                    pygame.CONTROLLER_BUTTON_START: 0,
                     pygame.CONTROLLER_BUTTON_DPAD_RIGHT: 1,
                     pygame.CONTROLLER_BUTTON_DPAD_LEFT: 0,
                     pygame.CONTROLLER_BUTTON_DPAD_DOWN: 0,
@@ -202,8 +204,22 @@ class TestXboxController:
         assert state.a_button is True
         assert state.a_button_pressed is True
         assert state.y_button is False
+        assert state.b_button is True
+        assert state.b_button_pressed is True
+        assert state.start_button is False
         assert state.dpad_x == 1.0
         assert state.dpad_y == -1.0
+
+    def test_read_inputs_backend_maps_stop_buttons(self):
+        controller = XboxController(XboxConfig(backend="inputs"))
+        controller._connected = True
+        controller._raw_state = {"BTN_EAST": 1, "BTN_START": 0}
+        state = controller.read()
+        assert state.b_button and state.b_button_pressed and not state.start_button
+        controller._raw_state = {"BTN_EAST": 1, "BTN_START": 1}
+        state = controller.read()
+        assert state.b_button and not state.b_button_pressed
+        assert state.start_button and state.start_button_pressed
 
 
 class TestEEDelta:
