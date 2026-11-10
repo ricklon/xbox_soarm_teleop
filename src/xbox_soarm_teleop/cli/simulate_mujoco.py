@@ -445,7 +445,11 @@ class MuJoCoSimulator:
         self.stack_spawn_positions = {
             name: self.data.xpos[body_id].copy() for name, body_id in self.stack_cube_body_ids.items()
         }
+        # The arm is posed kinematically each step, so hold it at its target
+        # while the cubes settle; otherwise it falls under gravity.
+        hold_deg = np.rad2deg(self.target_pos)
         for _ in range(steps):
+            self.set_joint_targets(hold_deg)
             self.step()
         self.stack_initial_positions = {
             name: self.data.xpos[body_id].copy() for name, body_id in self.stack_cube_body_ids.items()
@@ -542,9 +546,14 @@ def _robot_spec(urdf_path: str) -> mujoco.MjSpec:
         tmp_path = tmp.name
     try:
         mujoco.mj_saveLastXML(tmp_path, base_model)
-        return mujoco.MjSpec.from_file(tmp_path)
+        spec = mujoco.MjSpec.from_file(tmp_path)
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+    # The URDF's fixed base is fused into the world body, and MuJoCo does not
+    # filter world-vs-child contacts. The convex hulls of the base meshes
+    # overlap the shoulder, which wedged the arm in physics scenes.
+    spec.add_exclude(bodyname1="world", bodyname2="shoulder_link")
+    return spec
 
 
 def _add_stack_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
