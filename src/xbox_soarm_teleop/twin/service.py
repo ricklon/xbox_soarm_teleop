@@ -167,6 +167,8 @@ class TwinService:
         self._human_active_s = -math.inf
         self._gripper_following = False
         self.stop_latched_by: str | None = None
+        self.stop_release_hint = "press the controller's Menu/Start button"
+        """Told to an agent that tries to release a stop a person latched."""
         self._stop_flag = threading.Event()
         self._stop_by = "api"
         self._stop_client: str | None = None
@@ -635,7 +637,7 @@ class TwinService:
         if self.stop_latched_by == "human":
             raise ActionRejected(
                 ReasonCode.NOT_OWNER,
-                "human (stop was latched on the controller; press its Menu/Start button)",
+                f"human (a person latched this stop and must release it: {self.stop_release_hint})",
             )
         self._ensure_owner(client_id)
         self._release_stop(client_id)

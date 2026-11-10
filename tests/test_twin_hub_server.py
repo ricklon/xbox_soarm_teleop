@@ -153,6 +153,10 @@ def test_instructor_page_lists_arms_and_can_stop_them_all(served):
     assert all(room["stop"] for room in httpx.get(f"{admin}/rooms").json()["rooms"])
     refused = asyncio.run(_call(base, rooms(hub)[1].token, "move_to", x=0.3, y=0.0, z=0.2))
     assert refused == {"ok": False, "reason": "stopped", "detail": "latched by human"}
+    blocked = asyncio.run(_call(base, rooms(hub)[1].token, "reset_stop", confirm=True))
+    assert (
+        blocked["reason"] == "not_owner" and "Release stop on the arm's web page" in blocked["detail"]
+    )
     httpx.post(f"{admin}/release_all")
     time.sleep(0.15)
     assert not any(room["stop"] for room in httpx.get(f"{admin}/rooms").json()["rooms"])

@@ -6,6 +6,9 @@ agent share it: you can take over or stop it at any moment.
 
 Nothing here needs a real robot. Everything runs in simulation.
 
+This guide is for running the twin on your own laptop. For a remote workshop
+where students only need a browser, see [Hosting a Remote Workshop](workshop_hosting.md).
+
 See also: [Driving Guide](driving_guide.md) ·
 [Agent interface design](mcp_control_interface.md) · [Schemas](schemas.md)
 
