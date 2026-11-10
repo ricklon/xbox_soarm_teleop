@@ -57,3 +57,22 @@ def test_main_forwards_headless_to_routine(monkeypatch):
         sim_cli.main()
     assert result.value.code == 0
     assert calls[0]["headless"] is True
+
+
+def test_mjpython_env_points_at_loadable_libpython(tmp_path):
+    """mjpython dlopens MJPYTHON_LIBPYTHON; an executable path fails on uv Pythons."""
+    native = tmp_path / "mjpython"
+    env = sim_cli._mjpython_env({"PATH": "/bin"}, native)
+    lib = Path(env["MJPYTHON_LIBPYTHON"])
+    assert lib.is_file()
+    assert lib.name.startswith("libpython") and lib.suffix in {".dylib", ".so"}
+    assert env["XBOX_SOARM_MJPYTHON"] == "1"
+    assert env["MJPYTHON_BIN"] == str(native)
+    assert env["DYLD_FALLBACK_LIBRARY_PATH"].split(":")[0] == str(lib.parent)
+    assert env["PATH"] == "/bin"
+
+
+def test_mjpython_env_keeps_existing_fallback_paths(tmp_path):
+    env = sim_cli._mjpython_env({"DYLD_FALLBACK_LIBRARY_PATH": "/opt/x:/usr/lib"}, tmp_path / "m")
+    parts = env["DYLD_FALLBACK_LIBRARY_PATH"].split(":")
+    assert "/opt/x" in parts and parts.count("/usr/lib") == 1

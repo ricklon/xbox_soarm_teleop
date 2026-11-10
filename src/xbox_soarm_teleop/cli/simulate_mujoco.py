@@ -34,8 +34,10 @@ import json
 import os
 import signal
 import sys
+import sysconfig
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -2876,6 +2878,38 @@ def _running_under_mjpython() -> bool:
     return os.environ.get("XBOX_SOARM_MJPYTHON") == "1"
 
 
+def _libpython_path() -> Path:
+    """Return the shared libpython that mjpython should dlopen.
+
+    mjpython loads ``MJPYTHON_LIBPYTHON`` with dlopen. Passing the interpreter
+    executable fails for uv/python-build-standalone builds, whose binary links
+    libpython relative to its own location.
+    """
+    libdir = sysconfig.get_config_var("LIBDIR")
+    ldlibrary = sysconfig.get_config_var("LDLIBRARY")
+    if libdir and ldlibrary:
+        candidate = Path(libdir) / ldlibrary
+        if candidate.is_file():
+            return candidate
+    real_python = Path(os.path.realpath(sys.executable))
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    return real_python.parent.parent / "lib" / f"libpython{version}.dylib"
+
+
+def _mjpython_env(base_env: Mapping[str, str], native: Path) -> dict[str, str]:
+    """Build the environment for re-executing under MuJoCo's mjpython launcher."""
+    libpython = _libpython_path()
+    env = dict(base_env)
+    env["XBOX_SOARM_MJPYTHON"] = "1"
+    env["MJPYTHON_BIN"] = str(native)
+    env["MJPYTHON_LIBPYTHON"] = str(libpython)
+    fallback_parts = [str(libpython.parent), "/usr/local/lib", "/usr/lib"]
+    existing_fallback = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+    fallback_parts.extend(part for part in existing_fallback.split(":") if part)
+    env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join(dict.fromkeys(fallback_parts))
+    return env
+
+
 def _maybe_reexec_under_mjpython(args: argparse.Namespace) -> None:
     """Relaunch under mjpython when macOS viewer support requires it."""
     if sys.platform != "darwin" or args.headless or _running_under_mjpython():
@@ -2899,17 +2933,7 @@ def _maybe_reexec_under_mjpython(args: argparse.Namespace) -> None:
         )
 
     venv_python = str(Path(sys.executable))
-    real_python = os.path.realpath(sys.executable)
-    libpython_dir = str(Path(real_python).resolve().parent.parent / "lib")
-    env = os.environ.copy()
-    env["XBOX_SOARM_MJPYTHON"] = "1"
-    env["MJPYTHON_BIN"] = str(native)
-    env["MJPYTHON_LIBPYTHON"] = real_python
-    existing_fallback = env.get("DYLD_FALLBACK_LIBRARY_PATH", "")
-    fallback_parts = [libpython_dir, "/usr/local/lib", "/usr/lib"]
-    if existing_fallback:
-        fallback_parts.extend(part for part in existing_fallback.split(":") if part)
-    env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join(dict.fromkeys(fallback_parts))
+    env = _mjpython_env(os.environ, native)
 
     os.execve(
         str(native),
