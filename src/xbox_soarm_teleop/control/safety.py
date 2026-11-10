@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Callable, Dict
 
 import numpy as np
 
@@ -82,3 +82,23 @@ def clip_workspace(
             flags[f"ws_clip_{axis}"] = 1
         clipped[idx] = val
     return clipped, flags
+
+
+def make_workspace_clipper(
+    workspace_limits: dict[str, tuple[float, float]],
+) -> Callable[[np.ndarray], tuple[np.ndarray, Dict[str, int]]]:
+    """Return a ``clip_position`` callback bound to the given workspace limits.
+
+    Args:
+        workspace_limits: ``{"x"|"y"|"z": (min, max)}`` in meters, e.g. from
+            ``load_workspace_limits()``.
+
+    Returns:
+        A function ``pos -> (clipped_pos, flags)`` for ``advance_cartesian_target``
+        and ``jacobian_joint_step``.
+    """
+
+    def clip(pos: np.ndarray) -> tuple[np.ndarray, Dict[str, int]]:
+        return clip_workspace(np.asarray(pos, dtype=float), workspace_limits)
+
+    return clip

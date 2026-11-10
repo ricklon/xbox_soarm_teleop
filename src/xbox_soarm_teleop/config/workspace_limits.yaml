@@ -1,5 +1,8 @@
 # Workspace limits for SO-ARM101
 # All values are in meters (position) or radians (orientation)
+# Loaded by config/workspace.py: `position` and `strict_position` are enforced by
+# simulate-mujoco, teleoperate-real, teleoperate-dual and the LeRobot IK step.
+# Home pose lives in config/joints.py (HOME_POSITION_DEG).
 
 # Cartesian position bounds (relative to robot base)
 position:
@@ -46,12 +49,3 @@ gripper:
 velocity:
   linear_max: 0.2   # m/s
   angular_max: 1.0  # rad/s
-
-# Home position (joint angles in radians)
-home_position:
-  shoulder_pan: 0.0
-  shoulder_lift: 0.0
-  elbow: 0.0
-  wrist_pitch: 0.0
-  wrist_roll: 0.0
-  gripper: 0.5
