@@ -77,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from xbox_soarm_teleop.twin import build_twin
     from xbox_soarm_teleop.twin.mcp_server import McpThread, build_mcp_server
+    from xbox_soarm_teleop.twin.status import MENU_BUTTON
 
     host = "127.0.0.1"
     if not args.no_mcp and not _port_free(host, args.port):
@@ -99,13 +100,18 @@ def main(argv: list[str] | None = None) -> int:
     controller = service.controller
     if controller is not None:
         controller.connect()
-        state = "connected" if controller.is_connected else "not found yet (plug it in any time)"
-        print(f"Xbox controller: {state}", flush=True)
+        if not controller.is_connected:
+            print(
+                "Xbox controller: not found yet. Turn it on (Xbox button) or plug it in; "
+                "it is picked up while the twin runs.",
+                flush=True,
+            )
         print(
             "  Hold LB + sticks: move | RT: gripper | A: home | Y: reset scene | "
-            "B: STOP | Start: release stop",
+            "B: STOP | Menu: release stop",
             flush=True,
         )
+        print(f"  Nothing moves while the stop is latched: press the {MENU_BUTTON}.", flush=True)
 
     if not args.no_mcp:
         mcp = McpThread(build_mcp_server(service), host=host, port=args.port)
@@ -127,6 +133,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Scene: {args.scene}. Close the window or press Ctrl+C to quit.", flush=True)
 
     shown_events: list[str] = []
+    shown_status: tuple[str, str, str] | None = None
+    view = "free"
+    dpad_x = 0.0
+    pad_connected = False
     started = time.monotonic()
     next_tick = started
     viewer_ctx = (
@@ -140,7 +150,18 @@ def main(argv: list[str] | None = None) -> int:
                 tick_start = time.monotonic()
                 service.tick()
                 viewer.sync()
-                events = service.observe()["control"]["events"]
+                observation = service.observe()
+                pad = service.last_human
+                previous_dpad_x, dpad_x = dpad_x, pad.dpad_x if pad is not None else 0.0
+                view = _switch_view(viewer, service.sim.model, view, dpad_x, previous_dpad_x)
+                shown_status = _show_status(viewer, observation, shown_status, view)
+                if controller is not None:
+                    now_connected = observation["control"]["controller_connected"]
+                    if now_connected != pad_connected:
+                        pad_connected = now_connected
+                        state = "connected" if now_connected else "disconnected"
+                        print(f"Xbox controller: {state}", flush=True)
+                events = observation["control"]["events"]
                 for event in events[len(events) - _new_count(shown_events, events) :]:
                     print(f"  {event}", flush=True)
                 shown_events = list(events)
@@ -155,6 +176,54 @@ def main(argv: list[str] | None = None) -> int:
             controller.disconnect()
     print("Twin stopped.", flush=True)
     return 0
+
+
+def _switch_view(viewer, model, view: str, dpad_x: float, previous_dpad_x: float) -> str:
+    """Change the window's camera on a D-pad left/right press; return the view shown.
+
+    Needs no deadman and does not take control from an agent: it only changes
+    what the person sees.
+    """
+    from xbox_soarm_teleop.twin.cameras import next_view, point_camera
+
+    chosen = next_view(view, dpad_x, previous_dpad_x)
+    camera = getattr(viewer, "cam", None)
+    if chosen == view or camera is None:
+        return view
+    with viewer.lock():
+        point_camera(camera, model, chosen)
+    return chosen
+
+
+def _show_status(
+    viewer, observation: dict, shown: tuple[str, str, str] | None, view: str = "free"
+) -> tuple[str, str, str]:
+    """Draw the status, camera and controls in the viewer when any of them changes."""
+    import mujoco
+
+    from xbox_soarm_teleop.twin.status import CONTROLS_HELP, status_text
+
+    status = (*status_text(observation), view)
+    set_texts = getattr(viewer, "set_texts", None)
+    if status != shown and callable(set_texts):
+        set_texts(
+            [
+                (mujoco.mjtFontScale.mjFONTSCALE_200, mujoco.mjtGridPos.mjGRID_TOPLEFT, *status[:2]),
+                (
+                    mujoco.mjtFontScale.mjFONTSCALE_150,
+                    mujoco.mjtGridPos.mjGRID_TOPRIGHT,
+                    "Camera",
+                    "free (mouse)" if view == "free" else view,
+                ),
+                (
+                    mujoco.mjtFontScale.mjFONTSCALE_150,
+                    mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,
+                    "Xbox controller",
+                    CONTROLS_HELP,
+                ),
+            ]
+        )
+    return status
 
 
 def _next_deadline(deadline: float, now: float, dt: float) -> float:

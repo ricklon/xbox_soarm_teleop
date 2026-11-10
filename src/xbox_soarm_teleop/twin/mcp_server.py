@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from concurrent.futures import TimeoutError as FutureTimeout
-from typing import Any
+from typing import Any, Callable
 
 from mcp.server.mcpserver import Context, Image, MCPServer
 
@@ -39,7 +39,7 @@ center, then set_gripper(1.0) to grab it; set_gripper(0.0) releases it.
 A human with an Xbox controller can take over at any time (reason
 `preempted`/`human`); wait until they are done. If the stop is latched, motion
 is refused until it is reset; a stop latched on the controller must be
-released there (Start button). Use `camera` to look at the scene.
+released there (Menu button, also called Start). Use `camera` to look at the scene.
 """
 
 
@@ -67,9 +67,25 @@ def _status_dict(status) -> dict[str, Any]:
     }
 
 
-def build_mcp_server(service: TwinService) -> MCPServer:
-    """Create the MCP server exposing ``service``."""
-    server = MCPServer("soarm-twin", instructions=INSTRUCTIONS)
+def build_mcp_server(
+    service: TwinService | Callable[[Context | None], TwinService],
+    *,
+    name: str = "soarm-twin",
+    instructions: str = INSTRUCTIONS,
+) -> MCPServer:
+    """Create the MCP server exposing a twin.
+
+    Args:
+        service: The twin, or a function that picks the twin for a request
+            from its context (the hub chooses a student's arm by the bearer
+            token the request carries).
+        name: Server name shown to clients.
+        instructions: Server instructions for the agent.
+    """
+    server = MCPServer(name, instructions=instructions)
+
+    def twin(ctx: Context | None) -> TwinService:
+        return service(ctx) if callable(service) else service
 
     def run_command(future) -> tuple[bool, Any]:
         try:
@@ -80,6 +96,7 @@ def build_mcp_server(service: TwinService) -> MCPServer:
             return False, _rejection(exc)
 
     def submit(request: dict[str, Any], ctx: Context | None, wait: bool, preempt: bool = False):
+        service = twin(ctx)
         ok, result = run_command(service.submit(request, client_id=_client_id(ctx), preempt=preempt))
         if not ok:
             return result
@@ -104,11 +121,11 @@ def build_mcp_server(service: TwinService) -> MCPServer:
         return extra
 
     @server.tool()
-    def observe() -> dict[str, Any]:
+    def observe(ctx: Context | None = None) -> dict[str, Any]:
         """Current state: tool pose, joints (deg), gripper (0 open..1 closed),
         objects and whether one is attached, workspace bounds, the current
         action, stop status and who is in control."""
-        return service.observe()
+        return twin(ctx).observe()
 
     @server.tool()
     def move_to(
@@ -162,10 +179,12 @@ def build_mcp_server(service: TwinService) -> MCPServer:
         return submit({"type": "home"}, ctx, wait)
 
     @server.tool()
-    def wait_for_action(action_id: str, timeout_s: float = 10.0) -> dict[str, Any]:
+    def wait_for_action(
+        action_id: str, timeout_s: float = 10.0, ctx: Context | None = None
+    ) -> dict[str, Any]:
         """Wait (up to timeout_s, max 30) for an action to finish; return its status."""
         try:
-            status = service.wait(action_id, min(max(timeout_s, 0.0), MAX_WAIT_S))
+            status = twin(ctx).wait(action_id, min(max(timeout_s, 0.0), MAX_WAIT_S))
         except KeyError as exc:
             return {"ok": False, "reason": "invalid_request", "detail": str(exc)}
         return {"ok": True, "action": _status_dict(status)}
@@ -173,7 +192,7 @@ def build_mcp_server(service: TwinService) -> MCPServer:
     @server.tool()
     def cancel_action(ctx: Context | None = None) -> dict[str, Any]:
         """Cancel your running action; the arm holds where it is."""
-        ok, result = run_command(service.cancel(client_id=_client_id(ctx)))
+        ok, result = run_command(twin(ctx).cancel(client_id=_client_id(ctx)))
         if not ok:
             return result
         return {"ok": True, "action": _status_dict(result) if result else None}
@@ -182,26 +201,26 @@ def build_mcp_server(service: TwinService) -> MCPServer:
     def stop(ctx: Context | None = None) -> dict[str, Any]:
         """Latch the virtual emergency stop: cancels motion and refuses new
         motion until reset_stop. Always allowed."""
-        service.stop(by="agent", client_id=_client_id(ctx))
+        twin(ctx).stop(by="agent", client_id=_client_id(ctx))
         return {"ok": True, "stop_latched": True}
 
     @server.tool()
     def reset_stop(confirm: bool = False, ctx: Context | None = None) -> dict[str, Any]:
         """Release a stop you latched. Requires confirm=true. A stop latched on
-        the Xbox controller can only be released there (Start button)."""
-        ok, result = run_command(service.reset_stop(client_id=_client_id(ctx), confirm=confirm))
+        the Xbox controller can only be released there (Menu button, also called Start)."""
+        ok, result = run_command(twin(ctx).reset_stop(client_id=_client_id(ctx), confirm=confirm))
         return {"ok": True, "released": bool(result)} if ok else result
 
     @server.tool()
     def reset_scene(ctx: Context | None = None) -> dict[str, Any]:
         """Home the arm and put every object back where it started."""
-        ok, result = run_command(service.reset_scene(client_id=_client_id(ctx)))
+        ok, result = run_command(twin(ctx).reset_scene(client_id=_client_id(ctx)))
         return {"ok": True} if ok else result
 
     @server.tool()
     def release_control(ctx: Context | None = None) -> dict[str, Any]:
         """Give up control so another agent can drive the arm."""
-        ok, result = run_command(service.release_control(client_id=_client_id(ctx)))
+        ok, result = run_command(twin(ctx).release_control(client_id=_client_id(ctx)))
         return {"ok": True, "released": bool(result)} if ok else result
 
     @server.tool()
@@ -213,8 +232,10 @@ def build_mcp_server(service: TwinService) -> MCPServer:
         left on the left), "front" (facing the robot, so its left is on your
         right), "side" (from the robot's left). Max 640x480."""
         try:
-            data = service.render(view, width=width, height=height, client_id=_client_id(ctx)).result(
-                timeout=COMMAND_TIMEOUT_S
+            data = (
+                twin(ctx)
+                .render(view, width=width, height=height, client_id=_client_id(ctx))
+                .result(timeout=COMMAND_TIMEOUT_S)
             )
         except Exception as exc:  # noqa: BLE001 - reported to the agent
             return _rejection(exc)

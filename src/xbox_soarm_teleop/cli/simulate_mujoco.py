@@ -295,17 +295,28 @@ def reset_active_scene(
 class MuJoCoSimulator:
     """MuJoCo-based SO-ARM101 simulator."""
 
-    def __init__(self, urdf_path: str, scene: str = "default", world: str = DEFAULT_WORLD):
+    def __init__(
+        self,
+        urdf_path: str,
+        scene: str = "default",
+        world: str = DEFAULT_WORLD,
+        model: mujoco.MjModel | None = None,
+    ):
         """Initialize MuJoCo simulator.
 
         Args:
             urdf_path: Path to robot URDF file.
             scene: Scene variant to augment on top of the robot model.
             world: Lighting/sky/floor preset (see ``xbox_soarm_teleop.sim.world``).
+            model: A model already compiled for this scene and world, to share
+                between simulators (the simulator never modifies its model, and
+                each keeps its own ``MjData``). Compiled here when None.
         """
         self.scene = scene
         self.world = world
-        self.model = load_model_with_cameras(urdf_path, scene=scene, world=world)
+        if model is None:
+            model = load_model_with_cameras(urdf_path, scene=scene, world=world)
+        self.model = model
         self.data = mujoco.MjData(self.model)
         self.physics_scene_active = scene in {"stack", "pick_place_basic"}
 

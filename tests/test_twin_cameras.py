@@ -75,3 +75,69 @@ def test_render_after_close_fails():
     service.close()
     with pytest.raises(TwinClosed):
         pending.result(timeout=0)
+
+
+# ------------------------------------------------- the viewer window's camera
+def test_dpad_right_and_left_step_through_the_window_views():
+    from xbox_soarm_teleop.twin.cameras import WINDOW_VIEWS, next_view
+
+    assert WINDOW_VIEWS == ("free", "wrist", "overhead", "front", "side")
+    assert next_view("free", 1.0, 0.0) == "wrist"
+    assert next_view("wrist", -1.0, 0.0) == "free"
+    assert next_view("side", 1.0, 0.0) == "free"  # wraps
+    assert next_view("free", -1.0, 0.0) == "side"
+
+
+def test_holding_the_dpad_switches_only_once():
+    from xbox_soarm_teleop.twin.cameras import next_view
+
+    assert next_view("wrist", 1.0, 1.0) == "wrist"
+    assert next_view("wrist", 0.0, 1.0) == "wrist"
+
+
+def test_point_camera_sets_each_view():
+    import mujoco
+
+    from xbox_soarm_teleop.twin import build_twin
+    from xbox_soarm_teleop.twin.cameras import FIXED_VIEWS, point_camera
+
+    service = build_twin(scene="pick_place_basic", with_controller=False)
+    model = service.sim.model
+    camera = mujoco.MjvCamera()
+    point_camera(camera, model, "wrist")
+    assert camera.type == mujoco.mjtCamera.mjCAMERA_FIXED
+    assert camera.fixedcamid == mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
+    point_camera(camera, model, "overhead")
+    assert camera.type == mujoco.mjtCamera.mjCAMERA_FREE and camera.fixedcamid == -1
+    assert camera.elevation == FIXED_VIEWS["overhead"]["elevation"]
+    point_camera(camera, model, "free")  # back to the mouse, left where it was
+    assert camera.type == mujoco.mjtCamera.mjCAMERA_FREE
+    assert camera.elevation == FIXED_VIEWS["overhead"]["elevation"]
+    service.close()
+
+
+def test_window_camera_follows_the_dpad_without_taking_control():
+    import mujoco
+
+    from xbox_soarm_teleop.cli import twin as twin_cli
+    from xbox_soarm_teleop.teleoperators.xbox import XboxState
+    from xbox_soarm_teleop.twin import build_twin
+
+    class Window:
+        def __init__(self):
+            self.cam = mujoco.MjvCamera()
+
+        def lock(self):
+            import contextlib
+
+            return contextlib.nullcontext()
+
+    service = build_twin(scene="pick_place_basic", with_controller=False)
+    service.tick(XboxState(dpad_x=1.0))
+    assert service.last_human.dpad_x == 1.0
+    assert service.observe()["control"]["human_in_control"] is False
+    window = Window()
+    view = twin_cli._switch_view(window, service.sim.model, "free", 1.0, 0.0)
+    assert view == "wrist" and window.cam.type == mujoco.mjtCamera.mjCAMERA_FIXED
+    assert twin_cli._switch_view(object(), service.sim.model, "free", 1.0, 0.0) == "free"  # headless
+    service.close()

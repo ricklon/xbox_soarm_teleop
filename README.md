@@ -54,6 +54,7 @@ uv pip install -e ".[dev]"
 | Need | Use |
 |------|-----|
 | Run a workshop: drive the simulated arm, then let an AI agent drive it | [Workshop Guide](docs/workshop_guide.md) |
+| Host a remote workshop: one simulated arm per student, in a browser | [Hosting a Remote Workshop](docs/workshop_hosting.md) |
 | Fastest preflight and pass/fail check | [Operator Checklist](docs/operator_checklist.md) |
 | Per-mode validation steps and failure patterns | [Mode Verification Guide](docs/mode_verification_guide.md) |
 | Split Joy-Con pairing, bring-up, and natural-motion testing | [Dual Joy-Con Test Guide](docs/dual_joycon_test_guide.md) |
@@ -147,6 +148,16 @@ uv run python scripts/twin_smoke.py
 
 See the [Workshop Guide](docs/workshop_guide.md) for controls and exercises.
 
+**Remote workshop.** `soarm-hub` hosts one simulated arm per student: each gets
+a web page to drive it, an address and key for their AI agent, and a notebook.
+Students install nothing.
+
+```bash
+uv run soarm-hub --seats 12
+```
+
+See [Hosting a Remote Workshop](docs/workshop_hosting.md).
+
 ## Supported Commands
 
 These are the primary commands to reach for first:
@@ -158,6 +169,7 @@ These are the primary commands to reach for first:
 | `uv run teleoperate-real` | Main real-robot teleop entry point |
 | `uv run teleoperate-dual --port /dev/ttyUSB0` | Digital twin mode |
 | `uv run soarm-twin` | Workshop twin: simulated arm for the Xbox controller and AI agents |
+| `uv run soarm-hub --seats 12` | Remote workshop: one simulated arm per student, in a browser |
 | `uv run record-xbox --repo-id <user/dataset> --robot-port /dev/ttyUSB0 --task \"...\"` | Record project-native teleop demonstrations |
 | `uv run python examples/lerobot_record_cartesian.py --repo-id <user/dataset> --task \"...\" --robot-port /dev/ttyUSB0` | Convenience wrapper for cartesian recording |
 

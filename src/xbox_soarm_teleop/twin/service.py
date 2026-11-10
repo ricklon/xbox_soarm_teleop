@@ -15,7 +15,7 @@ Human and agent share one motion path (``control.step.cartesian_step``):
 - The human (Xbox) wins: holding LB, or pressing A (home) / Y (reset scene),
   cancels the agent's action (``preempted``/``human``) and blocks agent motion
   until the controller has been idle for ``HUMAN_IDLE_S``.
-- B latches the virtual stop; Start releases it. A stop latched on the
+- B latches the virtual stop; Menu (Start) releases it. A stop latched on the
   controller can only be released on the controller.
 - Agents take control automatically when it is free; a different client can
   take over whenever the owner has no running action, or after the lease
@@ -33,7 +33,7 @@ import queue
 import threading
 from collections import deque
 from concurrent.futures import Future
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 import mujoco
@@ -78,6 +78,17 @@ class TwinClosed(RuntimeError):
     """The twin loop has shut down."""
 
 
+@dataclass
+class RenderRequest:
+    """A camera image somebody is waiting for."""
+
+    view: str
+    width: int
+    height: int
+    fmt: str
+    future: Future
+
+
 class TwinService:
     """Owns the simulator; arbitrates human (Xbox) and agent control.
 
@@ -98,6 +109,9 @@ class TwinService:
         log: Optional session log (design §10). Every request, response,
             status transition, stop, ownership change and a downsampled
             observation stream are written to it.
+        cameras: Optional camera rig shared with other twins of the same
+            model. The caller owns it: this service draws its own state with
+            it and never closes it. Created on first use when None.
     """
 
     def __init__(
@@ -115,8 +129,10 @@ class TwinService:
         controller=None,
         table_top_z: float | None = None,
         log: SessionLog | None = None,
+        cameras: CameraRig | None = None,
     ) -> None:
         self.log = log
+        self._shared_cameras = cameras is not None
         self._status_logged: tuple | None = None
         self._control_logged: tuple = (None, False)
         self._log_error_reported = False
@@ -151,15 +167,18 @@ class TwinService:
         self._human_active_s = -math.inf
         self._gripper_following = False
         self.stop_latched_by: str | None = None
+        self.stop_release_hint = "press the controller's Menu/Start button"
+        """Told to an agent that tries to release a stop a person latched."""
         self._stop_flag = threading.Event()
         self._stop_by = "api"
         self._stop_client: str | None = None
         self._commands: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
-        self._renders: queue.SimpleQueue[tuple[Callable[[], Any], Future]] = queue.SimpleQueue()
-        self._cameras: CameraRig | None = None
+        self._renders: queue.SimpleQueue[RenderRequest] = queue.SimpleQueue()
+        self._cameras: CameraRig | None = cameras
         self._loop_thread: int | None = None
         self._closed = False
         self.controller_connected = False
+        self.last_human: XboxState | None = None
         self.events: deque[str] = deque(maxlen=RECENT_EVENTS)
         self.last_step: CartesianStepResult | None = None
         self._last_cmd = (np.zeros(5), 0.0)
@@ -258,13 +277,8 @@ class TwinService:
             future.set_exception(TwinClosed("twin is not running"))
             return future
 
-        def draw() -> bytes:
-            if self._cameras is None:
-                self._cameras = CameraRig(self.sim.model, self.sim.data)
-            return encode(self._cameras.render(view, width, height), fmt)
-
         self._log("request", client_id=client_id, type="camera", view=view, size=[width, height])
-        self._renders.put((draw, future))
+        self._renders.put(RenderRequest(view, width, height, fmt, future))
         return future
 
     def observe(self) -> dict[str, Any]:
@@ -299,12 +313,49 @@ class TwinService:
             self.log.close()
 
     # ------------------------------------------------------------- the loop
-    def tick(self, human: XboxState | None = None) -> None:
+    @property
+    def render_waiting(self) -> bool:
+        """True when a camera image has been requested and not drawn yet."""
+        return not self._renders.empty()
+
+    def take_render_request(self) -> RenderRequest | None:
+        """Hand over the oldest waiting camera request, for a host that draws
+        for several twins itself (``twin.hub``). The host must resolve its future.
+        """
+        try:
+            return self._renders.get_nowait()
+        except queue.Empty:
+            return None
+
+    def render_pending(self) -> bool:
+        """Draw one requested camera image now; False if none was waiting.
+
+        Call only from the loop thread. For loops that tick several twins and
+        ration rendering between them (``tick(render=False)``).
+        """
+        request = self.take_render_request()
+        if request is None:
+            return False
+        if request.future.set_running_or_notify_cancel():
+            try:
+                if self._cameras is None:
+                    self._cameras = CameraRig(self.sim.model, self.sim.data)
+                pixels = self._cameras.render(
+                    request.view, request.width, request.height, self.sim.data
+                )
+                request.future.set_result(encode(pixels, request.fmt))
+            except BaseException as exc:  # noqa: BLE001 - delivered to the caller
+                request.future.set_exception(exc)
+        return True
+
+    def tick(self, human: XboxState | None = None, *, render: bool = True) -> None:
         """Advance one control period. Call only from the loop thread.
 
         Args:
             human: Controller state this tick. If None and a controller was
                 given, it is read here; with neither, no human is present.
+            render: Draw at most one requested camera image after the step.
+                Pass False to draw later with :meth:`render_pending`.
         """
         self._loop_thread = threading.get_ident()
         if self._closed:
@@ -317,6 +368,7 @@ class TwinService:
                 human = None
         else:
             self.controller_connected = human is not None
+        self.last_human = human
         now = self.now_s
         if self._stop_flag.is_set():
             self._stop_flag.clear()
@@ -367,7 +419,8 @@ class TwinService:
             if self.log.error is not None and not self._log_error_reported:
                 self._log_error_reported = True
                 self.events.append(f"session log stopped: {self.log.error}")
-        self._run_one(self._renders)
+        if render:
+            self.render_pending()
 
     # --------------------------------------------------------------- helpers
     def tool_xyz(self) -> np.ndarray:
@@ -463,7 +516,7 @@ class TwinService:
             pass
 
     def _close_cameras(self) -> None:
-        if self._cameras is not None:
+        if self._cameras is not None and not self._shared_cameras:
             self._cameras.close()
             self._cameras = None
 
@@ -482,14 +535,17 @@ class TwinService:
         return True
 
     def _fail_pending(self) -> None:
+        waiting = []
         for pending in (self._commands, self._renders):
             while True:
                 try:
-                    _, future = pending.get_nowait()
+                    item = pending.get_nowait()
                 except queue.Empty:
                     break
-                if future.set_running_or_notify_cancel():
-                    future.set_exception(TwinClosed("twin stopped"))
+                waiting.append(item.future if isinstance(item, RenderRequest) else item[1])
+        for future in waiting:
+            if future.set_running_or_notify_cancel():
+                future.set_exception(TwinClosed("twin stopped"))
 
     def _human_in_control(self, now: float) -> bool:
         return now - self._human_active_s < HUMAN_IDLE_S
@@ -580,7 +636,8 @@ class TwinService:
             raise ActionRejected(ReasonCode.INVALID_REQUEST, "reset_stop requires confirm=true")
         if self.stop_latched_by == "human":
             raise ActionRejected(
-                ReasonCode.NOT_OWNER, "human (stop was latched on the controller; press Start)"
+                ReasonCode.NOT_OWNER,
+                f"human (a person latched this stop and must release it: {self.stop_release_hint})",
             )
         self._ensure_owner(client_id)
         self._release_stop(client_id)
