@@ -59,7 +59,7 @@ from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 
 # Project paths
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-URDF_PATH = PROJECT_ROOT / "assets" / "so101_abs.urdf"
+URDF_PATH = PROJECT_ROOT / "assets" / "so101.urdf"
 
 # Default calibration directory (project-local)
 DEFAULT_CALIBRATION_DIR = PROJECT_ROOT / "calibration"

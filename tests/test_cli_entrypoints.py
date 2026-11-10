@@ -160,19 +160,19 @@ def test_challenge_collection_accepts_any_touch_probe() -> None:
 
 
 def test_stack_scene_compiles() -> None:
-    sim = MuJoCoSimulator("assets/so101_abs.urdf", scene="stack")
+    sim = MuJoCoSimulator("assets/so101.urdf", scene="stack")
     assert sim.has_stack_scene() is True
     assert len(sim.stack_cube_body_ids) == STACK_CUBE_COUNT
 
 
 def test_pick_place_scene_compiles() -> None:
-    sim = MuJoCoSimulator("assets/so101_abs.urdf", scene="pick_place_basic")
+    sim = MuJoCoSimulator("assets/so101.urdf", scene="pick_place_basic")
     assert sim.has_pick_place_scene() is True
     assert sim.get_pick_cube_position() is not None
 
 
 def test_stack_scene_reset_restores_cube_positions() -> None:
-    sim = MuJoCoSimulator("assets/so101_abs.urdf", scene="stack")
+    sim = MuJoCoSimulator("assets/so101.urdf", scene="stack")
     body_name, body_id = next(iter(sim.stack_cube_body_ids.items()))
     jnt_adr = sim.model.body_jntadr[body_id]
     qpos_adr = sim.model.jnt_qposadr[jnt_adr]
@@ -187,7 +187,7 @@ def test_stack_scene_reset_restores_cube_positions() -> None:
 
 
 def test_pick_place_scene_reset_restores_cube_pose() -> None:
-    sim = MuJoCoSimulator("assets/so101_abs.urdf", scene="pick_place_basic")
+    sim = MuJoCoSimulator("assets/so101.urdf", scene="pick_place_basic")
     sim.set_pick_cube_pose(np.array([0.45, 0.15, 0.25], dtype=float))
 
     sim.reset_pick_place_scene()

@@ -38,7 +38,7 @@ from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES, JOINT_NAMES_WITH_GRI
 from xbox_soarm_teleop.kinematics.jacobian import JacobianController
 
 # Path to URDF
-URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
+URDF_PATH = Path(__file__).parent.parent / "assets" / "so101.urdf"
 
 # Joint names
 JOINT_NAMES = JOINT_NAMES_WITH_GRIPPER

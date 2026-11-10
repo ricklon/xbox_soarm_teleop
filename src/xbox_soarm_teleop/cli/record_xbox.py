@@ -53,7 +53,7 @@ from xbox_soarm_teleop.recording.features import build_dataset_features, build_s
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_URDF = PROJECT_ROOT / "assets" / "so101_abs.urdf"
+DEFAULT_URDF = PROJECT_ROOT / "assets" / "so101.urdf"
 
 
 def _find_urdf() -> str | None:

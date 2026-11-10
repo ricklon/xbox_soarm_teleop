@@ -39,11 +39,14 @@ def test_matches_installed_lerobot_bus_without_connecting(drive_mode):
     from lerobot.motors import Motor, MotorCalibration, MotorNormMode
     from lerobot.motors.feetech import FeetechMotorsBus
 
-    # Construct only the conversion state: no serial port or connection.
-    bus = FeetechMotorsBus.__new__(FeetechMotorsBus)
-    bus._id_to_name_dict = {4: "wrist_flex"}
-    bus.motors = {"wrist_flex": Motor(4, "sts3215", MotorNormMode.RANGE_M100_100)}
-    bus.calibration = {"wrist_flex": MotorCalibration(4, drive_mode, 123, 900, 3100)}
+    # The constructor only records configuration; the port is opened by
+    # connect(), which is never called here.
+    bus = FeetechMotorsBus(
+        port="/dev/null-not-opened",
+        motors={"wrist_flex": Motor(4, "sts3215", MotorNormMode.RANGE_M100_100)},
+        calibration={"wrist_flex": MotorCalibration(4, drive_mode, 123, 900, 3100)},
+    )
+    assert not bus.is_connected
     joint = mapping(drive_mode=drive_mode, raw_at_model_zero=1800, model_sign=-1)
     for raw in [900, 1500, 1800, 2000, 2500, 3100]:
         observed = bus._normalize({4: raw})[4]

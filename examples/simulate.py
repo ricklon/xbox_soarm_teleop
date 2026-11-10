@@ -43,7 +43,7 @@ from xbox_soarm_teleop.config.workspace import load_workspace_limits
 from xbox_soarm_teleop.control.pose import euler_to_rotation_matrix
 
 # Path to URDF with absolute mesh paths
-URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
+URDF_PATH = Path(__file__).parent.parent / "assets" / "so101.urdf"
 
 # Joint configuration
 EE_FRAME = "gripper_frame_link"

@@ -41,7 +41,7 @@ controls, see the [Driving Guide](docs/driving_guide.md).
 
 ```bash
 # Create virtual environment
-uv venv --python 3.10
+uv venv --python 3.12
 source .venv/bin/activate
 
 # Install package with dev dependencies
@@ -261,7 +261,7 @@ xbox_soarm_teleop/
 
 ## Requirements
 
-- Python 3.10
+- Python 3.12
 - Supported input device:
   - Xbox controller
   - Nintendo Joy-Con (`joycon` or `dual_joycon` path)
