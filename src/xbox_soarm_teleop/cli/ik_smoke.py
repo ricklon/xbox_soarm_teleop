@@ -12,7 +12,7 @@ import numpy as np
 
 from xbox_soarm_teleop.config.joints import IK_JOINT_NAMES
 
-URDF_PATH = Path(__file__).resolve().parents[3] / "assets" / "so101_abs.urdf"
+URDF_PATH = Path(__file__).resolve().parents[3] / "assets" / "so101.urdf"
 EE_FRAME = "gripper_frame_link"
 
 

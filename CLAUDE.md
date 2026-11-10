@@ -16,7 +16,7 @@ Xbox controller teleoperation for the SO-ARM100/101 robotic arm using inverse ki
 - **Build Backend**: hatchling
 - **Linting/Formatting**: ruff
 - **Testing**: pytest
-- **Python Version**: 3.10 (LeRobot requirement)
+- **Python Version**: 3.12 (LeRobot 0.7 requires >=3.12; MuJoCo 4.0 requires >=3.11)
 
 ## Project Structure
 
@@ -88,12 +88,12 @@ SOFollower (Robot)
 
 ```bash
 # Environment setup
-uv venv --python 3.10
+uv venv --python 3.12
 source .venv/bin/activate
 uv pip install -e ".[dev]"
 
 # Install LeRobot with kinematics
-uv pip install "lerobot[kinematics]"
+uv pip install "lerobot[kinematics,feetech,dataset]>=0.7.0,<0.8"
 
 # Run the application
 uv run python examples/teleoperate.py
@@ -276,13 +276,14 @@ name = "xbox-soarm-teleop"
 version = "0.1.0"
 description = "Xbox controller teleoperation for SO-ARM100/101 using LeRobot IK"
 readme = "README.md"
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.12,<3.13"
 license = {text = "MIT"}
 authors = [
     {name = "Rick Anderson", email = "rick.rickanderson@gmail.com"},
 ]
 dependencies = [
-    "lerobot[kinematics]",
+    "lerobot[kinematics,feetech,dataset]>=0.7.0,<0.8",
+    "mujoco>=4.0.0,<5",
     "inputs>=0.5",
     "numpy>=1.24.0",
     "pyyaml>=6.0",
@@ -308,7 +309,7 @@ packages = ["src/xbox_soarm_teleop"]
 
 [tool.ruff]
 line-length = 104
-target-version = "py310"
+target-version = "py312"
 exclude = [".git", ".venv", "__pycache__", "dist", "build"]
 
 [tool.ruff.lint]
@@ -404,7 +405,7 @@ sudo usermod -aG input $USER
 
 ```bash
 # Ensure kinematics extra is installed
-uv pip install "lerobot[kinematics]"
+uv pip install "lerobot[kinematics,feetech,dataset]>=0.7.0,<0.8"
 
 # Verify Placo installation
 uv run python -c "from lerobot.model.kinematics import RobotKinematics; print('OK')"

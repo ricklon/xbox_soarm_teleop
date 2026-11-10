@@ -23,7 +23,7 @@ from xbox_soarm_teleop.config.joints import (
     raw_to_deg,
 )
 
-URDF_PATH = Path(__file__).parent.parent / "assets" / "so101_abs.urdf"
+URDF_PATH = Path(__file__).parent.parent / "assets" / "so101.urdf"
 
 
 # ---------------------------------------------------------------------------

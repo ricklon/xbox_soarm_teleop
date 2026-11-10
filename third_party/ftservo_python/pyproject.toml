@@ -2,7 +2,7 @@
 name = "scservo_sdk"
 version = "0.0.0"
 description = "Vendored Feetech SCServo SDK (FTServo_Python)"
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.10"
 license = {file = "LICENSE"}
 
 [build-system]

@@ -3,17 +3,17 @@ name = "xbox-soarm-teleop"
 version = "0.1.0"
 description = "Xbox controller teleoperation for SO-ARM100/101 using LeRobot IK"
 readme = "README.md"
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.12,<3.13"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "Rick Anderson", email = "rick.rickanderson@gmail.com"},
 ]
 dependencies = [
-    "lerobot[kinematics]",
+    "lerobot[kinematics,feetech,dataset]>=0.7.0,<0.8",
     "inputs>=0.5",
     "numpy>=1.24.0",
     "pyyaml>=6.0",
-    "mujoco>=3.4.0",
+    "mujoco>=4.0.0,<5",
     "scservo-sdk",
     "scipy>=1.15.3",
     "pygame>=2.6.1",
@@ -64,7 +64,7 @@ packages = ["src/xbox_soarm_teleop"]
 
 [tool.ruff]
 line-length = 104
-target-version = "py310"
+target-version = "py312"
 exclude = [".git", ".venv", "__pycache__", "dist", "build"]
 
 [tool.ruff.lint]

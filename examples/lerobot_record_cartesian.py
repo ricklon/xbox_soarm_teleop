@@ -31,7 +31,7 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, default=10, help="Maximum number of episodes.")
     parser.add_argument(
         "--urdf-path",
-        default=str(Path(__file__).parent.parent / "assets" / "so101_abs.urdf"),
+        default=str(Path(__file__).parent.parent / "assets" / "so101.urdf"),
         help="URDF path for IK.",
     )
     parser.add_argument("--no-swap-xy", action="store_true", help="Disable XY swap for mapping.")

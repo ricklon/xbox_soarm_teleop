@@ -49,7 +49,7 @@ from xbox_soarm_teleop.config.joints import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-URDF_PATH = PROJECT_ROOT / "assets" / "so101_abs.urdf"
+URDF_PATH = PROJECT_ROOT / "assets" / "so101.urdf"
 CALIBRATION_DIR = PROJECT_ROOT / "calibration"
 
 # Control rate for ramping
