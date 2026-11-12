@@ -198,6 +198,7 @@
   let grip = null;                 // {target, until}
   let view = "overhead";
   let reportedGrip = 0;
+  let pictureMs = 130;             // time from one camera picture to the next; the hub sets it
 
   // --- what to tell the server -------------------------------------------
   function wanted() {
@@ -256,6 +257,7 @@
         const li = document.createElement("li"); li.textContent = e; return li;
       }));
     }
+    if (s.picture_ms) pictureMs = s.picture_ms;
     if (s.notebook_url && $("notebookLine").hidden) {
       $("notebook").href = s.notebook_url; $("notebookLine").hidden = false;
     }
@@ -263,6 +265,7 @@
 
   // --- camera ---------------------------------------------------------------
   async function frame() {
+    const asked = performance.now();
     if (!document.hidden) {
       try {
         const res = await fetch(`${base}/camera.jpg?view=${view}&w=480&h=360`, { cache: "no-store" });
@@ -274,7 +277,8 @@
         }
       } catch (err) { /* the status line already says we are offline */ }
     }
-    setTimeout(frame, 130);
+    // Aim for one picture every pictureMs; a slow hub or network just gives fewer.
+    setTimeout(frame, Math.max(10, pictureMs - (performance.now() - asked)));
   }
   document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => {
     view = b.dataset.view;

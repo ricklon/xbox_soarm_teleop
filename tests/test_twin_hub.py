@@ -223,3 +223,48 @@ def test_hub_keeps_time_with_many_rooms():
     per_tick = (time.perf_counter() - started) / 50
     hub.close()
     assert per_tick < 0.012  # 12 idle arms must fit well inside the 20 ms period
+
+
+def test_hub_draws_simplified_meshes_but_simulates_the_originals(hub):
+    room = next(iter(hub.rooms.values()))
+    assert hub.cameras.model is not room.service.sim.model
+    assert hub.cameras.model.nmeshface < room.service.sim.model.nmeshface / 8
+    assert room.service.sim.model.nmeshface > 300_000
+
+
+def test_pictures_follow_each_rooms_own_arm():
+    import io
+    import time
+
+    from PIL import Image
+
+    fresh = Hub(seats=2)
+
+    def picture(room) -> np.ndarray:
+        future = room.service.render("front", width=320, height=240)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not future.done():
+            fresh.tick()
+            time.sleep(0.005)
+        return np.asarray(Image.open(io.BytesIO(future.result(timeout=0))).convert("RGB"), dtype=float)
+
+    try:
+        fresh.tick()
+        a, b = fresh.rooms.values()
+        still_a, still_b = picture(a), picture(b)
+        assert np.abs(still_a - still_b).mean() < 0.5  # two untouched arms look alike
+        for _ in range(60):
+            a.controller.update({"up": -1, "left": 1})
+            fresh.tick()
+        assert np.abs(picture(a) - still_a).mean() > 1.0  # the moved arm's picture changed
+        assert np.abs(picture(b) - still_b).mean() < 0.5  # the other one's did not
+    finally:
+        fresh.close()
+
+
+def test_hub_can_draw_the_original_meshes():
+    hub = Hub(seats=1, mesh_cell_mm=0)
+    try:
+        assert hub.cameras.model is next(iter(hub.rooms.values())).service.sim.model
+    finally:
+        hub.close()

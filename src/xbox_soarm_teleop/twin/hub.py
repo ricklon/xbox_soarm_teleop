@@ -39,6 +39,8 @@ PRESSES = {"stop": "b_button", "release": "start_button", "home": "a_button", "r
 # Each image size needs its own renderer (GPU memory), so requests are drawn
 # at the nearest of these.
 RENDER_SIZES = ((240, 180), (320, 240), (480, 360), (640, 480))
+# Camera images are drawn from meshes simplified on a grid this fine (mm).
+DEFAULT_MESH_CELL_MM = 2.0
 
 
 def _render_size(width: int) -> tuple[int, int]:
@@ -161,6 +163,11 @@ class Hub:
         log_dir: Directory for one session log per room; no logs when None.
         shadows: Draw shadows in camera images. They roughly halve the frame
             rate a full class gets, so they are off by default.
+        mesh_cell_mm: Draw camera images from meshes simplified on a grid
+            this fine (``sim.mesh_detail``); 0 draws the original meshes.
+            The arms are always simulated with the originals, so contact does
+            not change. At 2 mm the hub can draw about 2.5 times as many
+            pictures a second and they look the same.
         roster_path: JSON file holding the room and admin tokens. Reused when
             it exists, so the links handed to students survive a restart.
     """
@@ -174,13 +181,28 @@ class Hub:
         log_dir: str | Path | None = None,
         roster_path: str | Path | None = None,
         shadows: bool = False,
+        mesh_cell_mm: float = DEFAULT_MESH_CELL_MM,
     ) -> None:
         if seats < 1:
             raise ValueError("seats must be at least 1")
+        if mesh_cell_mm < 0:
+            raise ValueError("mesh_cell_mm must be 0 or more")
         self.scene = scene
         self.parts = build_parts(scene=scene, world=world)
+        drawn = self.parts.model
+        if mesh_cell_mm > 0:
+            from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
+
+            drawn = sim_cli.load_model_with_cameras(
+                str(sim_cli.URDF_PATH),
+                scene=self.parts.scene,
+                world=self.parts.world,
+                mesh_cell_mm=mesh_cell_mm,
+            )
         # Renderers are created and used by the painter thread only.
-        self.cameras = CameraRig(self.parts.model, reflections=False, shadows=shadows)
+        self.cameras = CameraRig(
+            drawn, reflections=False, shadows=shadows, state_model=self.parts.model
+        )
         self.admin_token, tokens = self._load_roster(roster_path, seats)
         self.rooms: dict[str, Room] = {}
         stamp = time.strftime("%Y%m%d-%H%M%S")

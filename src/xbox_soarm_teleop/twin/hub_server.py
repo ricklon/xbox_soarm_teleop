@@ -39,6 +39,8 @@ from xbox_soarm_teleop.twin.status import status_text
 
 RENDER_TIMEOUT_S = 3.0
 MAX_PAD_BYTES = 2048
+DEFAULT_PICTURE_HZ = 10.0  # camera pictures a second each student page asks for
+PICTURE_HZ_RANGE = (1.0, 30.0)
 AGENT_THREADS = 200  # agents block a worker thread while a move finishes
 PAGE_AGENT = "browser-agent"  # who the session log says acted, for tools called from the page
 PAGE_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
@@ -127,6 +129,7 @@ def build_hub_app(
     port: int = 8800,
     public_url: str | None = None,
     notebook_url: str | None = None,
+    picture_hz: float = DEFAULT_PICTURE_HZ,
 ):
     """Build the ASGI app serving ``hub``.
 
@@ -137,7 +140,11 @@ def build_hub_app(
         public_url: The address students use (a tunnel or proxy in front of
             this server). Its host is accepted in addition to localhost.
         notebook_url: Link to the workshop notebook, shown on each page.
+        picture_hz: Camera pictures a second each student page asks for, at
+            most (kept within 1 to 30). Each picture is about 17 kB, so 10 a
+            second is roughly 1.3 Mbit/s of upload per student.
     """
+    picture_ms = round(1000 / min(max(picture_hz, PICTURE_HZ_RANGE[0]), PICTURE_HZ_RANGE[1]))
 
     page_room: ContextVar[Room | None] = ContextVar("page_room", default=None)
 
@@ -189,6 +196,7 @@ def build_hub_app(
         room.controller.update(wanted)
         summary = room_summary(room)
         summary["notebook_url"] = notebook_url
+        summary["picture_ms"] = picture_ms
         return JSONResponse(summary, headers=PAGE_HEADERS)
 
     @server.custom_route("/r/{token}/observe", methods=["GET"])

@@ -47,6 +47,13 @@ class CameraRig:
         shadows: Draw shadows. Reflections and shadows each cost about 5 ms
             of a 14 ms frame, whatever the image size, so a rig that serves
             many viewers turns them off.
+        state_model: The model the simulators run, when it is not the one
+            drawn. It must have the same joints, bodies and geoms as
+            ``model``, which may differ in mesh detail
+            (``load_model_with_cameras(mesh_cell_mm=...)``). The rig then
+            copies each state's joint positions into its own and works out
+            where everything is, so contact can use the original meshes
+            while pictures use lighter ones.
 
     Drawing has two steps so that a host can split them between threads:
     :meth:`aim` reads the simulator state (no OpenGL; call it where the state
@@ -61,11 +68,21 @@ class CameraRig:
         *,
         reflections: bool = True,
         shadows: bool = True,
+        state_model: mujoco.MjModel | None = None,
     ) -> None:
         self.model = model
         self.data = data
         self.reflections = reflections
         self.shadows = shadows
+        self._mirror: mujoco.MjData | None = None
+        if state_model is not None and state_model is not model:
+            for count in ("nq", "nbody", "ngeom", "ncam", "nlight", "nmocap"):
+                if getattr(state_model, count) != getattr(model, count):
+                    raise ValueError(
+                        f"state_model and model differ in {count}: "
+                        f"{getattr(state_model, count)} != {getattr(model, count)}"
+                    )
+            self._mirror = mujoco.MjData(model)
         self._renderers: dict[tuple[int, int], mujoco.Renderer] = {}
 
     def has_renderer(self, width: int, height: int) -> bool:
@@ -92,8 +109,21 @@ class CameraRig:
         renderer = self.renderer(width, height)
         camera = mujoco.MjvCamera()
         point_camera(camera, self.model, view)
-        renderer.update_scene(self.data if data is None else data, camera=camera)
+        renderer.update_scene(self._drawable(self.data if data is None else data), camera=camera)
         return renderer
+
+    def _drawable(self, data: mujoco.MjData) -> mujoco.MjData:
+        """``data`` itself, or its pose copied into this rig's own model."""
+        if self._mirror is None:
+            return data
+        mirror = self._mirror
+        mirror.qpos[:] = data.qpos
+        mirror.mocap_pos[:] = data.mocap_pos
+        mirror.mocap_quat[:] = data.mocap_quat
+        mirror.time = data.time
+        mujoco.mj_kinematics(self.model, mirror)
+        mujoco.mj_camlight(self.model, mirror)
+        return mirror
 
     @staticmethod
     def capture(renderer: mujoco.Renderer) -> np.ndarray:
@@ -109,8 +139,9 @@ class CameraRig:
             view: One of ``VIEWS``.
             width: Image width in pixels.
             height: Image height in pixels.
-            data: State to draw; any ``MjData`` of this rig's model, so one rig
-                can serve several simulators that share the model.
+            data: State to draw; any ``MjData`` of this rig's model (or of its
+                ``state_model``), so one rig can serve several simulators
+                that share the model.
         """
         return self.capture(self.aim(view, width, height, data))
 
