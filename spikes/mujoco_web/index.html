@@ -75,11 +75,13 @@ const PATH = {
 async function main() {
   // ------------------------------------------------------------ load
   let t = performance.now();
-  const manifest = await (await fetch("scene/manifest.json", { cache: "no-store" })).json();
+  const asked = new URLSearchParams(location.search).get("scene") || "scene";
+  const dir = (/^[\w.-]+$/.test(asked) && !asked.includes("..") ? asked : "scene") + "/";  // ?scene=scene-2mm picks another export
+  const manifest = await (await fetch(dir + "manifest.json", { cache: "no-store" })).json();
   const [mujoco, xml, ...buffers] = await Promise.all([
     loadMujoco(),
-    fetch("scene/" + manifest.xml).then((r) => r.text()),
-    ...manifest.files.map((f) => fetch("scene/" + f).then((r) => r.arrayBuffer())),
+    fetch(dir + manifest.xml).then((r) => r.text()),
+    ...manifest.files.map((f) => fetch(dir + f).then((r) => r.arrayBuffer())),
   ]);
   stats.download_ms = performance.now() - t;
   stats.version = mujoco.mj_versionString();

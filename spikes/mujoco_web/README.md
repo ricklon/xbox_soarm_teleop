@@ -56,6 +56,62 @@ With Chrome's processor throttling the compile took 15.6 s at 4x and 23.9 s
 at 6x. The frame rate and physics figures did not slow down under throttling,
 which is not believable, so treat them as unmeasured for slow machines.
 
+## Simplified meshes
+
+`export_scene.py --cell-mm N` merges mesh corners that fall in the same cube
+of N millimetres. Open a level with `?scene=`, for example
+<http://127.0.0.1:8822/?scene=scene-2mm>.
+
+```bash
+uv run python spikes/mujoco_web/export_scene.py --cell-mm 2 --out spikes/mujoco_web/scene-2mm
+```
+
+Same machine and method as above, one run per cell.
+
+| Meshes | Triangles | Download | Compile: Chrome | WebKit | Firefox | Largest contact-shell change |
+|---|---|---|---|---|---|---|
+| Full | 322,564 | 16.1 MB | 3.7 s | 3.2 s | 11.7 s | - |
+| 0.5 mm | 87,531 | 4.4 MB | 1.1 s | 0.9 s | 3.2 s | 0.20 mm |
+| 1 mm | 45,957 | 2.3 MB | 0.59 s | 0.52 s | 1.8 s | 0.26 mm |
+| 2 mm | 22,893 | 1.1 MB | 0.32 s | 0.28 s | 0.90 s | 0.85 mm |
+| 3 mm | 15,432 | 0.8 MB | 0.23 s | 0.21 s | 0.61 s | 1.5 mm |
+| 4 mm | 11,155 | 0.6 MB | 0.18 s | 0.16 s | 0.47 s | 1.6 mm |
+
+Frame rate with the graphics chip: every level, in every browser, ran at the
+display's refresh rate (120 in Chrome and Firefox, 60 in WebKit). This machine
+cannot show a difference.
+
+Frame rate with graphics acceleration turned off (Chrome with
+`--use-angle=swiftshader`, drawing on the processor), as a stand-in for a
+laptop with no usable graphics chip:
+
+| Meshes | Frames per second | Slowest frame | Sim speed |
+|---|---|---|---|
+| Full | 7 | 416 ms | 0.32x |
+| 0.5 mm | 24 | 132 ms | 0.97x |
+| 1 mm | 38 | 76 ms | 1.00x |
+| 2 mm | 56 | 58 ms | 0.98x |
+| 3 mm | 68 | 42 ms | 0.98x |
+| 4 mm | 74 | 42 ms | 0.98x |
+
+With the full meshes and no graphics chip, the simulation itself fell to a
+third of real time, because drawing took the whole frame.
+
+Findings:
+
+- Compile time follows triangle count. 2 mm is about 12 times faster than
+  full in each browser.
+- 1 mm and 2 mm look the same as full at normal viewing distance; 4 mm is
+  visibly rounded off.
+- The contact shell is each part's convex hull as MuJoCo compiled it. It
+  moved by less than the cell size at every level. The cube rested at the
+  same height (0.140 m) at every level; no contact behaviour beyond that was
+  compared.
+- Edge-collapse simplifiers (`fast-simplification`, `pyfqmr`) stalled at about
+  a third of the triangles on these CAD meshes and pushed corners outside the
+  original shape, so corner merging on a grid is used instead. It needs only
+  numpy.
+
 ## What this does not show
 
 - **Ordinary laptops.** One fast machine was tested. Integrated graphics and
@@ -72,7 +128,8 @@ which is not believable, so treat them as unmeasured for slow machines.
 ## Notes for whoever takes this further
 
 - Start-up is the weak point, and it is mesh processing: 322,564 triangles.
-  Simplified meshes would cut download, compile time and drawing cost at once.
+  Simplified meshes cut download, compile time and drawing cost at once (see
+  above); 2 mm is the level to try first.
 - A precompiled binary model is not a way round it: `mj_saveModel` gives a
   68 MB file for this scene.
 - The npm package has a 4.0.1 build, matching the MuJoCo 4.0 this project
