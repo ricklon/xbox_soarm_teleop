@@ -37,8 +37,8 @@ works on this computer; the next section makes it reachable.
 Decide two things in advance:
 
 - **How students reach your computer** (section 2).
-- **How students get an Anthropic API key** for the agent part of the notebook
-  (section 5). Parts 1 to 4 of the notebook need no key.
+- **Which model students use and how they get a key** for the agent part of
+  the notebook (section 5). Parts 1 to 4 of the notebook need no key.
 
 ## 2. Make it reachable
 
@@ -150,15 +150,39 @@ extra for students who want to try it, not as the route the class depends on.
 
 ## 5. API keys for the agent part
 
-Part 5 of the notebook runs an agent with the Anthropic API and asks for a key.
-The hub does not provide one. Options:
+Part 5 of the notebook runs an agent and asks for a key to a language model.
+The hub does not provide one. The notebook offers two cells; tell students
+which one to run.
 
-- students bring their own key;
-- you create a workspace with a spend limit in the Anthropic Console and give
-  out keys from it, then delete them afterwards.
+**Option A: Claude, with an Anthropic API key.** Students bring their own
+key, or you create a workspace with a spend limit in the Anthropic Console and
+give out keys from it, then delete them afterwards. The notebook uses
+`claude-opus-5-5`. This agent can use the cameras.
 
-The notebook uses `claude-opus-5-5`. A pick-and-place takes the agent roughly
-ten to twenty tool calls.
+**Option B: another model, through OpenRouter or Hugging Face.** The cell
+works with any service that offers an OpenAI-style chat API with tool calling.
+Students paste the service's address, a model name and a key:
+
+| Service | Address to paste |
+|---|---|
+| OpenRouter | `https://openrouter.ai/api/v1` |
+| Hugging Face | `https://router.huggingface.co/v1` |
+
+Before the day, for Option B:
+
+- **Choose the models yourself and test each one** on "Pick up the cube and
+  put it in the goal box". The model must support tool calling. Smaller models
+  are less reliable at a task with this many steps, and this cell has only
+  been run against a scripted stand-in, not a real model.
+- **Give students the exact model name** to paste. Names differ per service.
+- **Check the cost and limits** on the service's own pricing page, including
+  whether you can give each student a key with a spending cap, and what a free
+  account allows.
+- Pictures: the agent is not offered the `camera` tool unless the student sets
+  `MODEL_SEES_PICTURES = True`, because many models cannot take a picture as a
+  tool's answer. It works from `observe`, which gives positions as numbers.
+
+A pick-and-place takes an agent roughly ten to twenty tool calls.
 
 ## 6. How many students?
 
