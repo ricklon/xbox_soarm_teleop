@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MuJoCo browser spike</title>
+<style>
+  :root { --bg: #15181b; --panel: rgba(24, 28, 32, 0.88); --ink: #e9e6df; --muted: #a0a8b0; --line: #343b42; --accent: #3fb8b0; --bad: #ef5a4e; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hud {
+    position: fixed; top: 12px; left: 12px; width: min(340px, calc(100vw - 24px)); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  }
+  #hud h1 { font-size: 15px; margin: 0 0 2px; }
+  #hud .sub { color: var(--muted); margin: 0 0 8px; font-size: 12.5px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  td { padding: 2px 0; } td:last-child { text-align: right; font-weight: 600; }
+  td:first-child { color: var(--muted); }
+  #state { margin: 8px 0 0; color: var(--accent); min-height: 1.45em; }
+  #state.bad { color: var(--bad); white-space: pre-wrap; }
+  .row { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  button {
+    flex: 1; font: inherit; color: var(--ink); background: #2a3036; border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 8px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  <h1>MuJoCo in the browser</h1>
+  <p class="sub">The twin's scene, simulated and drawn on this device. Drag to orbit, scroll to zoom.</p>
+  <table>
+    <tr><td>MuJoCo</td><td id="version">-</td></tr>
+    <tr><td>Download (meshes)</td><td id="download">-</td></tr>
+    <tr><td>Compile model</td><td id="compile">-</td></tr>
+    <tr><td>Triangles drawn</td><td id="tris">-</td></tr>
+    <tr><td>Frames per second</td><td id="fps">-</td></tr>
+    <tr><td>Slowest frame (2 s)</td><td id="worst">-</td></tr>
+    <tr><td>Physics per frame</td><td id="physics">-</td></tr>
+    <tr><td>Sim speed</td><td id="speed">-</td></tr>
+    <tr><td>Cube</td><td id="cube">-</td></tr>
+  </table>
+  <p id="state">Loading...</p>
+  <div class="row">
+    <button id="pause">Pause arm</button>
+    <button id="reset">Reset scene</button>
+  </div>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import loadMujoco from "https://cdn.jsdelivr.net/npm/@mujoco/mujoco@4.0.1/mujoco.js";
+
+const $ = (id) => document.getElementById(id);
+const stats = (window.spikeStats = { ready: false });
+const say = (text, bad = false) => { $("state").textContent = text; $("state").className = bad ? "bad" : ""; };
+const ms = (v) => (v < 10 ? v.toFixed(2) : v.toFixed(0)) + " ms";
+
+// The arm path: slow sweeps that pass over the table and through the cube, so
+// contact physics is exercised. Angles in radians, per joint: [center, swing, period s].
+const PATH = {
+  shoulder_pan: [0.0, 0.45, 9.0], shoulder_lift: [0.35, 0.45, 6.0], elbow_flex: [0.15, 0.5, 7.0],
+  wrist_flex: [0.6, 0.4, 5.0], wrist_roll: [0.0, 0.8, 4.0], gripper: [0.8, 0.8, 3.0],
+};
+
+async function main() {
+  // ------------------------------------------------------------ load
+  let t = performance.now();
+  const manifest = await (await fetch("scene/manifest.json", { cache: "no-store" })).json();
+  const [mujoco, xml, ...buffers] = await Promise.all([
+    loadMujoco(),
+    fetch("scene/" + manifest.xml).then((r) => r.text()),
+    ...manifest.files.map((f) => fetch("scene/" + f).then((r) => r.arrayBuffer())),
+  ]);
+  stats.download_ms = performance.now() - t;
+  stats.version = mujoco.mj_versionString();
+  $("version").textContent = stats.version;
+  $("download").textContent = `${(manifest.bytes / 1e6).toFixed(1)} MB, ${ms(stats.download_ms)}`;
+
+  say("Compiling the model...");
+  await new Promise((r) => setTimeout(r));  // let the line above paint
+  t = performance.now();
+  const vfs = new mujoco.MjVFS();
+  manifest.files.forEach((name, i) => vfs.addBuffer(name, new Uint8Array(buffers[i])));
+  const model = mujoco.MjModel.from_xml_string(xml, vfs);
+  const data = new mujoco.MjData(model);
+  mujoco.mj_forward(model, data);
+  stats.compile_ms = performance.now() - t;
+  $("compile").textContent = ms(stats.compile_ms);
+
+  const dt = model.opt.timestep;
+  const jointId = (name) => mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT.value, name);
+  const arm = manifest.arm_joints.map((name) => {
+    const id = jointId(name);
+    return { name, q: model.jnt_qposadr[id], v: model.jnt_dofadr[id],
+             lo: model.jnt_range[2 * id], hi: model.jnt_range[2 * id + 1] };
+  });
+  const qpos0 = Float64Array.from(data.qpos);
+
+  // ------------------------------------------------------------ draw
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  document.body.prepend(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xcfd9e6);
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 20);
+  camera.up.set(0, 0, 1);                       // MuJoCo is z-up
+  camera.position.set(0.75, -0.55, 0.55);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(0.25, 0.02, 0.14);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f96, 1.6));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.0);
+  sun.position.set(-0.4, -0.6, 1.5);
+  scene.add(sun);
+  const fit = () => {
+    renderer.setSize(innerWidth, innerHeight, false);
+    camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  };
+  addEventListener("resize", fit); fit();
+
+  const G = mujoco.mjtGeom;
+  const meshCache = new Map();
+  function meshGeometry(id) {
+    if (!meshCache.has(id)) {
+      const v0 = model.mesh_vertadr[id], vn = model.mesh_vertnum[id];
+      const f0 = model.mesh_faceadr[id], fn = model.mesh_facenum[id];
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(Float32Array.from(model.mesh_vert.subarray(3 * v0, 3 * (v0 + vn))), 3));
+      g.setIndex(new THREE.BufferAttribute(Uint32Array.from(model.mesh_face.subarray(3 * f0, 3 * (f0 + fn))), 1));
+      g.computeVertexNormals();
+      meshCache.set(id, g);
+    }
+    return meshCache.get(id);
+  }
+  const parts = [];
+  for (let i = 0; i < model.ngeom; i++) {
+    const type = model.geom_type[i], size = model.geom_size.subarray(3 * i, 3 * i + 3);
+    let geometry;
+    if (type === G.mjGEOM_MESH.value) geometry = meshGeometry(model.geom_dataid[i]);
+    else if (type === G.mjGEOM_BOX.value) geometry = new THREE.BoxGeometry(2 * size[0], 2 * size[1], 2 * size[2]);
+    else if (type === G.mjGEOM_PLANE.value) geometry = new THREE.PlaneGeometry(2 * (size[0] || 5), 2 * (size[1] || 5));
+    else geometry = new THREE.SphereGeometry(size[0] || 0.01, 16, 12);
+    const mat = model.geom_matid[i];
+    const rgba = mat >= 0 ? model.mat_rgba.subarray(4 * mat, 4 * mat + 4) : model.geom_rgba.subarray(4 * i, 4 * i + 4);
+    const material = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(rgba[0], rgba[1], rgba[2]), roughness: 0.65, metalness: 0.05,
+      transparent: rgba[3] < 1, opacity: rgba[3],
+    });
+    const part = new THREE.Mesh(geometry, material);
+    part.matrixAutoUpdate = false;
+    scene.add(part); parts.push(part);
+  }
+  function place() {
+    const p = data.geom_xpos, m = data.geom_xmat;
+    for (let i = 0; i < parts.length; i++) {
+      const a = 3 * i, b = 9 * i;
+      parts[i].matrix.set(m[b], m[b + 1], m[b + 2], p[a], m[b + 3], m[b + 4], m[b + 5], p[a + 1],
+                          m[b + 6], m[b + 7], m[b + 8], p[a + 2], 0, 0, 0, 1);
+    }
+  }
+
+  // ------------------------------------------------------------ simulate
+  // Like the twin: the arm is placed by joint angle each physics step (the twin
+  // gets the angles from its IK), and physics moves everything else.
+  let moving = true, armTime = 0, simTime = 0;
+  function armAt(time) {
+    for (const j of arm) {
+      const [center, swing, period] = PATH[j.name];
+      const angle = center + swing * Math.sin((2 * Math.PI * time) / period);
+      data.qpos[j.q] = Math.min(j.hi, Math.max(j.lo, angle));
+      data.qvel[j.v] = 0;
+    }
+  }
+  function advance(seconds) {
+    const steps = Math.max(1, Math.round(seconds / dt));
+    for (let k = 0; k < steps; k++) {
+      if (moving) armTime += dt;
+      armAt(armTime);
+      mujoco.mj_step(model, data);
+    }
+    simTime += steps * dt;
+    return steps;
+  }
+  $("pause").addEventListener("click", () => {
+    moving = !moving; $("pause").textContent = moving ? "Pause arm" : "Move arm";
+  });
+  $("reset").addEventListener("click", () => {
+    data.qpos.set(qpos0); data.qvel.fill(0); armTime = 0; mujoco.mj_forward(model, data);
+  });
+
+  // ------------------------------------------------------------ measure
+  const cube = model.nbody - 1;                // the free cube is the last body
+  let last = performance.now(), frames = [], physics = [], wallStart = last, simStart = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const elapsed = Math.min(now - last, 50);  // after a stall, do not try to catch up
+    frames.push(now - last); last = now;
+    const t0 = performance.now();
+    advance(elapsed / 1000);
+    physics.push(performance.now() - t0);
+    place(); controls.update(); renderer.render(scene, camera);
+
+    if (now - wallStart >= 2000) {
+      const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+      Object.assign(stats, {
+        ready: true, fps: 1000 / mean(frames), worst_frame_ms: Math.max(...frames),
+        physics_ms: mean(physics), physics_worst_ms: Math.max(...physics),
+        sim_speed: (simTime - simStart) / ((now - wallStart) / 1000),
+        triangles: renderer.info.render.triangles, draw_calls: renderer.info.render.calls,
+        cube_z: data.xpos[3 * cube + 2], samples: (stats.samples || 0) + 1,
+        gl: renderer.getContext().getParameter(renderer.getContext().VERSION),
+      });
+      const dbg = renderer.getContext().getExtension("WEBGL_debug_renderer_info");
+      if (dbg) stats.gpu = renderer.getContext().getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+      $("tris").textContent = stats.triangles.toLocaleString();
+      $("fps").textContent = stats.fps.toFixed(0);
+      $("worst").textContent = ms(stats.worst_frame_ms);
+      $("physics").textContent = ms(stats.physics_ms);
+      $("speed").textContent = stats.sim_speed.toFixed(2) + "x real time";
+      const c = data.xpos.subarray(3 * cube, 3 * cube + 3);
+      $("cube").textContent = Array.from(c, (n) => n.toFixed(2)).join(", ");
+      frames = []; physics = []; wallStart = now; simStart = simTime;
+    }
+  }
+  say("Running.");
+  requestAnimationFrame((now) => { last = wallStart = now; frame(now); });
+}
+
+main().catch((err) => {
+  window.spikeStats.error = String(err && err.stack || err);
+  say("Failed: " + (err && err.message || err), true);
+  console.error(err);
+});
+</script>
+</body>
+</html>
