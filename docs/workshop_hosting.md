@@ -162,21 +162,41 @@ ten to twenty tool calls.
 
 ## 6. How many students?
 
-Measured on the development machine (Apple silicon laptop, 14 cores):
+Measured on the development machine (Apple M3 Max laptop) with
+`scripts/hub_load.py`, which plays every student's page over real HTTP:
 
-| | |
-|---|---|
-| Start-up | about 3 s for 30 arms |
-| Memory | about 1.1 GB for 30 arms |
-| Control rate | 50 Hz with 30 students driving and watching at once |
-| Response to a key press | 4 ms median, 8 ms at the 95th percentile (on the same machine, before network delay) |
-| Camera | 137 frames/s shared by everyone watching |
+| Students | Pictures a second, each | Upload, each | Upload, whole class | Control rate |
+|---|---|---|---|---|
+| 10 | 9.9 | 1.3 Mbit/s | 13 Mbit/s | 50 Hz |
+| 30 | 9.5 | 1.3 Mbit/s | 38 Mbit/s | 50 Hz |
 
-The camera is the limit. Ten students each get the page's full 6 to 7 frames
-a second; thirty all watching at once get about 2 to 4 each, which is usable
-at the arm's speed (10 cm/s at most) but choppy. Camera pictures are drawn
-without shadows or reflections to get that rate; `Hub(shadows=True)` in code
-turns shadows back on at about half the frame rate.
+Start-up is about 3 s and memory about 1.1 GB for 30 arms.
+
+Two settings decide these figures:
+
+- `--picture-rate` (default 10): how many camera pictures a second each
+  student's page asks for. Each picture is about 17 kB. **Your upload speed
+  is likely to be the limit before your computer is:** if 30 students are too
+  much for your connection, lower it (`--picture-rate 5` halves the upload).
+  At 15 this machine gave 30 students 12.7 each.
+- `--mesh-detail-mm` (default 2): camera pictures are drawn from a simplified
+  copy of the arm's meshes (23,000 triangles in place of 323,000), which
+  looks the same at this size. The arms are still simulated with the original
+  meshes, so nothing about how they move or touch things changes. With
+  `--mesh-detail-mm 0` the pictures use the originals, and 30 students get
+  about 5 a second each however many they ask for.
+
+Check your own machine before the day:
+
+```bash
+uv run python scripts/hub_load.py --seats 30
+```
+
+It starts its own hub, so run it when yours is stopped. It measures your
+computer only; your tunnel and the students' connections come on top.
+
+Camera pictures are drawn without shadows or reflections to get these rates;
+`Hub(shadows=True)` in code turns shadows back on at about half the rate.
 
 ## 7. When something goes wrong
 

@@ -141,3 +141,34 @@ def test_window_camera_follows_the_dpad_without_taking_control():
     assert view == "wrist" and window.cam.type == mujoco.mjtCamera.mjCAMERA_FIXED
     assert twin_cli._switch_view(object(), service.sim.model, "free", 1.0, 0.0) == "free"  # headless
     service.close()
+
+
+def test_rig_can_draw_a_different_model_than_the_one_simulated(twin):
+    """A rig that mirrors the simulator's state into its own model draws the same picture."""
+    from xbox_soarm_teleop.cli.simulate_mujoco import URDF_PATH, load_model_with_cameras
+    from xbox_soarm_teleop.twin.cameras import CameraRig
+
+    twin.submit({"type": "move_ee_by", "params": {"dxyz_m": [0.0, 0.05, 0.04]}})
+    for _ in range(80):
+        twin.tick()
+    simulated = twin.sim.model
+    drawn = load_model_with_cameras(str(URDF_PATH), scene="pick_place_basic")  # a second copy
+    direct = CameraRig(simulated, twin.sim.data)
+    mirrored = CameraRig(drawn, state_model=simulated)
+    try:
+        for view in ("wrist", "front"):
+            expected = direct.render(view, 320, 240).astype(float)
+            actual = mirrored.render(view, 320, 240, twin.sim.data).astype(float)
+            assert np.abs(actual - expected).mean() < 0.5, view
+    finally:
+        direct.close()
+        mirrored.close()
+
+
+def test_rig_refuses_a_state_model_with_a_different_layout(twin):
+    from xbox_soarm_teleop.cli.simulate_mujoco import URDF_PATH, load_model_with_cameras
+    from xbox_soarm_teleop.twin.cameras import CameraRig
+
+    other = load_model_with_cameras(str(URDF_PATH), scene="stack")
+    with pytest.raises(ValueError):
+        CameraRig(other, state_model=twin.sim.model)

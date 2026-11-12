@@ -66,6 +66,7 @@ def test_page_drives_the_arm_and_reads_its_status(served):
     before = httpx.post(url, json={}).json()
     assert before["name"] == "Arm 1" and before["status"][0] == "Ready"
     assert before["notebook_url"] == "https://example.org/notebook"
+    assert before["picture_ms"] == 100  # the page asks for 10 pictures a second by default
     deadline = time.monotonic() + 1.5
     while time.monotonic() < deadline:
         after = httpx.post(url, json={"up": -1}).json()
@@ -259,3 +260,27 @@ def test_student_page_registers_webmcp_tools_when_the_browser_has_them(served):
     page = httpx.get(f"{base}/r/{rooms(hub)[0].token}").text
     assert "document.modelContext" in page and "navigator.modelContext" in page
     assert "registerTool" in page
+
+
+def test_picture_rate_is_told_to_the_page_and_kept_sane():
+    hub = Hub(seats=1)
+    try:
+        from starlette.testclient import TestClient
+
+        token = next(iter(hub.rooms))
+        for asked, expected in ((20, 50), (1000, 33), (0.1, 1000)):
+            client = TestClient(build_hub_app(hub, picture_hz=asked), base_url="http://127.0.0.1:8800")
+            assert client.post(f"/r/{token}/pad", json={}).json()["picture_ms"] == expected
+        page = TestClient(build_hub_app(hub), base_url="http://127.0.0.1:8800").get(f"/r/{token}").text
+        assert "picture_ms" in page
+    finally:
+        hub.close()
+
+
+def test_hub_command_options():
+    from xbox_soarm_teleop.cli.hub import build_parser
+
+    defaults = build_parser().parse_args([])
+    assert defaults.mesh_detail_mm == 2.0 and defaults.picture_rate == 10.0
+    chosen = build_parser().parse_args(["--mesh-detail-mm", "0", "--picture-rate", "15"])
+    assert chosen.mesh_detail_mm == 0.0 and chosen.picture_rate == 15.0

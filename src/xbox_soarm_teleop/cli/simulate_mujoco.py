@@ -687,7 +687,10 @@ def build_pick_place_scene_model(urdf_path: str, world: str = "plain") -> mujoco
 
 
 def load_model_with_cameras(
-    urdf_path: str, scene: str = "default", world: str = DEFAULT_WORLD
+    urdf_path: str,
+    scene: str = "default",
+    world: str = DEFAULT_WORLD,
+    mesh_cell_mm: float = 0.0,
 ) -> mujoco.MjModel:
     """Load the simulator model with a world preset and optional physical scene.
 
@@ -695,6 +698,9 @@ def load_model_with_cameras(
         urdf_path: Robot URDF.
         scene: ``"default"``, ``"stack"`` or ``"pick_place_basic"``.
         world: Lighting/sky/floor preset from ``xbox_soarm_teleop.sim.world``.
+        mesh_cell_mm: Above 0, use meshes simplified on a grid this fine
+            (``xbox_soarm_teleop.sim.mesh_detail``): the same robot with far
+            fewer triangles, for drawing. 0 uses the meshes as they are.
     """
     spec = _robot_spec(urdf_path)
     world_has_floor = apply_world(spec, world)
@@ -702,7 +708,17 @@ def load_model_with_cameras(
         _add_stack_scene(spec, add_floor=not world_has_floor)
     elif scene == "pick_place_basic":
         _add_pick_place_scene(spec, add_floor=not world_has_floor)
-    return spec.compile()
+    if mesh_cell_mm <= 0:
+        return spec.compile()
+
+    from xbox_soarm_teleop.sim.mesh_detail import write_simplified
+
+    mesh_dir = Path(urdf_path).resolve().parent
+    with tempfile.TemporaryDirectory(prefix="soarm-meshes-") as simplified:
+        for mesh in spec.meshes:
+            write_simplified(mesh_dir / mesh.file, Path(simplified) / mesh.file, mesh_cell_mm / 1000)
+        spec.meshdir = simplified
+        return spec.compile()
 
 
 def available_camera_presets() -> list[str]:

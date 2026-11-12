@@ -47,6 +47,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--notebook-url", default=DEFAULT_NOTEBOOK, help="Notebook link shown to students"
     )
+    parser.add_argument(
+        "--mesh-detail-mm",
+        type=float,
+        default=2.0,
+        help="Draw camera pictures from meshes simplified this much; 0 draws the originals "
+        "(slower). The arms are always simulated with the originals",
+    )
+    parser.add_argument(
+        "--picture-rate",
+        type=float,
+        default=10.0,
+        help="Camera pictures a second each student page asks for (1 to 30). "
+        "Lower it if your upload speed is limited: 10 is about 1.3 Mbit/s per student",
+    )
     return parser
 
 
@@ -72,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         scene=args.scene,
         log_dir=None if args.no_log else args.log_dir,
         roster_path=args.roster,
+        mesh_cell_mm=max(args.mesh_detail_mm, 0.0),
     )
     app = build_hub_app(
         hub,
@@ -79,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         public_url=args.public_url,
         notebook_url=args.notebook_url or None,
+        picture_hz=args.picture_rate,
     )
     base = (args.public_url or f"http://{args.host}:{args.port}").rstrip("/")
     print(f"Instructor page (keep private): {base}/admin/{hub.admin_token}", flush=True)
