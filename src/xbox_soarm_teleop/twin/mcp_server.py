@@ -72,6 +72,7 @@ def build_mcp_server(
     *,
     name: str = "soarm-twin",
     instructions: str = INSTRUCTIONS,
+    client_id: Callable[[Context | None], str] | None = None,
 ) -> MCPServer:
     """Create the MCP server exposing a twin.
 
@@ -81,8 +82,10 @@ def build_mcp_server(
             token the request carries).
         name: Server name shown to clients.
         instructions: Server instructions for the agent.
+        client_id: Names the caller of a request; by default its MCP session id.
     """
     server = MCPServer(name, instructions=instructions)
+    client_of = client_id or _client_id
 
     def twin(ctx: Context | None) -> TwinService:
         return service(ctx) if callable(service) else service
@@ -97,7 +100,7 @@ def build_mcp_server(
 
     def submit(request: dict[str, Any], ctx: Context | None, wait: bool, preempt: bool = False):
         service = twin(ctx)
-        ok, result = run_command(service.submit(request, client_id=_client_id(ctx), preempt=preempt))
+        ok, result = run_command(service.submit(request, client_id=client_of(ctx), preempt=preempt))
         if not ok:
             return result
         status = result
@@ -192,7 +195,7 @@ def build_mcp_server(
     @server.tool()
     def cancel_action(ctx: Context | None = None) -> dict[str, Any]:
         """Cancel your running action; the arm holds where it is."""
-        ok, result = run_command(twin(ctx).cancel(client_id=_client_id(ctx)))
+        ok, result = run_command(twin(ctx).cancel(client_id=client_of(ctx)))
         if not ok:
             return result
         return {"ok": True, "action": _status_dict(result) if result else None}
@@ -201,26 +204,26 @@ def build_mcp_server(
     def stop(ctx: Context | None = None) -> dict[str, Any]:
         """Latch the virtual emergency stop: cancels motion and refuses new
         motion until reset_stop. Always allowed."""
-        twin(ctx).stop(by="agent", client_id=_client_id(ctx))
+        twin(ctx).stop(by="agent", client_id=client_of(ctx))
         return {"ok": True, "stop_latched": True}
 
     @server.tool()
     def reset_stop(confirm: bool = False, ctx: Context | None = None) -> dict[str, Any]:
         """Release a stop you latched. Requires confirm=true. A stop latched on
         the Xbox controller can only be released there (Menu button, also called Start)."""
-        ok, result = run_command(twin(ctx).reset_stop(client_id=_client_id(ctx), confirm=confirm))
+        ok, result = run_command(twin(ctx).reset_stop(client_id=client_of(ctx), confirm=confirm))
         return {"ok": True, "released": bool(result)} if ok else result
 
     @server.tool()
     def reset_scene(ctx: Context | None = None) -> dict[str, Any]:
         """Home the arm and put every object back where it started."""
-        ok, result = run_command(twin(ctx).reset_scene(client_id=_client_id(ctx)))
+        ok, result = run_command(twin(ctx).reset_scene(client_id=client_of(ctx)))
         return {"ok": True} if ok else result
 
     @server.tool()
     def release_control(ctx: Context | None = None) -> dict[str, Any]:
         """Give up control so another agent can drive the arm."""
-        ok, result = run_command(twin(ctx).release_control(client_id=_client_id(ctx)))
+        ok, result = run_command(twin(ctx).release_control(client_id=client_of(ctx)))
         return {"ok": True, "released": bool(result)} if ok else result
 
     @server.tool()
@@ -234,7 +237,7 @@ def build_mcp_server(
         try:
             data = (
                 twin(ctx)
-                .render(view, width=width, height=height, client_id=_client_id(ctx))
+                .render(view, width=width, height=height, client_id=client_of(ctx))
                 .result(timeout=COMMAND_TIMEOUT_S)
             )
         except Exception as exc:  # noqa: BLE001 - reported to the agent

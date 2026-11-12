@@ -182,6 +182,8 @@
       <code class="copy" id="claudeCmd"></code>
       <p id="notebookLine" hidden>Or open the <a id="notebook" target="_blank" rel="noopener">workshop notebook</a>
         and paste the address and key into its first cell.</p>
+      <p class="sub">An agent in this browser</p>
+      <p id="webmcp">Checking this browser...</p>
     </section>
   </div>
 </main>
@@ -332,8 +334,43 @@
     el.classList.add("copied"); setTimeout(() => el.classList.remove("copied"), 1500);
   }));
 
+  // --- WebMCP: the same tools, for an agent running in this browser ---------
+  // The browser API is experimental and was renamed from navigator.modelContext
+  // to document.modelContext, so both are tried and nothing happens without it.
+  // Each tool is the hub's own tool, called through this page's link.
+  async function callTool(name, args) {
+    const res = await fetch(`${base}/tools/${name}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args || {}),
+    });
+    const reply = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(reply.error || `the arm refused the call (${res.status})`);
+    return reply;
+  }
+  async function registerAgentTools() {
+    const line = $("webmcp");
+    const api = document.modelContext ?? navigator.modelContext;
+    if (!api || typeof api.registerTool !== "function") {
+      line.textContent = "This browser does not offer page tools (WebMCP). Use the address and key above.";
+      return;
+    }
+    try {
+      const { tools } = await (await fetch(base + "/tools", { cache: "no-store" })).json();
+      for (const tool of tools) {
+        await api.registerTool({
+          name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
+          execute: (args) => callTool(tool.name, args),
+        });
+      }
+      line.textContent = `Ready: ${tools.length} tools are registered with this browser (WebMCP). ` +
+        "An agent in this browser can drive the arm while this page is open.";
+    } catch (err) {
+      line.textContent = "Could not register page tools (WebMCP): " + err.message;
+    }
+  }
+
   setInterval(post, 100);
-  post(); frame();
+  post(); frame(); registerAgentTools();
 })();
 </script>
 </body>

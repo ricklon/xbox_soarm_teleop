@@ -161,3 +161,101 @@ def test_instructor_page_lists_arms_and_can_stop_them_all(served):
     time.sleep(0.15)
     assert not any(room["stop"] for room in httpx.get(f"{admin}/rooms").json()["rooms"])
     assert httpx.post(f"{base}/admin/wrong/stop_all").status_code == 404
+
+
+# ------------------------------------------------- the page's own agent tools (WebMCP)
+def _page_tool(base: str, token: str, name: str, **args):
+    reply = httpx.post(f"{base}/r/{token}/tools/{name}", json=args, timeout=40)
+    assert reply.status_code == 200, reply.text
+    return reply.json()
+
+
+def _text(result: dict):
+    return json.loads(result["content"][0]["text"])
+
+
+def test_page_lists_the_same_tools_the_agent_address_serves(served):
+    hub, base = served
+    token = rooms(hub)[1].token
+
+    async def over_mcp():
+        client = httpx.AsyncClient(headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        async with client, streamable_http_client(f"{base}/mcp", http_client=client) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return {tool.name: tool.input_schema for tool in (await session.list_tools()).tools}
+
+    expected = asyncio.run(over_mcp())
+    listing = httpx.get(f"{base}/r/{token}/tools")
+    assert listing.status_code == 200 and listing.headers["cache-control"] == "no-store"
+    tools = {tool["name"]: tool for tool in listing.json()["tools"]}
+    assert set(tools) == set(expected) and {"observe", "move_to", "camera", "stop"} <= set(tools)
+    assert tools["move_to"]["inputSchema"] == expected["move_to"]
+    assert "ctx" not in tools["move_to"]["inputSchema"]["properties"]
+    assert all(tool["description"] for tool in tools.values())
+    assert httpx.get(f"{base}/r/nope/tools").status_code == 404
+
+
+def test_page_tool_drives_only_its_own_arm(served):
+    hub, base = served
+    first, second = rooms(hub)
+    untouched = first.service.observe()["ee"]["xyz_m"]
+    deadline = time.monotonic() + 4  # the instructor's release was a moment ago
+    while True:
+        moved = _text(_page_tool(base, second.token, "move_to", x=0.28, y=-0.05, z=0.24))
+        if moved["ok"] or time.monotonic() > deadline:
+            break
+        time.sleep(0.3)
+    assert moved["ok"] and moved["action"]["state"] == "SUCCEEDED", moved
+    seen = _text(_page_tool(base, second.token, "observe"))
+    assert seen["ee"]["xyz_m"] == pytest.approx([0.28, -0.05, 0.24], abs=0.004)
+    assert seen["owner"] == "browser-agent"
+    assert first.service.observe()["ee"]["xyz_m"] == pytest.approx(untouched, abs=1e-6)
+
+
+def test_page_tool_refusals_are_results_not_errors(served):
+    hub, base = served
+    token = rooms(hub)[1].token
+    refused = _text(_page_tool(base, token, "move_to", x=0.3, y=0.0, z=0.02))
+    assert refused["ok"] is False and refused["reason"] == "workspace_bound"
+
+
+def test_page_tool_camera_returns_a_picture(served):
+    hub, base = served
+    result = _page_tool(base, rooms(hub)[1].token, "camera", view="overhead", width=160, height=120)
+    block = result["content"][0]
+    assert block["type"] == "image" and block["mimeType"] == "image/jpeg"
+    import base64
+
+    assert base64.b64decode(block["data"])[:2] == b"\xff\xd8"
+
+
+def test_page_tool_cannot_release_the_students_stop(served):
+    hub, base = served
+    room = rooms(hub)[1]
+    httpx.post(f"{base}/r/{room.token}/pad", json={"press": ["stop"]})
+    time.sleep(0.15)
+    blocked = _text(_page_tool(base, room.token, "reset_stop", confirm=True))
+    assert blocked["ok"] is False and blocked["reason"] == "not_owner"
+    httpx.post(f"{base}/r/{room.token}/pad", json={"press": ["release"]})
+    time.sleep(0.15)
+    assert room.service.observe()["control"]["stop_latched_by"] is None
+
+
+def test_bad_page_tool_calls_are_refused(served):
+    hub, base = served
+    url = f"{base}/r/{rooms(hub)[1].token}/tools"
+    assert httpx.post(f"{url}/fly_away", json={}).status_code == 404
+    assert httpx.post(f"{url}/move_to", content=b"not json").status_code == 400
+    assert httpx.post(f"{url}/move_to", content=b"[1]").status_code == 400
+    assert httpx.post(f"{url}/observe", content=b'{"x": "' + b"a" * 5000 + b'"}').status_code == 400
+    wrong = httpx.post(f"{url}/move_to", json={"x": "far"})
+    assert wrong.status_code == 400 and "error" in wrong.json()
+    assert httpx.post(f"{base}/r/nope/tools/observe", json={}).status_code == 404
+
+
+def test_student_page_registers_webmcp_tools_when_the_browser_has_them(served):
+    hub, base = served
+    page = httpx.get(f"{base}/r/{rooms(hub)[0].token}").text
+    assert "document.modelContext" in page and "navigator.modelContext" in page
+    assert "registerTool" in page

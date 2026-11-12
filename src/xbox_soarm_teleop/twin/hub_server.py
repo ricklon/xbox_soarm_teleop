@@ -3,7 +3,9 @@
 One server, three audiences:
 
 - ``/r/<room token>``: the student's page (live camera, hold-to-move
-  controls, stop) and the small JSON API it polls.
+  controls, stop) and the small JSON API it polls. ``/r/<room token>/tools``
+  serves the agent tools to the page itself, which registers them with the
+  browser (WebMCP) for an agent running in the student's browser.
 - ``/mcp``: the MCP endpoint for agents. The room is chosen by the request's
   ``Authorization: Bearer <room token>`` header; requests without a valid
   token are refused with 401 before they reach the MCP server.
@@ -18,24 +20,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextvars import ContextVar
 from importlib import resources
 from typing import Any
 from urllib.parse import urlsplit
 
 from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from xbox_soarm_teleop.twin.cameras import MAX_SIZE, VIEWS
 from xbox_soarm_teleop.twin.hub import Hub, Room
-from xbox_soarm_teleop.twin.mcp_server import build_mcp_server
+from xbox_soarm_teleop.twin.mcp_server import _client_id, build_mcp_server
 from xbox_soarm_teleop.twin.service import TwinService
 from xbox_soarm_teleop.twin.status import status_text
 
 RENDER_TIMEOUT_S = 3.0
 MAX_PAD_BYTES = 2048
 AGENT_THREADS = 200  # agents block a worker thread while a move finishes
+PAGE_AGENT = "browser-agent"  # who the session log says acted, for tools called from the page
 PAGE_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
 INSTRUCTIONS = """\
@@ -134,14 +139,24 @@ def build_hub_app(
         notebook_url: Link to the workshop notebook, shown on each page.
     """
 
+    page_room: ContextVar[Room | None] = ContextVar("page_room", default=None)
+
     def twin_for(ctx: Context | None) -> TwinService:
+        from_page = page_room.get()
+        if from_page is not None:  # called by the room's own page, already checked by its link
+            return from_page.service
         headers = (ctx.headers if ctx is not None else None) or {}
         room = hub.room(_bearer(headers.get("authorization")) or "")
         if room is None:
             raise PermissionError("unknown room key")
         return room.service
 
-    server = build_mcp_server(twin_for, name="soarm-arm", instructions=INSTRUCTIONS)
+    def client_for(ctx: Context | None) -> str:
+        return PAGE_AGENT if page_room.get() is not None else _client_id(ctx)
+
+    server = build_mcp_server(
+        twin_for, name="soarm-arm", instructions=INSTRUCTIONS, client_id=client_for
+    )
 
     def room_of(request: Request) -> Room | None:
         return hub.room(request.path_params["token"])
@@ -202,6 +217,41 @@ def build_hub_app(
         except Exception:  # noqa: BLE001 - busy or shutting down; the page just retries
             return Response("camera busy", status_code=503, headers=PAGE_HEADERS)
         return Response(image, media_type="image/jpeg", headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/tools", methods=["GET"])
+    async def page_tools(request: Request) -> Response:
+        if room_of(request) is None:
+            return not_found
+        tools = [
+            {"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
+            for tool in await server.list_tools()
+        ]
+        return JSONResponse({"tools": tools, "instructions": INSTRUCTIONS}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/tools/{name}", methods=["POST"])
+    async def page_tool(request: Request) -> Response:
+        room = room_of(request)
+        name = request.path_params["name"]
+        if room is None or name not in {tool.name for tool in await server.list_tools()}:
+            return not_found
+        body = await request.body()
+        try:
+            arguments = json.loads(body or b"{}") if len(body) <= MAX_PAD_BYTES else None
+        except ValueError:
+            arguments = None
+        if not isinstance(arguments, dict):
+            return JSONResponse({"error": "expected a small JSON object"}, status_code=400)
+        chosen = page_room.set(room)
+        try:
+            result = await server.call_tool(name, arguments)
+        except ToolError as exc:  # arguments that do not fit the tool
+            return JSONResponse({"error": str(exc)}, status_code=400, headers=PAGE_HEADERS)
+        finally:
+            page_room.reset(chosen)
+        content = [
+            block.model_dump(mode="json", by_alias=True, exclude_none=True) for block in result.content
+        ]
+        return JSONResponse({"content": content}, headers=PAGE_HEADERS)
 
     def is_admin(request: Request) -> bool:
         return request.path_params["token"] == hub.admin_token

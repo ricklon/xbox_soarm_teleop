@@ -128,6 +128,26 @@ got stuck.
 Students who use Claude Code can connect it directly with the command shown
 on their page instead of using the notebook.
 
+### An agent in the student's own browser (WebMCP, experimental)
+
+The page also offers its tools to the browser itself, through WebMCP. An agent
+that runs in the student's browser can then drive the arm with no address or
+key to paste. The tools are the same ones the agent address serves, and they
+obey the same rules: the student can take over or stop at any time, and an
+agent cannot release a stop the student latched.
+
+The **Connect an AI agent** panel says whether the browser has it:
+`Ready: 13 tools are registered with this browser (WebMCP)` or
+`This browser does not offer page tools`. Nothing else on the page depends on
+it.
+
+WebMCP is an experimental Chrome feature. It was checked in Chrome 157 started
+with `--enable-features=WebMCP --enable-blink-features=WebMCPTesting`; for
+everyday use Chrome has the `chrome://flags/#enable-webmcp-testing` switch.
+Safari and Firefox do not have it. The tools work only while the page is open,
+and the student also needs an agent that can use page tools. Treat it as an
+extra for students who want to try it, not as the route the class depends on.
+
 ## 5. API keys for the agent part
 
 Part 5 of the notebook runs an agent with the Anthropic API and asks for a key.
