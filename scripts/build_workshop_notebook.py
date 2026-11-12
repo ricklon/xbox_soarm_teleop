@@ -45,14 +45,14 @@ On your arm's page, find **Connect an AI agent**. Click the **Address** to copy
 it and paste it below, then do the same with **Your key**.
 """)
 
-code('''
+code("""
 ARM_URL = "PASTE THE ADDRESS HERE"   # ends in /mcp
 ARM_KEY = "PASTE YOUR KEY HERE"
-''')
+""")
 
-code('''
+code("""
 %pip install -q "anthropic[mcp]>=2,<3" "mcp>=2.3,<3"
-''')
+""")
 
 code('''
 import json
@@ -119,7 +119,7 @@ If that printed a list of tools, you are connected. If it failed with
 the objects are, and the space it is allowed to move in.
 """)
 
-code('''
+code("""
 state = await arm("observe")
 
 print("Tool point (x, y, z) in meters:", state["ee"]["xyz_m"])
@@ -127,7 +127,7 @@ print("Gripper (0 = open, 1 = closed):", state["gripper"])
 for name, thing in state["scene"]["objects"].items():
     print(f"{name}: at {thing['xyz_m']}, attached: {thing['attached']}")
 print("Allowed space:", state["workspace"])
-''')
+""")
 
 md("""
 Distances are in **meters, measured from the robot's base**:
@@ -146,9 +146,9 @@ Now look through a camera. The overhead view is like a map: the base is at the
 bottom and forward is up.
 """)
 
-code('''
+code("""
 await look("overhead")
-''')
+""")
 
 md("""
 **Try it:** change `"overhead"` to `"front"`, `"side"` or `"wrist"`. In the
@@ -160,11 +160,11 @@ front view the robot is facing you, so its left is on *your* right.
 until it gets there.
 """)
 
-code('''
+code("""
 result = await arm("move_to", x=0.30, y=0.00, z=0.25)
 print(result["action"]["state"], "- tool point now at", result["ee_xyz_m"])
 await look("side")
-''')
+""")
 
 md("""
 **Try it:**
@@ -173,9 +173,9 @@ md("""
 - Hold a move button on your page while a move is running. Who wins?
 """)
 
-code('''
+code("""
 # Your experiments here.
-''')
+""")
 
 md("""
 ## 3. Pick and place, by program
@@ -187,7 +187,7 @@ closes, and lets go when it opens.
 So a pick-and-place is six steps. Read them, then run the cell and watch your page.
 """)
 
-code('''
+code("""
 GOAL = (0.29, 0.13)   # the goal box, from the map above
 
 
@@ -214,7 +214,7 @@ cube = (await arm("observe"))["scene"]["objects"]["pick_cube"]["xyz_m"]
 in_box = abs(cube[0] - GOAL[0]) < 0.03 and abs(cube[1] - GOAL[1]) < 0.03
 print("Cube is at", cube, "- in the goal box!" if in_box else "- NOT in the goal box")
 await look("overhead")
-''')
+""")
 
 md("""
 **Your turn:** write `put_it_back()`: take the cube out of the box and return
@@ -222,14 +222,14 @@ it to where it started, `(0.34, -0.03)`. The table top is at `z = 0.12` and the
 cube is 4 cm tall, so its center rests at `z = 0.14`.
 """)
 
-code('''
+code("""
 async def put_it_back() -> None:
     ...   # your steps here
 
 
 # await put_it_back()
 # await look("overhead")
-''')
+""")
 
 md("""
 ## 4. What the arm refuses, and how you stop it
@@ -237,10 +237,10 @@ md("""
 Ask for something impossible: a point under the table.
 """)
 
-code('''
+code("""
 result = await arm("move_to", x=0.30, y=0.00, z=0.05)
 print(json.dumps(result, indent=2))
-''')
+""")
 
 md("""
 Nothing moved. The request was refused *before* it started, with a reason
@@ -252,13 +252,13 @@ Now the stop. The next cell starts a slow move and does not wait for it.
 it to see what the program was told.
 """)
 
-code('''
+code("""
 await arm("home")
 started = await arm("move_to", x=0.42, y=-0.15, z=0.20, max_speed_m_s=0.02, wait=False)
 print("Started", started["action"]["id"], "- go press STOP on your page!")
-''')
+""")
 
-code('''
+code("""
 ended = await arm("wait_for_action", action_id=started["action"]["id"], timeout_s=30)
 print(ended["action"]["state"], ended["action"]["reason"], ended["action"]["detail"])
 
@@ -267,7 +267,7 @@ print("Trying to move again:", again.get("reason", again.get("action", {}).get("
 
 undo = await arm("reset_stop", confirm=True)
 print("Program tries to release the stop:", undo)
-''')
+""")
 
 md("""
 If you pressed STOP you should see `STOPPED`, then a refused move, then a
@@ -283,8 +283,12 @@ So far *you* decided every step. An agent is a language model in a loop: it
 reads what the tools are, decides which to call, reads the answer, and decides
 again, until the job is done. It gets exactly the tools you have been calling.
 
-This part needs an Anthropic API key. Your instructor will tell you how to get
-one for the workshop.
+This part needs a key for a language model. Your instructor will tell you
+which of the two cells below to use, and give you a key. **Run only one of
+them.** Both define the same `ask_agent(...)`, so everything after works the
+same way.
+
+### Option A: Claude, with an Anthropic API key
 """)
 
 code('''
@@ -326,26 +330,114 @@ async def ask_agent(task: str, max_steps: int = 30) -> None:
                 print("The model declined this request.")
 ''')
 
+md("""
+### Option B: another model, through OpenRouter or Hugging Face
+
+Many services speak the same "chat completions" language. Paste the service's
+address, the name of a model that can **call tools**, and your key. Your
+instructor will give you the model name.
+
+| Service | Address |
+|---|---|
+| OpenRouter | `https://openrouter.ai/api/v1` |
+| Hugging Face | `https://router.huggingface.co/v1` |
+
+Most of these models cannot be handed a picture as a tool's answer, so this
+agent works from `observe` (which gives positions as numbers) and is not
+offered the `camera` tool. If your model can see pictures, set
+`MODEL_SEES_PICTURES = True`.
+""")
+
 code('''
+from getpass import getpass
+
+MODEL_BASE_URL = "https://openrouter.ai/api/v1"
+MODEL_NAME = "PASTE THE MODEL NAME HERE"
+MODEL_SEES_PICTURES = False
+
+MODEL_BASE_URL = os.environ.get("MODEL_BASE_URL", MODEL_BASE_URL).strip().rstrip("/")
+MODEL_NAME = os.environ.get("MODEL_NAME", MODEL_NAME).strip()
+MODEL_KEY = os.environ.get("MODEL_API_KEY") or getpass("Model API key: ")
+
+INSTRUCTIONS = """You control a simulated robot arm through the tools you are given.
+Before each tool call, say in one short sentence what you are about to do and why.
+Look before you move: start with observe. When you are done, say what happened."""
+
+
+async def ask_agent(task: str, max_steps: int = 30) -> None:
+    """Give the agent a task in plain words and print what it does."""
+    async with connect() as session, httpx2.AsyncClient(timeout=120) as http:
+        tools = [
+            {"type": "function", "function": {
+                "name": tool.name, "description": tool.description or "", "parameters": tool.input_schema}}
+            for tool in (await session.list_tools()).tools
+            if MODEL_SEES_PICTURES or tool.name != "camera"
+        ]
+        messages = [{"role": "system", "content": INSTRUCTIONS}, {"role": "user", "content": task}]
+        for _ in range(max_steps):
+            # 1. Ask the model what to do next.
+            reply = await http.post(
+                f"{MODEL_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {MODEL_KEY}"},
+                json={"model": MODEL_NAME, "messages": messages, "tools": tools, "max_tokens": 2000},
+            )
+            if reply.status_code != 200:
+                print(f"The model service answered {reply.status_code}: {reply.text[:500]}")
+                return
+            said = reply.json()["choices"][0]["message"]
+            calls = said.get("tool_calls") or []
+            if (said.get("content") or "").strip():
+                print(said["content"].strip())
+            if not calls:
+                return   # no more tools wanted: the agent is done
+            messages.append({"role": "assistant", "content": said.get("content") or "", "tool_calls": calls})
+
+            # 2. Run each tool it asked for on the arm, and tell it the answer.
+            pictures = []
+            for call in calls:
+                name = call["function"]["name"]
+                try:
+                    arguments = json.loads(call["function"].get("arguments") or "{}")
+                    print(f"    -> {name}({json.dumps(arguments)})")
+                    result = await session.call_tool(name, arguments)
+                    answer = "\\n".join(block.text for block in result.content if block.type == "text")
+                    pictures += [block for block in result.content if block.type == "image"]
+                except Exception as error:   # bad arguments or an unknown tool: let the model see why
+                    answer = f"That call failed: {error}"
+                    print(f"    -> {name}: {answer}")
+                messages.append(
+                    {"role": "tool", "tool_call_id": call["id"], "content": answer or "The picture follows."}
+                )
+            for picture in pictures:
+                url = f"data:{picture.mime_type};base64,{picture.data}"
+                messages.append({"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]})
+        print(f"Stopped after {max_steps} steps without finishing.")
+''')
+
+md("""
+### Give it the job
+""")
+
+code("""
 await ask_agent("Pick up the cube and put it in the goal box.")
 await look("overhead")
-''')
+""")
 
 md("""
 Compare what the agent did with your `pick_and_place()`:
 
-- Did it look first? Did it use a camera?
+- Did it look first? Did it use a camera (if it had one)?
 - Did it take the same six steps? More? Fewer?
 - Did anything go wrong, and did it notice?
 
 **Try these.** Change the text and run it again:
 """)
 
-code('''
+code("""
 # await ask_agent("Put the cube back where it started, on the table at x=0.34, y=-0.03.")
 # await ask_agent("Put the cube under the table.")          # impossible: how does it report that?
-# await ask_agent("Take an overhead picture and tell me what is to the robot's left.")
-''')
+# await ask_agent("Take an overhead picture and tell me what is to the robot's left.")   # needs a model that sees pictures
+""")
 
 md("""
 **Share the arm.** Start a task, and while the agent is working:
