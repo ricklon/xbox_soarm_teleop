@@ -155,7 +155,10 @@ limits).
   auto-reset on reconnect, new action, or timeout).
 - *Amended:* the Xbox **B** button latches the stop and **Start** releases it.
   A stop latched on the controller can only be released on the controller;
-  agents get `not_owner` ("press Start"). Observations report `stop_latched_by`.
+  agents get `not_owner` ("press Start"). Observations report `stop_latched_by`:
+  `agent`, `human`, or `instructor`. The hub's instructor latches the third
+  kind with **STOP ALL**; only the instructor releases it, and it outranks the
+  other two (a student's or agent's stop cannot replace it).
 - Read-only calls (`observe`, `status`, `get_log`) keep working while latched.
 - Hardware later adds an **independent physical stop**; the virtual stop is not
   a substitute (§11).

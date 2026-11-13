@@ -134,13 +134,18 @@ new ones. Ask for more seats than you expect; an unused arm costs nothing.
 ## 4. During the session
 
 The instructor page shows, for every arm: who is there (page open, agent
-connected), what the arm is doing, the last thing that happened, and a small
-picture that refreshes in turn.
+connected), what the arm is doing (`Ready`, `Student driving`, `Agent: ...`,
+`STOPPED by student`, `STOPPED by agent`, `STOPPED by you`), the last thing
+that happened, and a small picture that refreshes in turn. The cards update
+about once a second.
 
-- **STOP ALL** stops every arm at once, including any agent's move, and agents
-  cannot undo it. Use it to get the room's attention.
-- **Release all stops** lets everyone carry on. A student can also release
-  their own arm.
+- **STOP ALL** stops every arm at once, including any agent's move. It is your
+  stop: neither a student nor an agent can release it. Students see `STOPPED
+  by your instructor` and their **Release stop** button is switched off. Use
+  it to get the room's attention.
+- **Release all stops** lets everyone carry on. It releases every stop,
+  including ones students pressed themselves. A student can release only a
+  stop they pressed.
 - **Open** shows you a student's page, to see exactly what they see. You are
   then driving their arm too, so keep your hands off the keys.
 
@@ -271,8 +276,9 @@ Camera pictures are drawn without shadows or reflections to get these rates;
 | A page says **No arm yet** or **Open the instructor link** | The page was opened by its short address (`/arm`, `/instructor`) in a new tab or window, which has no key. Open the original link again |
 | Agent tool calls fail with `421` or "Invalid Host header" | The hub was started without `--public-url`, or with a different address than students use |
 | Agent is refused with `not_owner` / `human` | The student touched the controls in the last 2 seconds. Hands off and retry |
-| Agent is refused with `stopped` | The student (or you) stopped the arm. Press **Release stop** |
-| Arm will not move | Look at the top of the page: `STOPPED` means press **Release stop** |
+| Agent is refused with `stopped` | The student (or you) stopped the arm. The student presses **Release stop**; after **STOP ALL**, you press **Release all stops** |
+| Arm will not move | Look at the top of the page: `STOPPED` means press **Release stop**; `STOPPED by your instructor` means wait for the instructor |
+| A student's Home leaves the cube behind | Home on the page also opens the gripper, so a held cube is dropped. Carry it to where it should go first |
 | Camera is slow for everyone | Many people watching at once (section 6). Ask students to close extra tabs |
 | The cube is off the table | **Reset scene** on the page |
 
@@ -287,6 +293,8 @@ To finish, press Ctrl+C in the hub's terminal, then stop the tunnel.
   - The terminal prints no key (unless you pass `--show-links`).
   - A page opened by its link moves at once to a short address without the
     key (`/arm` or `/instructor`) and remembers the key for that browser tab.
+  - The student page keeps the key out of its markup as well as off the
+    screen, so the browser's developer tools do not show it either.
   - The student page draws the key as dots. Clicking it copies the real key;
     **Show** reveals it on purpose, and it hides again when the tab is left.
   - The instructor page uses buttons for each arm, so hovering does not show

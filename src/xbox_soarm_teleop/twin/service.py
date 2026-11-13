@@ -89,6 +89,9 @@ class RenderRequest:
     future: Future
 
 
+_STOP_RANK = {"agent": 0, "api": 0, "human": 1, "instructor": 2}
+
+
 class TwinService:
     """Owns the simulator; arbitrates human (Xbox) and agent control.
 
@@ -169,6 +172,10 @@ class TwinService:
         self.stop_latched_by: str | None = None
         self.stop_release_hint = "press the controller's Menu/Start button"
         """Told to an agent that tries to release a stop a person latched."""
+        self.home_opens_gripper = False
+        """A person's Home also opens the gripper. For controllers with no
+        trigger to let go of (the hub's web page); a pad's trigger decides."""
+        self._opening_for_home = False
         self._stop_flag = threading.Event()
         self._stop_by = "api"
         self._stop_client: str | None = None
@@ -227,6 +234,17 @@ class TwinService:
         self._stop_client = client_id
         self._stop_flag.set()
 
+    def release_stop(self, *, by: str = "instructor") -> Future:
+        """Release the stop whoever latched it. For the person in charge, not for agents."""
+
+        def release() -> bool:
+            if self.stop_latched_by is None:
+                return False
+            self._release_stop(by)
+            return True
+
+        return self.call(release)
+
     def reset_stop(self, *, client_id: str = "agent", confirm: bool = False) -> Future:
         """Release a stop latched by an agent (requires ``confirm=True``)."""
         return self.call(
@@ -264,11 +282,14 @@ class TwinService:
         height: int = DEFAULT_SIZE[1],
         fmt: str = "jpeg",
         client_id: str | None = None,
+        log: bool = True,
     ) -> Future:
         """Render a camera view after the next tick; resolves to encoded bytes.
 
         Views: ``wrist`` (on the gripper), ``overhead``, ``front``, ``side``.
         At most one image is rendered per tick to protect the control rate.
+        ``log=False`` keeps the request out of the session log: a web page
+        asks many times a second, which would bury everything else.
         """
         if view not in VIEWS:
             raise ValueError(f"Unknown view '{view}'. Known: {', '.join(VIEWS)}")
@@ -277,7 +298,8 @@ class TwinService:
             future.set_exception(TwinClosed("twin is not running"))
             return future
 
-        self._log("request", client_id=client_id, type="camera", view=view, size=[width, height])
+        if log:
+            self._log("request", client_id=client_id, type="camera", view=view, size=[width, height])
         self._renders.put(RenderRequest(view, width, height, fmt, future))
         return future
 
@@ -575,7 +597,8 @@ class TwinService:
         self._log_status(action)
 
     def _latch_stop(self, by: str) -> None:
-        if self.stop_latched_by is None or by == "human":
+        # Whoever ranks higher keeps the stop: instructor, then the person, then an agent.
+        if _STOP_RANK.get(by, 0) >= _STOP_RANK.get(self.stop_latched_by, -1):
             self.stop_latched_by = by
         self._end_action(ActionState.STOPPED, ReasonCode.STOPPED, by)
         self.homing = False
@@ -634,6 +657,11 @@ class TwinService:
             return False
         if not confirm:
             raise ActionRejected(ReasonCode.INVALID_REQUEST, "reset_stop requires confirm=true")
+        if self.stop_latched_by == "instructor":
+            raise ActionRejected(
+                ReasonCode.NOT_OWNER,
+                "instructor (the instructor latched this stop and must release it)",
+            )
         if self.stop_latched_by == "human":
             raise ActionRejected(
                 ReasonCode.NOT_OWNER,
@@ -693,7 +721,7 @@ class TwinService:
         if human is not None:
             if human.b_button_pressed:
                 self._latch_stop("human")
-            if human.start_button_pressed and self.stop_latched_by is not None:
+            if human.start_button_pressed and self.stop_latched_by not in (None, "instructor"):
                 self._release_stop("human")
             engaged = human.left_bumper or human.a_button_pressed or human.y_button_pressed
             if engaged and self.stop_latched_by is None:
@@ -710,7 +738,15 @@ class TwinService:
                 return EEDelta(gripper=self.state.gripper_pos)
             if human.a_button_pressed:
                 self.homing = True
+                if self.home_opens_gripper:
+                    self._opening_for_home = True
+                    self.agent_gripper = 0.0  # keeps opening after control passes back
             delta = apply_axis_mapping(self.mapper(human), swap_xy=False)
+            if self._opening_for_home:
+                if human.left_bumper or self.state.gripper_pos <= 0.01:
+                    self._opening_for_home = False  # done, or the person took the gripper back
+                else:
+                    return replace(delta, gripper=0.0)
             # Soft takeover: the trigger is absolute, so only follow it once it
             # reaches the current gripper position (no sudden drop of a cube).
             if not self._gripper_following:
@@ -723,7 +759,9 @@ class TwinService:
         if self._gripper_following:
             # Control passes back: the agent keeps whatever the human left.
             self._gripper_following = False
-            self.agent_gripper = self.state.gripper_pos
+            if not self._opening_for_home:
+                self.agent_gripper = self.state.gripper_pos
+        self._opening_for_home = False
         action = self.action
         if action is not None and not action.state.terminal:
             return command_for(

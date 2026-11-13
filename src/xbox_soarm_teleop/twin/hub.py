@@ -216,6 +216,7 @@ class Hub:
             )
             controller.gripper_feedback = lambda service=service: float(service.state.gripper_pos)
             service.stop_release_hint = "press Release stop on the arm's web page"
+            service.home_opens_gripper = True  # the page has no trigger to let go of
             self.rooms[token] = Room(f"Arm {index}", token, service, controller, log_path)
         self.dt = next(iter(self.rooms.values())).service.dt
         self._render_turn = 0

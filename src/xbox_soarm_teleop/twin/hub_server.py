@@ -238,7 +238,7 @@ def build_hub_app(
             return JSONResponse({"error": "w and h must be whole numbers"}, status_code=400)
         if view not in VIEWS:
             return JSONResponse({"error": f"view must be one of {', '.join(VIEWS)}"}, status_code=400)
-        future = room.service.render(view, width=width, height=height, client_id="web")
+        future = room.service.render(view, width=width, height=height, client_id="web", log=False)
         try:
             image = await asyncio.wait_for(asyncio.wrap_future(future), RENDER_TIMEOUT_S)
         except Exception:  # noqa: BLE001 - busy or shutting down; the page just retries
@@ -296,11 +296,12 @@ def build_hub_app(
         rooms = []
         for room in hub.rooms.values():
             summary = room_summary(room)
+            seen = status_text(room.service.observe(), web=True, instructor=True)
             rooms.append(
                 {
                     "name": room.name,
                     "token": room.token,
-                    "status": summary["status"],
+                    "status": list(seen),
                     "stop": summary["stop"],
                     "page_open": room.controller.is_connected,
                     "agent": room.service.observe()["owner"] is not None,
@@ -310,18 +311,24 @@ def build_hub_app(
         listing = {"rooms": rooms, "loop_hz": hub.loop_hz, "public_url": public_url}
         return JSONResponse(listing, headers=PAGE_HEADERS)
 
-    def press_everywhere(button: str) -> Response:
-        for room in hub.rooms.values():
-            room.controller.press(button)
-        return JSONResponse({"ok": True, "rooms": len(hub.rooms)}, headers=PAGE_HEADERS)
+    done = lambda: JSONResponse({"ok": True, "rooms": len(hub.rooms)}, headers=PAGE_HEADERS)  # noqa: E731
 
     @server.custom_route("/admin/{token}/stop_all", methods=["POST"])
     async def stop_all(request: Request) -> Response:
-        return press_everywhere("stop") if is_admin(request) else not_found
+        if not is_admin(request):
+            return not_found
+        # The instructor's own stop: students and agents cannot release it.
+        for room in hub.rooms.values():
+            room.service.stop(by="instructor", client_id="instructor")
+        return done()
 
     @server.custom_route("/admin/{token}/release_all", methods=["POST"])
     async def release_all(request: Request) -> Response:
-        return press_everywhere("release") if is_admin(request) else not_found
+        if not is_admin(request):
+            return not_found
+        for room in hub.rooms.values():
+            room.service.release_stop(by="instructor")
+        return done()
 
     hosts = [f"127.0.0.1:{port}", f"localhost:{port}", f"{host}:{port}"]
     origins = [f"http://127.0.0.1:{port}", f"http://localhost:{port}"]

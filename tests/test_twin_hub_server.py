@@ -153,11 +153,17 @@ def test_instructor_page_lists_arms_and_can_stop_them_all(served):
     time.sleep(0.15)
     assert all(room["stop"] for room in httpx.get(f"{admin}/rooms").json()["rooms"])
     refused = asyncio.run(_call(base, rooms(hub)[1].token, "move_to", x=0.3, y=0.0, z=0.2))
-    assert refused == {"ok": False, "reason": "stopped", "detail": "latched by human"}
+    assert refused == {"ok": False, "reason": "stopped", "detail": "latched by instructor"}
     blocked = asyncio.run(_call(base, rooms(hub)[1].token, "reset_stop", confirm=True))
-    assert (
-        blocked["reason"] == "not_owner" and "Release stop on the arm's web page" in blocked["detail"]
-    )
+    assert blocked["reason"] == "not_owner" and "instructor" in blocked["detail"]
+    # A student cannot undo the instructor's stop from their own page.
+    student = f"{base}/r/{rooms(hub)[0].token}/pad"
+    httpx.post(student, json={"press": ["release"]})
+    time.sleep(0.15)
+    told = httpx.post(student, json={}).json()
+    assert told["stop"] is True and told["status"][0] == "STOPPED by your instructor"
+    listing = httpx.get(f"{admin}/rooms").json()
+    assert all(room["status"][0] == "STOPPED by you" for room in listing["rooms"])
     httpx.post(f"{admin}/release_all")
     time.sleep(0.15)
     assert not any(room["stop"] for room in httpx.get(f"{admin}/rooms").json()["rooms"])
@@ -303,7 +309,9 @@ def test_student_page_masks_the_key_until_asked(served):
     hub, base = served
     page = httpx.get(f"{base}/r/{rooms(hub)[0].token}").text
     assert 'id="showKey"' in page  # the key is revealed only on purpose
-    assert "dataset.copy" in page  # copying still gives the real value
+    assert "dataset.copy" not in page  # the key is kept out of the page's markup too
+    assert "copies.set(" in page  # copying still gives the real value
+    assert "paste the address and key" not in page
     assert '$("token").textContent = token' not in page
 
 

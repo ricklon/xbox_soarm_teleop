@@ -93,3 +93,19 @@ def test_overlay_names_the_camera_and_redraws_when_it_changes():
     assert len(viewer.calls) == 2
     assert ("Camera", "free (mouse)") in [(left, right) for _f, _p, left, right in viewer.calls[0]]
     assert ("Camera", "wrist") in [(left, right) for _f, _p, left, right in viewer.calls[1]]
+
+
+def test_instructor_stop_tells_the_student_who_holds_it():
+    headline, detail = status_text(obs(stop_latched_by="instructor"), web=True)
+    assert headline == "STOPPED by your instructor"
+    assert "instructor" in detail and "Release stop" not in detail
+
+
+def test_instructor_sees_arms_from_the_outside():
+    """The instructor's overview must not read as if the instructor were driving."""
+    see = lambda **control: status_text(obs(**control), web=True, instructor=True)[0]  # noqa: E731
+    assert see(human_in_control=True) == "Student driving"
+    assert see(stop_latched_by="human") == "STOPPED by student"
+    assert see(stop_latched_by="instructor") == "STOPPED by you"
+    assert see(stop_latched_by="agent") == "STOPPED by agent"
+    assert see() == "Ready"
