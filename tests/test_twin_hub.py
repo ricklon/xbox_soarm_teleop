@@ -153,7 +153,8 @@ def test_web_gripper_closes_on_the_cube_and_carries_it(hub):
         c.controller.update({"hold": True, "grip": 1.0})
         hub.tick()
     observation = c.service.observe()
-    assert observation["gripper"] > 0.95
+    # Jaws a person drives shut stop on the cube instead of squeezing it out.
+    assert 0.7 < observation["gripper"] < 0.85
     assert observation["scene"]["objects"]["pick_cube"]["attached"] is True
     for _ in range(60):
         c.controller.update({"up": 1})

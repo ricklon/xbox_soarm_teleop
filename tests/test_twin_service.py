@@ -13,6 +13,7 @@ import pytest
 from xbox_soarm_teleop.schemas.agent import ActionState, ReasonCode
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 from xbox_soarm_teleop.twin import ActionRejected, TwinClosed, build_twin
+from xbox_soarm_teleop.twin.grasp import GraspSettings
 from xbox_soarm_teleop.twin.service import HUMAN_IDLE_S, TwinService
 
 warnings.filterwarnings("ignore")
@@ -20,6 +21,7 @@ logging.getLogger("xbox_soarm_teleop").setLevel(logging.ERROR)
 
 TABLE_TOP = 0.12
 CUBE_REST_Z = TABLE_TOP + 0.02
+CUBE_FIT = GraspSettings().gripper_for_opening(0.04)  # jaws closed to the cube's width
 
 
 @pytest.fixture
@@ -189,7 +191,7 @@ def _pick_cube(twin):
     for request in (
         {"type": "move_ee_to", "params": {"xyz_m": list(above)}},
         {"type": "move_ee_to", "params": {"xyz_m": list(cube + [0.0, 0.0, 0.025])}},
-        {"type": "set_gripper", "params": {"position": 1.0}},
+        {"type": "set_gripper", "params": {"position": CUBE_FIT}},
     ):
         status = resolve(twin, twin.submit(request))
         assert run_until_done(twin, status.id).state is ActionState.SUCCEEDED, request
@@ -216,15 +218,17 @@ def test_human_takeover_does_not_drop_carried_cube(twin):
     for _ in range(5):
         twin.tick(lb(right_trigger=0.0))  # trigger at rest: keep holding
     assert twin.grasp.attached == "pick_cube"
-    assert twin.state.gripper_pos == pytest.approx(1.0)
+    assert twin.state.gripper_pos == pytest.approx(CUBE_FIT, abs=0.01)
     for _ in range(5):
-        twin.tick(lb(right_trigger=1.0))  # picked up the trigger
+        twin.tick(lb(right_trigger=CUBE_FIT))  # picked up the trigger
+    eased = CUBE_FIT + 0.02  # a touch tighter: still within what holds the cube
     for _ in range(40):
-        twin.tick(lb(right_trigger=0.5))  # now follows it
-    assert twin.state.gripper_pos == pytest.approx(0.5, abs=0.01)
+        twin.tick(lb(right_trigger=eased))  # now follows it
+    assert twin.state.gripper_pos == pytest.approx(eased, abs=0.01)
+    assert twin.grasp.attached == "pick_cube"
     for _ in range(int(HUMAN_IDLE_S / twin.dt) + 5):
-        twin.tick(XboxState(right_trigger=0.5))
-    assert twin.agent_gripper == pytest.approx(0.5, abs=0.01)  # agent inherits it
+        twin.tick(XboxState(right_trigger=eased))
+    assert twin.agent_gripper == pytest.approx(eased, abs=0.01)  # agent inherits it
 
 
 @pytest.mark.parametrize("speed", [0.05, 0.1])
@@ -279,7 +283,7 @@ def test_closed_gripper_pushes_without_grabbing(twin):
 
 def test_grasp_rearms_after_opening(twin):
     _pick_cube(twin)
-    for position in (0.0, 1.0):  # release, then close again on the same cube
+    for position in (0.0, CUBE_FIT):  # release, then close again on the same cube
         status = resolve(twin, twin.submit({"type": "set_gripper", "params": {"position": position}}))
         run_until_done(twin, status.id)
     assert twin.grasp.attached == "pick_cube"

@@ -151,7 +151,7 @@ Distances are in **meters, measured from the robot's base**:
         +x  (forward, away from the base)
          ^
          |      goal box (0.29, 0.13)
-         |   cube (0.34, -0.03)
+         |   object (0.34, -0.03)
 +y <-----+
 (robot's   base (0, 0)
  left)                      +z is up; the table top is at z = 0.12
@@ -195,9 +195,14 @@ code("""
 md("""
 ## 3. Pick and place, by program
 
-Grasping is assisted: bring the tool point within about 4 cm of the cube's
-center and **close** the gripper. The cube attaches at the moment the gripper
-closes, and lets go when it opens.
+Your arm starts with a soft bean bag on the table. Grasping is assisted: bring
+the tool point within about 4 cm of the object's center and **close the jaws to
+its size**. It attaches when the jaws reach it, and lets go when they open.
+
+`observe` tells you each object's `size_m`, and `set_gripper(opening_m=...)`
+closes to a gap in meters. The bean bag is forgiving. A rigid object like the
+cube (scene `pick_place_basic`) is not: close much past its width and it is
+squeezed out.
 
 So a pick-and-place is six steps. Read them, then run the cell and watch your page.
 """)
@@ -212,29 +217,39 @@ async def step(tool: str, **arguments) -> None:
     print(f"{tool:12s} {arguments}  ->  {state}")
 
 
+def the_object(state: dict) -> tuple[str, dict]:
+    # The object on the table: its name, and where and how big it is.
+    return next(iter(state["scene"]["objects"].items()))
+
+
 async def pick_and_place() -> None:
     await arm("reset_scene")
-    cube = (await arm("observe"))["scene"]["objects"]["pick_cube"]["xyz_m"]
+    name, thing = the_object(await arm("observe"))
+    at, height = thing["xyz_m"], thing["size_m"][2]
 
-    await step("move_to", x=cube[0], y=cube[1], z=cube[2] + 0.06)    # 1. above the cube
-    await step("move_to", x=cube[0], y=cube[1], z=cube[2] + 0.025)   # 2. down to it
-    await step("set_gripper", position=1.0)                          # 3. close: grab
+    await step("move_to", x=at[0], y=at[1], z=at[2] + 0.06)          # 1. above the object
+    await step("move_to", x=at[0], y=at[1], z=at[2] + 0.025)         # 2. down to it
+    await step("set_gripper", opening_m=height)                      # 3. close to its size: grab
     await step("move_to", x=GOAL[0], y=GOAL[1], z=0.22)              # 4. carry over the box
     await step("set_gripper", position=0.0)                          # 5. open: let go
     await step("home")                                               # 6. out of the way
 
 
 await pick_and_place()
-cube = (await arm("observe"))["scene"]["objects"]["pick_cube"]["xyz_m"]
-in_box = abs(cube[0] - GOAL[0]) < 0.03 and abs(cube[1] - GOAL[1]) < 0.03
-print("Cube is at", cube, "- in the goal box!" if in_box else "- NOT in the goal box")
+name, thing = the_object(await arm("observe"))
+at = thing["xyz_m"]
+in_box = abs(at[0] - GOAL[0]) < 0.03 and abs(at[1] - GOAL[1]) < 0.03
+print(name, "is at", at, "- in the goal box!" if in_box else "- NOT in the goal box")
 await look("overhead")
 """)
 
 md("""
-**Your turn:** write `put_it_back()`: take the cube out of the box and return
-it to where it started, `(0.34, -0.03)`. The table top is at `z = 0.12` and the
-cube is 4 cm tall, so its center rests at `z = 0.14`.
+**Your turn:** write `put_it_back()`: take the object out of the box and return
+it to where it started, `(0.34, -0.03)`. The table top is at `z = 0.12`, and
+`size_m` tells you how tall the object is.
+
+**Then try the hard one:** `await arm("load_scene", name="pick_place_basic")`
+swaps the bean bag for a rigid cube. Does your `pick_and_place()` still work?
 """)
 
 code("""
@@ -434,7 +449,7 @@ md("""
 """)
 
 code("""
-await ask_agent("Pick up the cube and put it in the goal box.")
+await ask_agent("Pick up the object on the table and put it in the goal box.")
 await look("overhead")
 """)
 
@@ -449,8 +464,9 @@ Compare what the agent did with your `pick_and_place()`:
 """)
 
 code("""
-# await ask_agent("Put the cube back where it started, on the table at x=0.34, y=-0.03.")
-# await ask_agent("Put the cube under the table.")          # impossible: how does it report that?
+# await ask_agent("Put it back where it started, on the table at x=0.34, y=-0.03.")
+# await ask_agent("Put it under the table.")                # impossible: how does it report that?
+# await ask_agent("Load the harder scene and put the cube in the goal box.")
 # await ask_agent("Take an overhead picture and tell me what is to the robot's left.")   # needs a model that sees pictures
 """)
 

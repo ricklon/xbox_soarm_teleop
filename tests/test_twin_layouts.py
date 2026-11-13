@@ -156,7 +156,7 @@ def test_the_parked_object_cannot_be_grabbed_or_seen(easy):
     easy.tick()
     cube = objects(easy)["pick_cube"]["xyz_m"]
     move(easy, [cube[0], cube[1], cube[2] + 0.03])
-    grip(easy, 1.0)
+    grip(easy, easy.grasp.settings.gripper_for_opening(0.04))
     assert easy.grasp.attached == "pick_cube"
     assert "bean_bag" not in easy.grasp.positions()
 

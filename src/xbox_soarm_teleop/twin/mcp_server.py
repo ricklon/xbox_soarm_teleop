@@ -34,13 +34,18 @@ and report SUCCEEDED, or FAILED with a reason such as workspace_bound,
 out_of_reach or joint_limit. Moves outside the workspace are rejected.
 
 Grasping is assisted: move the tool point to within about 4 cm of an object's
-center, then set_gripper(1.0) to grab it; set_gripper(0.0) releases it. Check
-`observe` afterwards: the object reports `attached` only if the grab worked.
+center, then close the jaws to fit it. `observe` gives each object's `size_m`
+and the current `gripper_opening_m`; set_gripper(opening_m=...) closes to a
+gap in meters. Closed to the object's width or slightly less, it is held and
+the result's `holding` names it. Closed much further, a rigid object is
+squeezed out and falls; open the gripper before trying again. A rigid object
+must also sit square between the jaws (set_wrist_roll turns them).
+set_gripper(position=0) releases.
 
 Scenes differ in how forgiving their objects are. `list_scenes` shows them,
 easiest first, and `load_scene` switches (it homes the arm and swaps the
-objects). A soft object gives way to the gripper; a rigid one is pushed away
-if the gripper touches it before it closes.
+objects). A soft object gives way to the gripper and takes any closure; a
+rigid one is pushed away if the gripper touches it before it closes.
 
 A human with an Xbox controller can take over at any time (reason
 `preempted`/`human`); wait until they are done. If the stop is latched, motion
@@ -118,6 +123,8 @@ def build_mcp_server(
             "action": _status_dict(status),
             "ee_xyz_m": observation["ee"]["xyz_m"],
             "gripper": observation["gripper"],
+            "gripper_opening_m": observation["gripper_opening_m"],
+            "holding": service.grasp.attached,
             "events": observation["control"]["events"][-3:],
         }
 
@@ -171,8 +178,24 @@ def build_mcp_server(
         return submit(request, ctx, wait, preempt)
 
     @server.tool()
-    def set_gripper(position: float, wait: bool = True, ctx: Context | None = None) -> dict[str, Any]:
-        """Set the gripper: 0 = open, 1 = closed. Closing near an object grabs it."""
+    def set_gripper(
+        position: float | None = None,
+        opening_m: float | None = None,
+        wait: bool = True,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Set the gripper, either by position (0 = open, 1 = closed) or by
+        opening_m, the gap to leave between the jaws in meters. Closing to an
+        object's width grabs it; the result's `holding` names what is held.
+        Closing much further on a rigid object squeezes it out."""
+        if (position is None) == (opening_m is None):
+            return {
+                "ok": False,
+                "reason": "invalid_request",
+                "detail": "give exactly one of position (0..1) or opening_m (meters)",
+            }
+        if opening_m is not None:
+            position = twin(ctx).grasp.settings.gripper_for_opening(opening_m)
         return submit({"type": "set_gripper", "params": {"position": position}}, ctx, wait)
 
     @server.tool()

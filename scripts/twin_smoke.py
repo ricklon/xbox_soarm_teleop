@@ -33,10 +33,11 @@ async def run(url: str, image_path: str | None) -> bool:
             await tool("reset_scene")
             name, state = next(iter((await tool("observe"))["scene"]["objects"].items()))
             cube = state["xyz_m"]
+            width = min(state["size_m"])  # the jaws close on the object from above
             steps = [
                 ("move_to", {"x": cube[0], "y": cube[1], "z": cube[2] + 0.06}),
                 ("move_to", {"x": cube[0], "y": cube[1], "z": cube[2] + 0.025}),
-                ("set_gripper", {"position": 1.0}),
+                ("set_gripper", {"opening_m": width}),
                 ("move_to", {"x": GOAL_XY[0], "y": GOAL_XY[1], "z": 0.22}),
                 ("set_gripper", {"position": 0.0}),
                 ("home", {}),

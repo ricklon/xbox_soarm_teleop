@@ -302,6 +302,21 @@ but it does not collide with the robot); `pick_place_basic` has the rigid cube,
 which the gripper knocks away if it touches it before closing. Switching never
 recompiles, so each hub room switches on its own.
 
+Grasping goes by jaw width (`twin/grasp.py`). An object within 4.5 cm of the
+tool point attaches when the jaws close to its width, stays held a little past
+that, and a rigid one is squeezed out if they close further or slips if they
+are not square to its faces. `observe` reports each object's `size_m` and the
+`gripper_opening_m`; `set_gripper` takes `opening_m` as well as `position`, and
+its result names what is `holding`. Jaws a person drives shut (trigger, or the
+page's Close button) stop on a rigid object instead.
+
+The numbers behind this are in `GraspSettings` and are **placeholders until
+measured on the real arm**: reading at first touch, at firm hold and at slip
+for each object, and how far off square the jaws can be. The jaw opening comes
+from the twin's model, whose gripper travel (-10 to 100 degrees) differs from
+the real arm's (-2 to 127 degrees measured), so a gripper value does not yet
+mean the same opening on both.
+
 Resources: the current observation, the workspace/limits in force, and the
 session log path. Tool descriptions must state units, frames and bounds, so an
 agent can form valid requests without trial and error.

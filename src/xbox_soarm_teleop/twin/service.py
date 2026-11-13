@@ -805,6 +805,12 @@ class TwinService:
                     self._opening_for_home = False  # done, or the person took the gripper back
                 else:
                     return replace(delta, gripper=0.0)
+            # Jaws a person drives shut stop on a rigid object instead of
+            # squeezing it out: nobody holds a trigger to the millimetre.
+            limit = self.grasp.hold_limit()
+            if limit is not None and delta.gripper > limit:
+                delta = replace(delta, gripper=max(limit, min(delta.gripper, self.state.gripper_pos)))
+                self._gripper_following = True
             # Soft takeover: the trigger is absolute, so only follow it once it
             # reaches the current gripper position (no sudden drop of a cube).
             if not self._gripper_following:
@@ -879,6 +885,7 @@ class TwinService:
                 "objects": {
                     name: {
                         "xyz_m": [round(float(v), 4) for v in xyz],
+                        "size_m": [round(float(v), 4) for v in self.grasp.size(name)],
                         "attached": name == self.grasp.attached,
                         "off_table": self.table_top_z is not None
                         and float(xyz[2]) < self.table_top_z - OFF_TABLE_MARGIN_M,
@@ -892,5 +899,6 @@ class TwinService:
                 "controller_connected": self.controller_connected,
                 "events": list(self.events),
             },
+            gripper_opening_m=round(self.grasp.settings.jaw_opening_m(self.state.gripper_pos), 4),
         )
         return observation.to_dict()
