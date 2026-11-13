@@ -61,7 +61,61 @@ def build_parser() -> argparse.ArgumentParser:
         help="Camera pictures a second each student page asks for (1 to 30). "
         "Lower it if your upload speed is limited: 10 is about 1.3 Mbit/s per student",
     )
+    parser.add_argument(
+        "--no-open",
+        dest="open_browser",
+        action="store_false",
+        help="Do not open the instructor page in your browser when the hub starts",
+    )
+    parser.add_argument(
+        "--show-links",
+        action="store_true",
+        help="Print the instructor link, key included, in the terminal. Off by default so a "
+        "shared screen does not show it",
+    )
     return parser
+
+
+def startup_lines(
+    base: str, admin_token: str, roster: str | Path, *, public: bool, opened: bool, show: bool = False
+) -> list[str]:
+    """What the hub prints once it is ready. Keys are left out unless ``show``."""
+    lines = []
+    if show:
+        lines.append(f"Instructor page (keep private): {base}/admin/{admin_token}")
+    elif opened:
+        lines.append("Instructor page: opened in your browser. Keys are not printed here.")
+    else:
+        lines.append("Instructor page: its link is in the roster file. Keys are not printed here;")
+        lines.append("  run again with --show-links to print it, or without --no-open to open it.")
+    lines.append("  Student links are on that page (Copy all student links)")
+    lines.append(f"  and in {Path(roster)}; they stay the same after a restart.")
+    if not public:
+        lines.append("  Only this computer can open these links. For students, see --public-url.")
+    lines.append(f"Agents connect to {base}/mcp with their arm's key. Press Ctrl+C to quit.")
+    return lines
+
+
+def _open_when_ready(url: str, host: str, port: int) -> None:
+    """Open ``url`` in the default browser once the server accepts connections."""
+    import socket
+    import threading
+    import time
+    import webbrowser
+
+    def wait_then_open() -> None:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection((host, port), timeout=0.5):
+                    break
+            except OSError:
+                time.sleep(0.2)
+        else:
+            return
+        webbrowser.open(url)
+
+    threading.Thread(target=wait_then_open, name="open-instructor-page", daemon=True).start()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,12 +151,20 @@ def main(argv: list[str] | None = None) -> int:
         picture_hz=args.picture_rate,
     )
     base = (args.public_url or f"http://{args.host}:{args.port}").rstrip("/")
-    print(f"Instructor page (keep private): {base}/admin/{hub.admin_token}", flush=True)
-    print("  Student links are on that page (Copy all student links)", flush=True)
-    print(f"  and in {Path(args.roster)}; they stay the same after a restart.", flush=True)
-    if args.public_url is None:
-        print("  Only this computer can open these links. For students, see --public-url.", flush=True)
-    print(f"Agents connect to {base}/mcp with their arm's key. Press Ctrl+C to quit.", flush=True)
+    for line in startup_lines(
+        base,
+        hub.admin_token,
+        args.roster,
+        public=args.public_url is not None,
+        opened=args.open_browser,
+        show=args.show_links,
+    ):
+        print(line, flush=True)
+    if args.open_browser:
+        # Opened on this computer's own address: it works before the tunnel does.
+        local_host = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
+        local = f"http://{local_host}:{args.port}/admin/{hub.admin_token}"
+        _open_when_ready(local, local_host, args.port)
 
     hub.start()
     try:

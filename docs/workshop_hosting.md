@@ -30,9 +30,12 @@ uv sync
 uv run soarm-hub --seats 3
 ```
 
-It prints an **instructor page** link. Open it: you should see three arms.
-Click **Open** on one, hold **W**, and watch the arm move. That link only
-works on this computer; the next section makes it reachable.
+The **instructor page** opens in your browser: you should see three arms.
+Click **Open** on one, hold **W**, and watch the arm move. That page only
+works on this computer; the next section makes the arms reachable.
+
+The hub does not print any key in the terminal. `--no-open` stops it opening
+the browser, and `--show-links` prints the instructor link if you need it.
 
 Decide two things in advance:
 
@@ -229,7 +232,8 @@ Camera pictures are drawn without shadows or reflections to get these rates;
 | `port 8800 is in use` | Another hub is running. Close it or use `--port` |
 | Student's page says **Not connected** | The tunnel or the hub stopped. Restart it; pages reconnect by themselves |
 | Student's link shows `Not found` | The link is wrong or from an older roster. Copy it again from the instructor page |
-| Notebook: `401 Unauthorized` | Address or key pasted wrongly. The address ends in `/mcp` |
+| Notebook: `401 Unauthorized` | Address or key pasted wrongly. The address ends in `/mcp`; run the cell again to paste the key again |
+| A page says **No arm yet** or **Open the instructor link** | The page was opened by its short address (`/arm`, `/instructor`) in a new tab or window, which has no key. Open the original link again |
 | Agent tool calls fail with `421` or "Invalid Host header" | The hub was started without `--public-url`, or with a different address than students use |
 | Agent is refused with `not_owner` / `human` | The student touched the controls in the last 2 seconds. Hands off and retry |
 | Agent is refused with `stopped` | The student (or you) stopped the arm. Press **Release stop** |
@@ -243,8 +247,20 @@ To finish, press Ctrl+C in the hub's terminal, then stop the tunnel.
 
 - Each arm and the instructor page are protected only by the random key in
   their links. There are no accounts or passwords.
-- Student keys are not written to the hub's terminal output, but the
-  instructor link is, and the instructor page shows every student's link. Do
-  not share either window on screen.
+- Keys are kept off the screen, so that sharing a window does not give them
+  away:
+  - The terminal prints no key (unless you pass `--show-links`).
+  - A page opened by its link moves at once to a short address without the
+    key (`/arm` or `/instructor`) and remembers the key for that browser tab.
+  - The student page draws the key as dots. Clicking it copies the real key;
+    **Show** reveals it on purpose, and it hides again when the tab is left.
+  - The instructor page uses buttons for each arm, so hovering does not show
+    a link.
+  - The notebook asks for the arm's key and the model's key in boxes that
+    hide what is typed, and neither is saved in the notebook.
+- What still shows a key: the link itself wherever you paste it (a chat
+  message, the browser's history and its address bar while you type or paste
+  it), and the roster file if you open it. **Copy all student links** puts
+  every link on your clipboard, so take care where you paste.
 - Everything is simulated. The worst a leaked key allows is someone else
   moving a student's simulated arm.

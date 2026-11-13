@@ -42,12 +42,15 @@ md("""
 ## 0. Connect to your arm
 
 On your arm's page, find **Connect an AI agent**. Click the **Address** to copy
-it and paste it below, then do the same with **Your key**.
+it and paste it below.
+
+Your key is not pasted into the notebook. The cell after the next one asks for
+it in a box that hides what you type: click **Your key** on the page to copy
+it, then paste it into that box.
 """)
 
 code("""
 ARM_URL = "PASTE THE ADDRESS HERE"   # ends in /mcp
-ARM_KEY = "PASTE YOUR KEY HERE"
 """)
 
 code("""
@@ -57,6 +60,7 @@ code("""
 code('''
 import json
 import os
+from getpass import getpass
 
 import httpx2
 from IPython.display import Image, display
@@ -64,7 +68,7 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 ARM_URL = os.environ.get("ARM_URL", ARM_URL).strip()
-ARM_KEY = os.environ.get("ARM_KEY", ARM_KEY).strip()
+ARM_KEY = (os.environ.get("ARM_KEY") or getpass("Your arm's key (hidden as you type): ")).strip()
 
 
 class connect:
@@ -111,7 +115,8 @@ for tool in tools:
 
 md("""
 If that printed a list of tools, you are connected. If it failed with
-`401 Unauthorized`, check the address and key you pasted.
+`401 Unauthorized`, check the address, then run the cell again and paste the
+key again.
 
 ## 1. Look
 

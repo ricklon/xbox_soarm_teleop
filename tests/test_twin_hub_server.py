@@ -284,3 +284,52 @@ def test_hub_command_options():
     assert defaults.mesh_detail_mm == 2.0 and defaults.picture_rate == 10.0
     chosen = build_parser().parse_args(["--mesh-detail-mm", "0", "--picture-rate", "15"])
     assert chosen.mesh_detail_mm == 0.0 and chosen.picture_rate == 15.0
+
+
+# ------------------------------------------------------------------ keys stay hidden
+def test_pages_can_be_shown_without_a_key_in_the_address(served):
+    """The pages move to a key-free address once loaded; the server serves them there."""
+    hub, base = served
+    secrets_ = [hub.admin_token, *hub.rooms]
+    for path, marker in (("/arm", "Connect an AI agent"), ("/instructor", "Workshop arms")):
+        page = httpx.get(base + path)
+        assert page.status_code == 200 and marker in page.text
+        assert page.headers["cache-control"] == "no-store"
+        assert not any(secret in page.text for secret in secrets_)
+        assert "sessionStorage" in page.text and "history.replaceState" in page.text
+
+
+def test_student_page_masks_the_key_until_asked(served):
+    hub, base = served
+    page = httpx.get(f"{base}/r/{rooms(hub)[0].token}").text
+    assert 'id="showKey"' in page  # the key is revealed only on purpose
+    assert "dataset.copy" in page  # copying still gives the real value
+    assert '$("token").textContent = token' not in page
+
+
+def test_instructor_page_has_no_links_to_hover_over(served):
+    hub, base = served
+    page = httpx.get(f"{base}/admin/{hub.admin_token}").text
+    assert 'el.querySelector("a").href' not in page and "window.open" in page
+
+
+def test_hub_start_up_text_keeps_keys_out_of_the_terminal():
+    from xbox_soarm_teleop.cli.hub import build_parser, startup_lines
+
+    args = build_parser().parse_args([])
+    assert args.open_browser is True and args.show_links is False
+    assert build_parser().parse_args(["--no-open"]).open_browser is False
+    quiet = "\n".join(
+        startup_lines("https://x.example", "ADMINKEY123", "roster.json", public=True, opened=True)
+    )
+    assert "ADMINKEY123" not in quiet and "roster.json" in quiet and "opened" in quiet
+    closed = "\n".join(
+        startup_lines("https://x.example", "ADMINKEY123", "roster.json", public=True, opened=False)
+    )
+    assert "ADMINKEY123" not in closed and "--show-links" in closed
+    shown = "\n".join(
+        startup_lines(
+            "https://x.example", "ADMINKEY123", "roster.json", public=True, opened=False, show=True
+        )
+    )
+    assert "https://x.example/admin/ADMINKEY123" in shown

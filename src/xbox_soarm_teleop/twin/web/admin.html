@@ -36,7 +36,7 @@
   .room .last { color: var(--muted); font-size: 13px; min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .room .links { display: flex; gap: 10px; font-size: 13px; margin-top: 6px; }
   a { color: var(--accent); }
-  .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; }
+  .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -50,7 +50,17 @@
 <div id="rooms"></div>
 <script>
 (() => {
-  const base = location.pathname.replace(/\/$/, "");
+  // The link carries the key. Keep it for this tab and take it out of the
+  // address bar, so a shared screen does not show it. Reloading still works.
+  const KEY_STORE = "soarm-admin-key";
+  const linked = location.pathname.match(/^\/admin\/([^/]+)\/?$/);
+  let key = linked ? linked[1] : null;
+  try {
+    if (key) { sessionStorage.setItem(KEY_STORE, key); history.replaceState(null, "", "/instructor"); }
+    else key = sessionStorage.getItem(KEY_STORE);
+  } catch (err) { /* no storage: the key stays in the address and the page still works */ }
+  if (!key) { document.getElementById("load").textContent = "Open the instructor link to see the arms."; return; }
+  const base = "/admin/" + key;
   const cards = new Map();
   let rooms = [];
   const link = (r) => `${location.origin}/r/${r.token}`;
@@ -60,10 +70,11 @@
     el.className = "room";
     el.innerHTML = `<img alt=""><h2><span class="name"></span><span class="who"></span></h2>
       <div class="state"></div><div class="last"></div>
-      <div class="links"><a target="_blank" rel="noopener">Open</a>
-      <button class="linkbtn">Copy link</button></div>`;
-    el.querySelector("a").href = link(r);
-    el.querySelector("button").addEventListener("click", () => navigator.clipboard.writeText(link(r)));
+      <div class="links"><button class="linkbtn open">Open</button>
+      <button class="linkbtn copy">Copy link</button></div>`;
+    // Buttons, not links: hovering over a link shows its address, key included.
+    el.querySelector(".open").addEventListener("click", () => window.open(link(r), "_blank", "noopener"));
+    el.querySelector(".copy").addEventListener("click", () => navigator.clipboard.writeText(link(r)));
     document.getElementById("rooms").append(el);
     return el;
   }
