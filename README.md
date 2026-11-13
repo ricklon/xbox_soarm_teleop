@@ -221,10 +221,11 @@ uv run soarm-hub --seats 2
 With another kind of tunnel, or to be explicit, pass the address yourself with
 `--public-url https://your-address`.
 
-The instructor page opens on this computer (`127.0.0.1`) and that is where you
-use it. Its address will not work if you swap in the tunnel's name, because
-the page's key is remembered per address. The links it copies for students do
-use the tunnel.
+The instructor page opens on this computer (`127.0.0.1`). The links it copies
+for students use the tunnel. To use the instructor page itself at the tunnel's
+address or on another device, click **Copy instructor link** and paste it
+there: opened without a key, the page shows a box for it that hides what you
+paste.
 
 Then, as a student would:
 

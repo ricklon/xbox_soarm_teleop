@@ -79,11 +79,12 @@ other tunnel:
 uv run soarm-hub --seats 12 --public-url https://something-random.trycloudflare.com
 ```
 
-**Use the instructor page on this computer's own address** (the one the hub
-opens, `http://127.0.0.1:8800/instructor`). The page says which address the
-student links use. Typing the tunnel's name in front of `/instructor` gives a
-page with no arms: the key is remembered per address, and that address has
-never been given it.
+The instructor page opens on this computer's own address
+(`http://127.0.0.1:8800/instructor`) and says which address the student links
+use. Its key is remembered per address, so the same page at the tunnel's
+address, or on another device, starts without it and shows a box asking for
+the instructor link. Click **Copy instructor link** on the page you already
+have open and paste it into that box; what you paste is hidden.
 
 A quick tunnel gets a new address every time it starts, so get it running and
 leave it. With your own domain or a named tunnel the address stays the same.
@@ -252,7 +253,7 @@ Camera pictures are drawn without shadows or reflections to get these rates;
 |---|---|
 | `port 8800 is in use` | Another hub is running. Close it or use `--port` |
 | Student's page says **Not connected** | The tunnel or the hub stopped. Restart it; pages reconnect by themselves |
-| Instructor page says **No arms to show: this tab has no instructor key** | It was opened by the short address at a different host name (for example the tunnel's). Use the page the hub opened, or start the hub with `--show-links` and open the full link |
+| Instructor page asks for the instructor link | It was opened at an address that has not been given the key (for example the tunnel's). On the page the hub opened, click **Copy instructor link** and paste it into the box. With no such page open, start the hub with `--show-links` |
 | Instructor page says **Student links only work on this computer** | The hub has no public address. Start the tunnel first, then the hub, or pass `--public-url` |
 | Student's link shows `Not found` | The link is wrong or from an older roster. Copy it again from the instructor page |
 | Notebook stops with "This address points at the computer the arm is running on" | The hub was started without `--public-url`, so its address is `http://127.0.0.1...`, which Colab cannot reach. Use a tunnel (section 2), or run the notebook on the hub's computer (README, "Try the remote workshop") |
@@ -279,7 +280,8 @@ To finish, press Ctrl+C in the hub's terminal, then stop the tunnel.
   - The student page draws the key as dots. Clicking it copies the real key;
     **Show** reveals it on purpose, and it hides again when the tab is left.
   - The instructor page uses buttons for each arm, so hovering does not show
-    a link.
+    a link. **Copy instructor link** puts its own link on the clipboard
+    without showing it, and the box that accepts it hides what is pasted.
   - The notebook asks for the arm's key and the model's key in boxes that
     hide what is typed, and neither is saved in the notebook.
 - What still shows a key: the link itself wherever you paste it (a chat

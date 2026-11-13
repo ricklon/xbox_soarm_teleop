@@ -22,6 +22,10 @@
   #load { color: var(--muted); font-variant-numeric: tabular-nums; }
   #where { color: var(--muted); flex-basis: 100%; order: 9; }
   #where.local { color: var(--warn); }
+  #enter { margin: 8px 20px 0; max-width: 620px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  #enter input { font: inherit; width: min(100%, 420px); padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+  #enterError { color: var(--stop); margin-left: 8px; }
+  .keyless #copyInstructor, .keyless #copyAll, .keyless #releaseAll, .keyless #stopAll { display: none; }
   button {
     font: inherit; color: var(--ink); background: var(--key); border: 1px solid var(--line);
     border-radius: 8px; padding: 8px 12px; cursor: pointer;
@@ -46,10 +50,19 @@
   <h1>Workshop arms</h1>
   <span id="load"></span>
   <span id="where"></span>
+  <button id="copyInstructor" title="Puts the link to this page, key included, on your clipboard without showing it">Copy instructor link</button>
   <button id="copyAll">Copy all student links</button>
   <button id="releaseAll">Release all stops</button>
   <button id="stopAll" class="stop">STOP ALL</button>
 </header>
+<form id="enter" hidden>
+  <p>This tab does not have the instructor key yet. On the instructor page the hub opened on its own
+    computer, click <b>Copy instructor link</b>, then paste it here. What you paste is hidden.</p>
+  <input id="keyBox" type="password" autocomplete="off" spellcheck="false"
+    placeholder="Paste the instructor link" aria-label="Instructor link or key">
+  <button type="submit">Open</button>
+  <span id="enterError" role="alert"></span>
+</form>
 <div id="rooms"></div>
 <script>
 (() => {
@@ -64,10 +77,25 @@
   } catch (err) { /* no storage: the key stays in the address and the page still works */ }
   if (!key) {
     // This short address has no key of its own, and a key remembered at one
-    // address (say 127.0.0.1) is not shared with another (a tunnel's).
-    document.getElementById("where").textContent =
-      "No arms to show: this tab has no instructor key. Use the instructor page the hub opened on " +
-      "its own computer, or start the hub with --show-links and open the full link it prints.";
+    // address (say 127.0.0.1) is not shared with another (a tunnel's). Take
+    // it from a pasted instructor link, in a box that hides it.
+    document.body.classList.add("keyless");
+    const form = document.getElementById("enter"), box = document.getElementById("keyBox");
+    const error = document.getElementById("enterError");
+    form.hidden = false; box.focus();
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const pasted = box.value.trim();
+      const found = pasted.match(/\/admin\/([\w-]+)/);
+      const candidate = found ? found[1] : pasted;
+      box.value = "";
+      if (!/^[\w-]{8,}$/.test(candidate)) { error.textContent = "That is not an instructor link."; return; }
+      let ok = false;
+      try { ok = (await fetch(`/admin/${candidate}/rooms`, { cache: "no-store" })).ok; } catch (err) { /* below */ }
+      if (!ok) { error.textContent = "That link was not recognised by this hub."; return; }
+      try { sessionStorage.setItem(KEY_STORE, candidate); location.reload(); }
+      catch (err) { location.href = "/admin/" + candidate; }
+    });
     return;
   }
   const base = "/admin/" + key;
@@ -146,6 +174,11 @@
   const post = (path) => fetch(base + path, { method: "POST" }).then(refresh);
   document.getElementById("stopAll").addEventListener("click", () => post("/stop_all"));
   document.getElementById("releaseAll").addEventListener("click", () => post("/release_all"));
+  document.getElementById("copyInstructor").addEventListener("click", (event) => {
+    navigator.clipboard.writeText(`${studentBase}/admin/${key}`);
+    const button = event.currentTarget, label = button.textContent;
+    button.textContent = "Copied"; setTimeout(() => { button.textContent = label; }, 1500);
+  });
   document.getElementById("copyAll").addEventListener("click", () =>
     navigator.clipboard.writeText(rooms.map((r) => `${r.name}: ${link(r)}`).join("\n")));
 

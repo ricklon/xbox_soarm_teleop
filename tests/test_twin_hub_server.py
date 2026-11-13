@@ -357,7 +357,10 @@ def test_instructor_page_hands_out_links_students_can_reach():
             == "https://class.example.org"
         )
         page = local.get("/instructor").text
-        assert "data.public_url" in page and "this tab has no instructor key" in page
+        assert "data.public_url" in page
+        # A tab with no key takes a pasted instructor link, in a box that hides it.
+        assert 'id="keyBox" type="password"' in page and 'id="copyInstructor"' in page
+        assert hub.admin_token not in page
     finally:
         hub.close()
 

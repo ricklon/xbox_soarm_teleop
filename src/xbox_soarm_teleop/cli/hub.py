@@ -95,6 +95,8 @@ def startup_lines(
     else:
         lines.append("Instructor page: its link is in the roster file. Keys are not printed here;")
         lines.append("  run again with --show-links to print it, or without --no-open to open it.")
+    lines.append("  To use it at another address or on another device: Copy instructor link on that")
+    lines.append("  page, then paste it into the box that address shows.")
     lines.append("  Student links are on that page (Copy all student links)")
     lines.append(f"  and in {Path(roster)}; they stay the same after a restart.")
     if not public:
