@@ -34,21 +34,41 @@ async def run(url: str, image_path: str | None) -> bool:
             cube = state["xyz_m"]
             width = min(state["size_m"][:2])  # across its sides
             goal = observed["scene"]["goal"]["center_xyz_m"]
-            steps = [
-                ("move_to", {"x": cube[0], "y": cube[1], "z": cube[2] + 0.06}),
-                ("set_wrist_roll", {"angle_rad": -1.5}),  # jaws side to side
-                ("move_to", {"x": cube[0], "y": cube[1], "z": cube[2] + 0.025}),
-                ("set_gripper", {"opening_m": width}),
-                ("move_to", {"x": goal[0], "y": goal[1], "z": 0.22}),
-                ("set_gripper", {"position": 0.0}),
-                ("home", {}),
-            ]
-            for name, args in steps:
+
+            async def do(name: str, **args) -> dict:
                 result = await tool(name, **args)
                 state = result.get("action", {}).get("state", result.get("reason"))
                 print(f"{name:14s} {state}")
                 if state != "SUCCEEDED":
+                    raise RuntimeError(f"{name} {state}: {result}")
+                return result
+
+            async def jaws_over(x: float, y: float) -> dict:
+                # The tool point is a jaw face: center the jaws, not the tool.
+                result = {}
+                for _ in range(2):
+                    jaw = (await tool("observe"))["jaw_center_xyz_m"]
+                    result = await do("move_by", dx=x - jaw[0], dy=y - jaw[1], dz=0.0)
+                return result
+
+            try:
+                await do("set_gripper", opening_m=width + 0.03)
+                await do("move_to", x=cube[0], y=cube[1], z=cube[2] + 0.06)
+                await do("set_wrist_roll", angle_rad=-1.5)  # jaws side to side
+                jaw = (await jaws_over(cube[0], cube[1]))["jaw_center_xyz_m"]
+                await do("move_by", dx=0.0, dy=0.0, dz=max(cube[2], 0.14) - jaw[2])
+                held = await do("set_gripper", opening_m=width)
+                if held.get("holding") != thing:
+                    print(f"not holding {thing}: {held.get('events')}")
                     return False
+                await do("move_by", dx=0.0, dy=0.0, dz=0.08)
+                await do("move_to", x=goal[0], y=goal[1], z=0.22)
+                await jaws_over(goal[0], goal[1])
+                await do("set_gripper", position=0.0)
+                await do("home")
+            except RuntimeError as error:
+                print(error)
+                return False
             await asyncio.sleep(1.0)  # let it settle
             final = (await tool("observe"))["scene"]["objects"][thing]
             in_box = final["in_goal"]

@@ -847,7 +847,7 @@ class TwinService:
             sim.set_joint_targets(prev_joints + (joints_deg - prev_joints) * alpha)
             sim.set_gripper(prev_gripper + (gripper - prev_gripper) * alpha)
             mujoco.mj_kinematics(sim.model, sim.data)
-            self.grasp.carry(sim.get_ee_position())
+            self.grasp.carry()
             self.grasp.hold_parked()
             sim.step()
         self._last_cmd = (joints_deg.copy(), float(gripper))
@@ -861,6 +861,8 @@ class TwinService:
         ik = getattr(self.kinematics, "last_ik_result", None)
         step = self.last_step
         goal = GOALS.get(self.sim.scene)
+        opening = self.grasp.settings.jaw_opening_m(self.state.gripper_pos)
+        jaw_center = self.grasp.jaw_center(opening)
         objects = {}
         for name, xyz in self.grasp.positions().items():
             entry = {
@@ -908,6 +910,9 @@ class TwinService:
                 "controller_connected": self.controller_connected,
                 "events": list(self.events),
             },
-            gripper_opening_m=round(self.grasp.settings.jaw_opening_m(self.state.gripper_pos), 4),
+            gripper_opening_m=round(opening, 4),
+            jaw_center_xyz_m=(
+                [round(float(v), 4) for v in jaw_center] if jaw_center is not None else None
+            ),
         )
         return observation.to_dict()

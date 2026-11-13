@@ -6,6 +6,7 @@ import warnings
 import numpy as np
 import pytest
 
+from tests.twin_helpers import jaws_around
 from xbox_soarm_teleop.schemas.agent import ActionState
 from xbox_soarm_teleop.twin import ActionRejected, build_parts, build_twin
 from xbox_soarm_teleop.twin.layouts import LAYOUTS, layouts_for, model_scene
@@ -107,11 +108,13 @@ def test_gripper_does_not_knock_the_bean_bag(easy):
 
 
 def test_bean_bag_can_be_placed_in_the_goal_box(easy):
-    start = objects(easy)["bean_bag"]["xyz_m"]
-    move(easy, [start[0], start[1], 0.14])
+    jaws_around(lambda request: run(easy, request), easy.observe, "bean_bag")
     grip(easy, 1.0)
-    move(easy, [start[0], start[1], 0.24])
+    run(easy, {"type": "move_ee_by", "params": {"dxyz_m": [0.0, 0.0, 0.10]}})
     move(easy, [0.29, 0.13, 0.22])
+    for _ in range(2):  # the bag rides between the jaws: put them over the box
+        jaw = easy.observe()["jaw_center_xyz_m"]
+        run(easy, {"type": "move_ee_by", "params": {"dxyz_m": [0.29 - jaw[0], 0.13 - jaw[1], 0.0]}})
     grip(easy, 0.0)
     for _ in range(100):
         easy.tick()
@@ -139,8 +142,7 @@ def test_load_scene_swaps_the_object_and_homes_the_arm(easy):
 
 
 def test_load_scene_drops_what_the_gripper_held(easy):
-    start = objects(easy)["bean_bag"]["xyz_m"]
-    move(easy, [start[0], start[1], 0.14])
+    jaws_around(lambda request: run(easy, request), easy.observe, "bean_bag")
     grip(easy, 1.0)
     assert objects(easy)["bean_bag"]["attached"] is True
     load(easy, "pick_place_basic")
@@ -154,9 +156,7 @@ def test_the_parked_object_cannot_be_grabbed_or_seen(easy):
     move(easy, [0.34, -0.03, 0.20])
     load(easy, "pick_place_basic")
     easy.tick()
-    cube = objects(easy)["pick_cube"]["xyz_m"]
-    run(easy, {"type": "set_wrist_roll", "params": {"angle_rad": -1.5}})
-    move(easy, [cube[0], cube[1], cube[2] + 0.03])
+    jaws_around(lambda request: run(easy, request), easy.observe, "pick_cube")
     grip(easy, easy.grasp.settings.gripper_for_opening(0.04))
     assert easy.grasp.attached == "pick_cube"
     assert "bean_bag" not in easy.grasp.positions()

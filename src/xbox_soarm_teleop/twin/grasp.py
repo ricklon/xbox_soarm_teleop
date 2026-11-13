@@ -2,8 +2,14 @@
 
 Contact grasping with a kinematically posed arm is unreliable, so the
 workshop twin uses an assisted grasp: when the jaws close down to the width of
-an object whose center is within a radius of the tool point, the object is
-carried rigidly with the tool until the jaws open wider than it again.
+an object that lies between their pads, the object is carried rigidly with the
+gripper (turning with the wrist) until the jaws open wider than it again.
+
+The tool point the arm is steered by is the URDF's ``gripper_frame_link``: the
+inner face of the fixed jaw, 6 mm from its tip, as on the real arm. It is not
+the middle of the jaws. :meth:`AssistedGrasp.jaw_center` is, and an object is
+only grabbed if it lies between the pads (see the ``JAW_*`` constants); a
+refused grasp says how far to move to center the jaws on it.
 
 How far the jaws close matters, as it does on the real arm:
 
@@ -38,6 +44,18 @@ import numpy as np
 PARK_XYZ = np.array([0.0, 0.0, 50.0])
 _UPRIGHT = np.array([1.0, 0.0, 0.0, 0.0])
 
+# Jaw pads in the gripper_link frame (m), measured from the SO-ARM101 meshes
+# (geometry, not placeholders). The jaws close along +x from the fixed jaw's
+# inner face; the fingers run along -z; y is across the finger.
+JAW_FIXED_FACE_X = -0.008
+JAW_PAD_TIP_Z = -0.104
+JAW_PAD_TOP_Z = -0.065
+# Where an object's center goes: toward the tips, so a 4 cm object clears the palm.
+JAW_GRIP_Z = -0.092
+JAW_PAD_HALF_WIDTH_M = 0.009
+# How much of an object a pad must cover, across and along the finger (m).
+JAW_MIN_OVERLAP_M = 0.012
+
 
 @dataclass(frozen=True)
 class GraspSettings:
@@ -60,7 +78,8 @@ class GraspSettings:
         rigid_align_tol_deg: How far off square the jaws may be to a rigid
             object's sides; closing jaws turn a slightly skewed cube square.
             Measure: largest skew that still holds.
-        radius_m: Maximum tool-to-object-center distance for attaching.
+        radius_m: How near (jaw center to object center) an object must be
+            for a close to try it; whether it is between the pads decides.
     """
 
     jaw_gap_closed_m: float = 0.0024
@@ -69,7 +88,7 @@ class GraspSettings:
     release_margin_m: float = 0.005
     rigid_squeeze_m: float = 0.006
     rigid_align_tol_deg: float = 30.0
-    radius_m: float = 0.045
+    radius_m: float = 0.06
 
     def jaw_opening_m(self, gripper: float) -> float:
         """Opening between the jaws (m) at a gripper position (0 open .. 1 closed)."""
@@ -131,8 +150,8 @@ class AssistedGrasp:
         self.parked: tuple[str, ...] = ()
         self.attached: str | None = None
         self._armed = True
-        self._offset = np.zeros(3)
-        self._quat = np.array([1.0, 0.0, 0.0, 0.0])
+        self._offset = np.zeros(3)  # held object's center, gripper frame
+        self._rel_rotation = np.eye(3)  # held object's turn, gripper frame
         self._held_width = 0.0
 
     def position(self, name: str) -> np.ndarray:
@@ -272,8 +291,47 @@ class AssistedGrasp:
         cfg = self.settings
         return cfg.gripper_for_opening(self._held_width - cfg.rigid_squeeze_m / 2.0)
 
+    def _gripper_frame(self) -> tuple[np.ndarray, np.ndarray]:
+        body = self._gripper_body
+        return self.data.xpos[body].copy(), self.data.xmat[body].reshape(3, 3).copy()
+
+    def jaw_center(self, opening_m: float) -> np.ndarray | None:
+        """Grip point (world, m) with the jaws this far open, or None.
+
+        Midway between the pads and 1.2 cm short of the tips: where an
+        object's center should be when the jaws close on it.
+        """
+        if self._gripper_body < 0:
+            return None
+        origin, rotation = self._gripper_frame()
+        local = np.array([JAW_FIXED_FACE_X + opening_m / 2.0, 0.0, JAW_GRIP_Z])
+        return origin + rotation @ local
+
+    def jaw_miss(self, name: str) -> np.ndarray | None:
+        """How far (world, m) to move the tool to center the jaws on an object.
+
+        None when it already lies between the pads (or there is no gripper).
+        """
+        if self._gripper_body < 0:
+            return None
+        origin, rotation = self._gripper_frame()
+        center = rotation.T @ (self.position(name) - origin)
+        half = np.abs(rotation.T @ self._rotation(name)) @ (self.objects[name].size_m / 2.0)
+        across = abs(center[1]) <= half[1] + JAW_PAD_HALF_WIDTH_M - JAW_MIN_OVERLAP_M
+        overlap = min(center[2] + half[2], JAW_PAD_TOP_Z) - max(center[2] - half[2], JAW_PAD_TIP_Z)
+        along = overlap >= min(JAW_MIN_OVERLAP_M, 2.0 * half[2])
+        inside = JAW_FIXED_FACE_X - 0.003 <= center[0] <= JAW_FIXED_FACE_X + 2.0 * half[0] + 0.02
+        if across and along and inside:
+            return None
+        width, _ = self.fit(name)
+        target = self.jaw_center(width)
+        return self.position(name) - target
+
     def update(self, tool_pos: np.ndarray, gripper: float) -> list[str]:
-        """Attach, squeeze out or release based on the jaws; return event messages."""
+        """Attach, squeeze out or release based on the jaws; return event messages.
+
+        ``tool_pos`` is the tool point; the jaws are read from the model.
+        """
         events: list[str] = []
         cfg = self.settings
         opening = cfg.jaw_opening_m(gripper)
@@ -291,8 +349,11 @@ class AssistedGrasp:
             self._armed = False
             return events
 
+        middle = self.jaw_center(opening)
+        if middle is None:
+            middle = tool_pos
         distances = {
-            name: float(np.linalg.norm(xyz - tool_pos)) for name, xyz in self.positions().items()
+            name: float(np.linalg.norm(xyz - middle)) for name, xyz in self.positions().items()
         }
         nearest = min(distances, key=distances.get) if distances else None
         if nearest is None or distances[nearest] > self.radius_m:
@@ -321,20 +382,39 @@ class AssistedGrasp:
                 f"{nearest} slipped: the jaws are {off_square:.0f} deg off square to its sides{hint}"
             )
             return events
+        miss = self.jaw_miss(nearest)
+        if miss is not None:
+            dx, dy, dz = (round(float(v), 3) + 0.0 for v in miss)
+            events.append(
+                f"{nearest} missed: it is not between the jaw pads; open, then"
+                f" move_by(dx={dx}, dy={dy}, dz={dz}) to center the jaws on it"
+            )
+            return events
         self.attached = nearest
         self._held_width = width
-        self._offset = self.position(nearest) - tool_pos
-        self._quat = self.data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7].copy()
+        origin, rotation = self._gripper_frame()
+        local = rotation.T @ (self.position(nearest) - origin)
+        local[0] = JAW_FIXED_FACE_X + width / 2.0  # the jaws center it as they close
+        self._offset = local
+        self._rel_rotation = rotation.T @ self._rotation(nearest)
+        self.carry()
         events.append(f"{nearest} attached")
         return events
 
-    def carry(self, tool_pos: np.ndarray) -> None:
-        """Move an attached object with the tool (call before each physics step)."""
+    def carry(self, tool_pos: np.ndarray | None = None) -> None:
+        """Move an attached object with the gripper (call before each physics step).
+
+        It keeps its place and turn relative to the gripper, so it turns with
+        the wrist. ``tool_pos`` is unused, kept for callers.
+        """
         if self.attached is None:
             return
         obj = self.objects[self.attached]
-        self.data.qpos[obj.qpos_adr : obj.qpos_adr + 3] = tool_pos + self._offset
-        self.data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7] = self._quat
+        origin, rotation = self._gripper_frame()
+        self.data.qpos[obj.qpos_adr : obj.qpos_adr + 3] = origin + rotation @ self._offset
+        quat = np.zeros(4)
+        mujoco.mju_mat2Quat(quat, (rotation @ self._rel_rotation).reshape(-1))
+        self.data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7] = quat
         self.data.qvel[obj.qvel_adr : obj.qvel_adr + 6] = 0.0
 
     def reset(self) -> None:

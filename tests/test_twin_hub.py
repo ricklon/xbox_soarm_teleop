@@ -7,6 +7,7 @@ import warnings
 import numpy as np
 import pytest
 
+from tests.twin_helpers import jaws_around
 from xbox_soarm_teleop.twin.hub import Hub, WebController
 from xbox_soarm_teleop.twin.session_log import read_session_log
 
@@ -143,15 +144,14 @@ def test_web_stop_latches_and_only_release_clears_it(hub):
 def test_web_gripper_closes_on_the_cube_and_carries_it(hub):
     _, _, c = hub.rooms.values()
     cube = c.service.observe()["scene"]["objects"]["pick_cube"]["xyz_m"]
-    for request in (
-        {"type": "move_ee_to", "params": {"xyz_m": [cube[0], cube[1], cube[2] + 0.06]}},
-        {"type": "set_wrist_roll", "params": {"angle_rad": -1.5}},  # jaws side to side
-        {"type": "move_ee_to", "params": {"xyz_m": [cube[0], cube[1], cube[2] + 0.025]}},
-    ):
+
+    def run(request):
         future = c.service.submit(request)
         for _ in range(400):
             hub.tick()
         assert future.result(timeout=0)
+
+    jaws_around(run, c.service.observe, "pick_cube")
     for _ in range(150):  # agent done; now the person closes the gripper from the page
         c.controller.update({"hold": True, "grip": 1.0})
         hub.tick()

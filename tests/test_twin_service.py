@@ -10,6 +10,7 @@ import warnings
 import numpy as np
 import pytest
 
+from tests.twin_helpers import jaws_around
 from xbox_soarm_teleop.schemas.agent import ActionState, ReasonCode
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 from xbox_soarm_teleop.twin import ActionRejected, TwinClosed, build_twin
@@ -186,16 +187,12 @@ def test_wrist_roll_gripper_home_hold(twin):
 
 
 def _pick_cube(twin):
-    cube = twin.grasp.position("pick_cube")
-    above = cube + [0.0, 0.0, 0.06]
-    for request in (
-        {"type": "move_ee_to", "params": {"xyz_m": list(above)}},
-        {"type": "set_wrist_roll", "params": {"angle_rad": -1.5}},  # jaws side to side
-        {"type": "move_ee_to", "params": {"xyz_m": list(cube + [0.0, 0.0, 0.025])}},
-        {"type": "set_gripper", "params": {"position": CUBE_FIT}},
-    ):
+    def run(request):
         status = resolve(twin, twin.submit(request))
         assert run_until_done(twin, status.id).state is ActionState.SUCCEEDED, request
+
+    jaws_around(run, twin.observe, "pick_cube")
+    run({"type": "set_gripper", "params": {"position": CUBE_FIT}})
     assert twin.grasp.attached == "pick_cube"
 
 
@@ -204,7 +201,8 @@ def test_agent_assisted_pick_carry_release(twin):
     status = resolve(twin, move(twin, [0.28, 0.12, 0.22]))
     assert run_until_done(twin, status.id).state is ActionState.SUCCEEDED
     carried = twin.grasp.position("pick_cube")
-    assert np.linalg.norm(carried[:2] - [0.28, 0.12]) < 0.02
+    jaw = np.array(twin.observe()["jaw_center_xyz_m"])
+    assert np.linalg.norm(carried - jaw) < 0.008  # rides between the jaws
     status = resolve(twin, twin.submit({"type": "set_gripper", "params": {"position": 0.0}}))
     run_until_done(twin, status.id)
     assert twin.grasp.attached is None

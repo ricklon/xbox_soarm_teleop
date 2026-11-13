@@ -58,8 +58,32 @@ def roll(twin, angle_rad):
     return run(twin, {"type": "set_wrist_roll", "params": {"angle_rad": float(angle_rad)}})
 
 
-def over(twin, name="pick_cube", wrist=SIDEWAYS, dz=0.025):
-    """Put the open jaws around an object, clear of it, side to side by default."""
+def move_by(twin, dxyz):
+    return run(twin, {"type": "move_ee_by", "params": {"dxyz_m": [float(v) for v in dxyz]}})
+
+
+def jaw_center(twin):
+    return np.array(twin.observe()["jaw_center_xyz_m"])
+
+
+def over(twin, name="pick_cube", wrist=SIDEWAYS):
+    """Put the open jaws around an object, the way the agent instructions say.
+
+    Open a little wider than it, line the jaw center up above it, then come
+    straight down until the jaw center is at its center (not below z 0.14).
+    """
+    width = float(min(twin.grasp.size(name)[:2]))
+    grip(twin, SETTINGS.gripper_for_opening(width + 0.03))
+    move(twin, twin.grasp.position(name) + [0.0, 0.0, 0.06])
+    roll(twin, wrist)
+    for _ in range(2):
+        miss = twin.grasp.position(name) - jaw_center(twin)
+        move_by(twin, [miss[0], miss[1], 0.0])
+    move_by(twin, [0.0, 0.0, max(twin.grasp.position(name)[2], 0.14) - jaw_center(twin)[2]])
+
+
+def tool_over(twin, name="pick_cube", wrist=SIDEWAYS, dz=0.025):
+    """Put the tool point (not the jaw center) dz above an object, as agents first did."""
     xyz = twin.grasp.position(name)
     move(twin, xyz + [0.0, 0.0, 0.06])
     roll(twin, wrist)
@@ -151,23 +175,24 @@ def test_a_little_past_the_width_still_holds(twin):
 def test_top_and_bottom_do_not_count_on_a_rigid_object(twin):
     """At roll 0 the jaws close nearly top to bottom: refused, with the roll to use."""
     assert twin.grasp.grip_faces("pick_cube") == [0, 1]  # its sides, not top and bottom
-    over(twin, wrist=0.0)
+    tool_over(twin, wrist=0.0)
     grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
     assert twin.grasp.attached is None
     slipped = [event for event in events(twin) if "slipped" in event]
     assert slipped and "set_wrist_roll(angle_rad=" in slipped[-1]
 
 
-@pytest.mark.parametrize("dz", [0.0, 0.025])  # at the cube's center, and the advised 2.5 cm above
+@pytest.mark.parametrize("dz", [0.0, 0.025])
 def test_the_suggested_roll_makes_the_grasp_work(twin, dz):
     """What an agent does with a refusal: open, turn the wrist as told, close again."""
-    over(twin, wrist=0.0, dz=dz)
+    tool_over(twin, wrist=0.0, dz=dz)
     grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
     suggested = twin.grasp.squaring_roll("pick_cube")
     assert twin.grasp.attached is None and suggested is not None
     assert abs(abs(suggested) - np.pi / 2) < 0.3
     grip(twin, 0.0)
-    over(twin, wrist=suggested, dz=dz)
+    move(twin, twin.grasp.position("pick_cube") + [0.0, 0.0, 0.06])
+    over(twin, wrist=suggested)
     grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
     assert twin.grasp.attached == "pick_cube"
 
@@ -189,6 +214,51 @@ def test_a_cube_turned_too_far_says_so(twin):
     assert any("turned too far" in event for event in events(twin))
 
 
+def test_the_tool_point_above_the_cube_misses_and_says_how_far_to_move(twin):
+    """The tool point is the fixed jaw's face: putting it over the cube leaves the
+    cube beside the pads. The refusal gives the move that centers the jaws."""
+    tool_over(twin)
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    assert twin.grasp.attached is None
+    missed = [event for event in events(twin) if "missed" in event]
+    assert missed and "move_by(dx=" in missed[-1]
+    numbers = missed[-1].split("move_by(")[1].split(")")[0]
+    shift = [float(part.split("=")[1]) for part in numbers.split(", ")]
+    grip(twin, 0.0)
+    move_by(twin, shift)
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    assert twin.grasp.attached == "pick_cube"
+
+
+@pytest.mark.parametrize("wrist", [SIDEWAYS, -SIDEWAYS])
+def test_a_held_cube_sits_between_the_jaws_and_turns_with_them(twin, wrist):
+    start = twin.grasp.position("pick_cube")
+    over(twin, wrist=wrist)
+    assert np.linalg.norm(twin.grasp.position("pick_cube") - start) < 0.006  # barely nudged
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    assert twin.grasp.attached == "pick_cube"
+
+    def in_gripper():
+        data, body = twin.sim.data, twin.grasp._gripper_body
+        rotation = data.xmat[body].reshape(3, 3)
+        return rotation.T @ (twin.grasp.position("pick_cube") - data.xpos[body])
+
+    held = in_gripper()
+    assert held[0] == pytest.approx(-0.008 + CUBE_WIDTH / 2, abs=1e-3)  # centered between pads
+    move_by(twin, [0.0, 0.0, 0.10])
+    move(twin, [0.333, -0.008, 0.30])  # where a live run saw it float beside the jaws
+    roll(twin, 0.0)
+    assert twin.grasp.attached == "pick_cube"
+    np.testing.assert_allclose(in_gripper(), held, atol=1e-3)
+
+
+def test_observation_gives_the_jaw_center(twin):
+    obs = twin.observe()
+    tool = np.array(obs["ee"]["xyz_m"])
+    middle = np.array(obs["jaw_center_xyz_m"])
+    assert 0.01 < np.linalg.norm(middle - tool) < 0.1  # not the tool point
+
+
 def test_square_jaws_report_the_cubes_width(twin):
     over(twin)
     width, off_square = twin.grasp.fit("pick_cube")
@@ -200,9 +270,8 @@ def test_the_bean_bag_takes_any_closure_and_angle():
     twin = build_twin(scene="pick_place_easy", with_controller=False)
     twin.tick()
     bag = twin.grasp.position("bean_bag")
-    move(twin, bag + [0.0, 0.0, 0.08])
-    roll(twin, 0.0)  # top to bottom: fine for something soft
-    move(twin, bag + [0.0, 0.0, 0.01])
+    over(twin, "bean_bag", wrist=2.3)  # well off square: fine for something soft
+    assert twin.grasp.fit("bean_bag")[1] > SETTINGS.rigid_align_tol_deg
     grip(twin, 1.0)
     assert twin.grasp.attached == "bean_bag"
     move(twin, bag + [0.0, 0.0, 0.10])
@@ -217,9 +286,10 @@ def test_a_person_closing_fully_stops_on_the_cube(twin):
     over(twin)
     for _ in range(4):  # let the agent's move settle and control lapse to nobody
         twin.tick()
-    twin.tick(XboxState(left_bumper=True, right_trigger=0.0))  # trigger at rest, then squeezed
+    for step in range(61):  # trigger squeezed from rest to fully in
+        twin.tick(XboxState(left_bumper=True, right_trigger=step / 60))
     human = XboxState(left_bumper=True, right_trigger=1.0)
-    for _ in range(120):
+    for _ in range(60):
         twin.tick(human)
     obs = twin.observe()
     assert twin.grasp.attached == "pick_cube"

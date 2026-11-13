@@ -302,18 +302,33 @@ but it does not collide with the robot); `pick_place_basic` has the rigid cube,
 which the gripper knocks away if it touches it before closing. Switching never
 recompiles, so each hub room switches on its own.
 
-Grasping goes by jaw width (`twin/grasp.py`). An object within 4.5 cm of the
-tool point attaches when the jaws close to its width, stays held a little past
-that, and a rigid one is squeezed out if they close further or slips if they
-are not square to its sides. A rigid object's top and bottom do not count (one
-rests on a surface), and at wrist roll 0 the twin's jaws close nearly top to
-bottom, so a rigid object needs the wrist turned about 90 degrees. A refused
-grasp's event names the `set_wrist_roll` angle that squares the jaws, and says
-when the object is turned too far from the arm's heading for any roll to help.
-`observe` also reports the goal box (`scene.goal`) and each object's `in_goal`. `observe` reports each object's `size_m` and the
-`gripper_opening_m`; `set_gripper` takes `opening_m` as well as `position`, and
-its result names what is `holding`. Jaws a person drives shut (trigger, or the
-page's Close button) stop on a rigid object instead.
+Grasping goes by jaw width (`twin/grasp.py`). An object attaches when the
+jaws close to its width **with it between their pads**, stays held a little
+past that, and a rigid one is squeezed out if they close further or slips if
+they are not square to its sides. A rigid object's top and bottom do not count
+(one rests on a surface), and at wrist roll 0 the twin's jaws close nearly top
+to bottom, so a rigid object needs the wrist turned about 90 degrees.
+
+The tool point every move steers (`ee`) is the URDF's `gripper_frame_link`:
+the fixed jaw's inner face, 6 mm from its tip, as on the real arm. It is not
+the middle of the jaws. `observe` (and each motion tool's result) gives
+`jaw_center_xyz_m`, the point between the pads, 1.2 cm short of the tips,
+where an object's center should be. The pad geometry it is built from
+(`JAW_*` in `grasp.py`) is measured from the SO-ARM101 meshes, not guessed.
+The approach the agent instructions give: open to the width plus 3 cm, come
+over the object, roll the wrist, center the jaw point over it with `move_by`,
+then go straight down to its center height (not below z 0.14). Coming in at an
+angle knocks a rigid object away. A held object rides with the gripper,
+keeping its place and turn between the jaws as the wrist moves.
+
+A refused grasp's event says what to do: the `set_wrist_roll` angle that
+squares the jaws (and when the object is turned too far for any roll to
+help), or `missed` with the `move_by` that centers the jaws on it.
+`observe` also reports the goal box (`scene.goal`) and each object's
+`in_goal`, each object's `size_m` and the `gripper_opening_m`; `set_gripper`
+takes `opening_m` as well as `position`, and its result names what is
+`holding`. Jaws a person drives shut (trigger, or the page's Close button)
+stop on a rigid object instead.
 
 The numbers behind this are in `GraspSettings` and are **placeholders until
 measured on the real arm**: reading at first touch, at firm hold and at slip

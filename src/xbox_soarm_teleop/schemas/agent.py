@@ -243,6 +243,9 @@ class Observation:
         gripper: Gripper position 0 (open) .. 1 (closed).
         gripper_opening_m: Gap between the jaws at the tool point (m), for
             closing to an object's width. Additive in v1.
+        jaw_center_xyz_m: Middle of the jaw pads at the current opening (m).
+            The tool point is the fixed jaw's inner face, not this; put this
+            on an object's center to grasp it. Additive in v1.
         stop_latched: Virtual stop is latched.
         owner: Client holding the control lease, if any.
         action: Current or most recent action status.
@@ -269,6 +272,7 @@ class Observation:
     scene: dict[str, Any]
     control: dict[str, Any] = field(default_factory=dict)
     gripper_opening_m: float | None = None
+    jaw_center_xyz_m: list[float] | None = None
 
     def __post_init__(self) -> None:
         valid_modes = {m.value for m in ControlMode}

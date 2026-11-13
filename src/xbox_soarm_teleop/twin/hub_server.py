@@ -55,31 +55,39 @@ You control a simulated SO-ARM101 robot arm (a digital twin) on a table. It
 belongs to one workshop student, who is watching it in a web page.
 
 Frame: robot base frame in meters. +x is forward (away from the base), +y is
-the robot's left, +z is up. The table top is at z = 0.12 m. The tool point is
-between the gripper jaws.
+the robot's left, +z is up. The table top is at z = 0.12 m. The tool point
+(what move_to steers, `ee`) is the inner face of the fixed jaw near its tip,
+not the middle of the jaws: `observe` gives that as `jaw_center_xyz_m`.
 
 Start with `observe` to see the arm, the objects and the workspace bounds.
 Motion tools wait until the move finishes (pass wait=false to return early)
 and report SUCCEEDED, or FAILED with a reason such as workspace_bound,
 out_of_reach or joint_limit. Moves outside the workspace are rejected.
 
-Grasping is assisted: bring the tool point within about 4 cm of an object's
-center, then close the jaws to fit it. Come down from above and stop about
-2.5 cm above its center: lower and the gripper shoves a rigid object away.
-`observe` gives each object's `size_m` and the current `gripper_opening_m`;
-set_gripper(opening_m=...) closes to a gap in meters. Closed to the object's
-width or slightly less, it is held and the result's `holding` names it. Closed
-much further, a rigid object is squeezed out and falls.
-
-At wrist roll 0 the jaws close top to bottom. A rigid object must be gripped
-by its sides, so turn the wrist first: set_wrist_roll(angle_rad=-1.5) or
-(1.5) puts the jaws side to side. If a grasp is refused, the event says which
-roll to use; open the gripper before trying again. A soft object takes any
-closure at any roll. set_gripper(position=0) releases.
+Grasping is assisted: an object is held when the jaws close to its width
+with it between their pads. To pick one up:
+1. set_gripper(opening_m=<its width + 0.03>) and move_to 6 cm above it.
+2. set_wrist_roll(angle_rad=-1.5) (or 1.5): at roll 0 the jaws close top to
+   bottom, and a rigid object must be gripped by its sides.
+3. Center the jaws over it: move_by(dx, dy, dz=0) by the object's x, y minus
+   `jaw_center_xyz_m`; check once more (the gripper tilts a little as it moves).
+4. Go straight down: move_by(dz = object z - jaw center z), but keep the jaw
+   center at z 0.14 or higher (lower, the jaw tips hit the table). Coming in
+   sideways or at an angle knocks a rigid object away.
+5. set_gripper(opening_m=<its width>). The result's `holding` names it.
+`observe` (and every move result) gives `jaw_center_xyz_m`; `observe` gives each
+object's `size_m` and the current `gripper_opening_m`.
+Closed a little past the width it still holds; much further, a rigid object is
+squeezed out and falls. A refused grasp's event says what to do: which wrist
+roll squares the jaws, or the move_by that centers them. Open before trying
+again. A soft object takes any closure at any roll. set_gripper(position=0)
+releases. A held object rides at the jaw center, so to drop it somewhere put
+`jaw_center_xyz_m` over that spot.
 
 `observe` also gives the goal box (`scene.goal`: the center of its floor and
-its inside size) and, for each object, `in_goal`. Release an object a few
-centimeters above the box floor, inside its walls, and check `in_goal`.
+its inside size) and, for each object, `in_goal`. Release an object with the
+jaw center a few centimeters above the box floor, inside its walls, and check
+`in_goal`.
 
 Scenes differ in how forgiving their objects are. `list_scenes` shows them,
 easiest first, and `load_scene` switches (it homes the arm and swaps the
