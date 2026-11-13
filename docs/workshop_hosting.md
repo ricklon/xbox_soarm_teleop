@@ -232,6 +232,7 @@ Camera pictures are drawn without shadows or reflections to get these rates;
 | `port 8800 is in use` | Another hub is running. Close it or use `--port` |
 | Student's page says **Not connected** | The tunnel or the hub stopped. Restart it; pages reconnect by themselves |
 | Student's link shows `Not found` | The link is wrong or from an older roster. Copy it again from the instructor page |
+| Notebook stops with "This address points at the computer the arm is running on" | The hub was started without `--public-url`, so its address is `http://127.0.0.1...`, which Colab cannot reach. Use a tunnel (section 2), or run the notebook on the hub's computer (README, "Try the remote workshop") |
 | Notebook: `401 Unauthorized` | Address or key pasted wrongly. The address ends in `/mcp`; run the cell again to paste the key again |
 | A page says **No arm yet** or **Open the instructor link** | The page was opened by its short address (`/arm`, `/instructor`) in a new tab or window, which has no key. Open the original link again |
 | Agent tool calls fail with `421` or "Invalid Host header" | The hub was started without `--public-url`, or with a different address than students use |

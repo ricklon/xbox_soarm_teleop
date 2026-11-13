@@ -333,3 +333,9 @@ def test_hub_start_up_text_keeps_keys_out_of_the_terminal():
         )
     )
     assert "https://x.example/admin/ADMINKEY123" in shown
+
+
+def test_student_page_explains_a_local_only_arm(served):
+    hub, base = served
+    page = httpx.get(f"{base}/r/{rooms(hub)[0].token}").text
+    assert 'id="localNote" hidden' in page and "--public-url" in page

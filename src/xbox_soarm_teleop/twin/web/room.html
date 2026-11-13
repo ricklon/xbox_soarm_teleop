@@ -184,6 +184,10 @@
       <code class="copy" id="claudeCmd"></code>
       <p id="notebookLine" hidden>Or open the <a id="notebook" target="_blank" rel="noopener">workshop notebook</a>
         and paste the address and key into its first cell.</p>
+      <p id="localNote" hidden><b>This arm can only be reached from this computer.</b>
+        The Colab notebook and agents on other machines cannot connect to an address that starts with
+        <code>http://127.0.0.1</code> or <code>http://localhost</code>. To try the notebook here, run it
+        on this computer; for students, start the hub with <code>--public-url</code>.</p>
       <p class="sub">An agent in this browser</p>
       <p id="webmcp">Checking this browser...</p>
     </section>
@@ -345,6 +349,7 @@
   // --- the agent card -------------------------------------------------------
   const mcp = location.origin + "/mcp";
   $("mcpUrl").textContent = mcp;
+  if (["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) $("localNote").hidden = false;
   // The key is drawn as dots. Copying gives the real value; Show reveals it on purpose.
   const DOTS = "\u2022".repeat(12);
   const command = (key) =>

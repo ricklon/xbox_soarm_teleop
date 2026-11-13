@@ -60,7 +60,9 @@ code("""
 code('''
 import json
 import os
+import sys
 from getpass import getpass
+from urllib.parse import urlsplit
 
 import httpx2
 from IPython.display import Image, display
@@ -68,6 +70,14 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 ARM_URL = os.environ.get("ARM_URL", ARM_URL).strip()
+if not ARM_URL.startswith("http"):
+    raise SystemExit("Paste your arm's address into the cell above (it ends in /mcp), run it, then run this cell again.")
+if urlsplit(ARM_URL).hostname in ("localhost", "127.0.0.1", "::1") and "google.colab" in sys.modules:
+    raise SystemExit(
+        "This address points at the computer the arm is running on, and this notebook is running\\n"
+        "on Google's computers, which cannot reach it. Use the arm's public address (it starts\\n"
+        "with https://), or open this notebook on the same computer as the arm."
+    )
 ARM_KEY = (os.environ.get("ARM_KEY") or getpass("Your arm's key (hidden as you type): ")).strip()
 
 
