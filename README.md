@@ -156,7 +156,86 @@ Students install nothing.
 uv run soarm-hub --seats 12
 ```
 
-See [Hosting a Remote Workshop](docs/workshop_hosting.md).
+See [Hosting a Remote Workshop](docs/workshop_hosting.md) for the full guide.
+
+### Try the remote workshop
+
+Four stages, each proving more than the last. The first three need only this
+computer.
+
+**1. The hub and a student page (two minutes).**
+
+```bash
+uv run soarm-hub --seats 2
+```
+
+The instructor page opens in your browser. Click **Open** on Arm 1 and drive
+the arm: W/A/S/D across the table, R/F up and down, O/C for the gripper, Space
+to stop. This shows the hub, the student page and the camera pictures work.
+
+Started like this, the arms can only be reached from this computer. The
+notebook link on the student page opens Google Colab, which **cannot** connect
+to an address starting with `http://127.0.0.1`; use stage 2 to try the
+notebook now, or stage 4 for Colab.
+
+No keys are printed in the terminal or left in the address bar, so the window
+is safe to share. `--show-links` prints the instructor link if you need it.
+
+**2. The notebook, on this computer.** Leave the hub running and, in a second
+terminal:
+
+```bash
+uv run --with jupyterlab --with pip --with "anthropic[mcp]>=2,<3" jupyter lab notebooks/workshop_agent.ipynb
+```
+
+On the student page, click the **Address** to copy it and paste it into the
+notebook's first cell; when the notebook asks for the key, click **Your key**
+on the page and paste. Parts 0 to 4 need no model key. Part 5 needs one:
+Option A for Claude, Option B for a model on OpenRouter or Hugging Face.
+
+**3. See what your machine can carry.** Stop the hub first; this starts its own.
+
+```bash
+uv run python scripts/hub_load.py --seats 30
+```
+
+It plays 30 students' pages and prints the pictures per second and the upload
+each one needs.
+
+**4. From outside, as students will use it.** Start a tunnel first, because
+the hub needs to know its address. This uses
+[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/);
+any HTTPS tunnel works.
+
+```bash
+cloudflared tunnel --url http://localhost:8800
+```
+
+Then start the hub in a second terminal. It finds the running tunnel and uses
+its address for the students' links; the terminal says which address it found.
+
+```bash
+uv run soarm-hub --seats 2
+```
+
+With another kind of tunnel, or to be explicit, pass the address yourself with
+`--public-url https://your-address`.
+
+The instructor page opens on this computer (`127.0.0.1`) and that is where you
+use it. Its address will not work if you swap in the tunnel's name, because
+the page's key is remembered per address. The links it copies for students do
+use the tunnel.
+
+Then, as a student would:
+
+1. Click **Copy link** on an arm, open that link on a phone using mobile
+   data, and drive the arm.
+2. Follow the notebook link on that page into Google Colab and run it as in
+   stage 2.
+
+Stage 4 has not been run by the project yet: the hub through a tunnel, the
+notebook in Colab and a real model driving the arm are all still to be proven.
+Do it before you invite a class.
 
 ## Supported Commands
 

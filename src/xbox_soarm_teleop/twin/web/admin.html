@@ -20,6 +20,8 @@
   header { display: flex; align-items: center; gap: 14px; padding: 14px 20px; flex-wrap: wrap; }
   header h1 { font-size: 20px; margin: 0; flex: 1; }
   #load { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #where { color: var(--muted); flex-basis: 100%; order: 9; }
+  #where.local { color: var(--warn); }
   button {
     font: inherit; color: var(--ink); background: var(--key); border: 1px solid var(--line);
     border-radius: 8px; padding: 8px 12px; cursor: pointer;
@@ -36,13 +38,14 @@
   .room .last { color: var(--muted); font-size: 13px; min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .room .links { display: flex; gap: 10px; font-size: 13px; margin-top: 6px; }
   a { color: var(--accent); }
-  .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; }
+  .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
 </style>
 </head>
 <body>
 <header>
   <h1>Workshop arms</h1>
   <span id="load"></span>
+  <span id="where"></span>
   <button id="copyAll">Copy all student links</button>
   <button id="releaseAll">Release all stops</button>
   <button id="stopAll" class="stop">STOP ALL</button>
@@ -50,20 +53,42 @@
 <div id="rooms"></div>
 <script>
 (() => {
-  const base = location.pathname.replace(/\/$/, "");
+  // The link carries the key. Keep it for this tab and take it out of the
+  // address bar, so a shared screen does not show it. Reloading still works.
+  const KEY_STORE = "soarm-admin-key";
+  const linked = location.pathname.match(/^\/admin\/([^/]+)\/?$/);
+  let key = linked ? linked[1] : null;
+  try {
+    if (key) { sessionStorage.setItem(KEY_STORE, key); history.replaceState(null, "", "/instructor"); }
+    else key = sessionStorage.getItem(KEY_STORE);
+  } catch (err) { /* no storage: the key stays in the address and the page still works */ }
+  if (!key) {
+    // This short address has no key of its own, and a key remembered at one
+    // address (say 127.0.0.1) is not shared with another (a tunnel's).
+    document.getElementById("where").textContent =
+      "No arms to show: this tab has no instructor key. Use the instructor page the hub opened on " +
+      "its own computer, or start the hub with --show-links and open the full link it prints.";
+    return;
+  }
+  const base = "/admin/" + key;
   const cards = new Map();
   let rooms = [];
-  const link = (r) => `${location.origin}/r/${r.token}`;
+  // Links to hand out use the address students can reach (the hub's
+  // --public-url), not wherever this page happens to be open.
+  let studentBase = location.origin;
+  const link = (r) => `${studentBase}/r/${r.token}`;
+  const here = (r) => `${location.origin}/r/${r.token}`;
 
   function card(r) {
     const el = document.createElement("div");
     el.className = "room";
     el.innerHTML = `<img alt=""><h2><span class="name"></span><span class="who"></span></h2>
       <div class="state"></div><div class="last"></div>
-      <div class="links"><a target="_blank" rel="noopener">Open</a>
-      <button class="linkbtn">Copy link</button></div>`;
-    el.querySelector("a").href = link(r);
-    el.querySelector("button").addEventListener("click", () => navigator.clipboard.writeText(link(r)));
+      <div class="links"><button class="linkbtn open">Open</button>
+      <button class="linkbtn copy">Copy link</button></div>`;
+    // Buttons, not links: hovering over a link shows its address, key included.
+    el.querySelector(".open").addEventListener("click", () => window.open(here(r), "_blank", "noopener"));
+    el.querySelector(".copy").addEventListener("click", () => navigator.clipboard.writeText(link(r)));
     document.getElementById("rooms").append(el);
     return el;
   }
@@ -73,6 +98,18 @@
       const res = await fetch(base + "/rooms", { cache: "no-store" });
       const data = await res.json();
       rooms = data.rooms;
+      const where = document.getElementById("where");
+      if (data.public_url) {
+        studentBase = data.public_url.replace(/\/$/, "");
+        where.className = "";
+        where.textContent = `Student links use ${studentBase}`;
+      } else {
+        const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+        where.className = local ? "local" : "";
+        where.textContent = local
+          ? "Student links only work on this computer. For students, start the hub with --public-url."
+          : `Student links use ${studentBase}`;
+      }
       document.getElementById("load").textContent =
         `${rooms.length} arms, loop ${data.loop_hz.toFixed(0)} Hz`;
       for (const r of rooms) {

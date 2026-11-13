@@ -30,9 +30,12 @@ uv sync
 uv run soarm-hub --seats 3
 ```
 
-It prints an **instructor page** link. Open it: you should see three arms.
-Click **Open** on one, hold **W**, and watch the arm move. That link only
-works on this computer; the next section makes it reachable.
+The **instructor page** opens in your browser: you should see three arms.
+Click **Open** on one, hold **W**, and watch the arm move. That page only
+works on this computer; the next section makes the arms reachable.
+
+The hub does not print any key in the terminal. `--no-open` stops it opening
+the browser, and `--show-links` prints the instructor link if you need it.
 
 Decide two things in advance:
 
@@ -55,11 +58,32 @@ cloudflared tunnel --url http://localhost:8800
 ```
 
 It prints an address like `https://something-random.trycloudflare.com`. Leave
-it running and start the hub with that address:
+it running and start the hub. With no `--public-url`, the hub looks for a
+quick tunnel running on this computer and uses its address; the terminal says
+what it found:
+
+```bash
+uv run soarm-hub --seats 12
+```
+
+```
+Found a cloudflared quick tunnel: https://something-random.trycloudflare.com
+  Using it as the address students use. It must forward to port 8800: ...
+```
+
+The hub cannot see which port the tunnel forwards to, so check that it is the
+hub's (8800 unless you changed it). To name the address yourself, or with any
+other tunnel:
 
 ```bash
 uv run soarm-hub --seats 12 --public-url https://something-random.trycloudflare.com
 ```
+
+**Use the instructor page on this computer's own address** (the one the hub
+opens, `http://127.0.0.1:8800/instructor`). The page says which address the
+student links use. Typing the tunnel's name in front of `/instructor` gives a
+page with no arms: the key is remembered per address, and that address has
+never been given it.
 
 A quick tunnel gets a new address every time it starts, so get it running and
 leave it. With your own domain or a named tunnel the address stays the same.
@@ -228,8 +252,12 @@ Camera pictures are drawn without shadows or reflections to get these rates;
 |---|---|
 | `port 8800 is in use` | Another hub is running. Close it or use `--port` |
 | Student's page says **Not connected** | The tunnel or the hub stopped. Restart it; pages reconnect by themselves |
+| Instructor page says **No arms to show: this tab has no instructor key** | It was opened by the short address at a different host name (for example the tunnel's). Use the page the hub opened, or start the hub with `--show-links` and open the full link |
+| Instructor page says **Student links only work on this computer** | The hub has no public address. Start the tunnel first, then the hub, or pass `--public-url` |
 | Student's link shows `Not found` | The link is wrong or from an older roster. Copy it again from the instructor page |
-| Notebook: `401 Unauthorized` | Address or key pasted wrongly. The address ends in `/mcp` |
+| Notebook stops with "This address points at the computer the arm is running on" | The hub was started without `--public-url`, so its address is `http://127.0.0.1...`, which Colab cannot reach. Use a tunnel (section 2), or run the notebook on the hub's computer (README, "Try the remote workshop") |
+| Notebook: `401 Unauthorized` | Address or key pasted wrongly. The address ends in `/mcp`; run the cell again to paste the key again |
+| A page says **No arm yet** or **Open the instructor link** | The page was opened by its short address (`/arm`, `/instructor`) in a new tab or window, which has no key. Open the original link again |
 | Agent tool calls fail with `421` or "Invalid Host header" | The hub was started without `--public-url`, or with a different address than students use |
 | Agent is refused with `not_owner` / `human` | The student touched the controls in the last 2 seconds. Hands off and retry |
 | Agent is refused with `stopped` | The student (or you) stopped the arm. Press **Release stop** |
@@ -243,8 +271,20 @@ To finish, press Ctrl+C in the hub's terminal, then stop the tunnel.
 
 - Each arm and the instructor page are protected only by the random key in
   their links. There are no accounts or passwords.
-- Student keys are not written to the hub's terminal output, but the
-  instructor link is, and the instructor page shows every student's link. Do
-  not share either window on screen.
+- Keys are kept off the screen, so that sharing a window does not give them
+  away:
+  - The terminal prints no key (unless you pass `--show-links`).
+  - A page opened by its link moves at once to a short address without the
+    key (`/arm` or `/instructor`) and remembers the key for that browser tab.
+  - The student page draws the key as dots. Clicking it copies the real key;
+    **Show** reveals it on purpose, and it hides again when the tab is left.
+  - The instructor page uses buttons for each arm, so hovering does not show
+    a link.
+  - The notebook asks for the arm's key and the model's key in boxes that
+    hide what is typed, and neither is saved in the notebook.
+- What still shows a key: the link itself wherever you paste it (a chat
+  message, the browser's history and its address bar while you type or paste
+  it), and the roster file if you open it. **Copy all student links** puts
+  every link on your clipboard, so take care where you paste.
 - Everything is simulated. The worst a leaked key allows is someone else
   moving a student's simulated arm.

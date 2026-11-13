@@ -284,3 +284,107 @@ def test_hub_command_options():
     assert defaults.mesh_detail_mm == 2.0 and defaults.picture_rate == 10.0
     chosen = build_parser().parse_args(["--mesh-detail-mm", "0", "--picture-rate", "15"])
     assert chosen.mesh_detail_mm == 0.0 and chosen.picture_rate == 15.0
+
+
+# ------------------------------------------------------------------ keys stay hidden
+def test_pages_can_be_shown_without_a_key_in_the_address(served):
+    """The pages move to a key-free address once loaded; the server serves them there."""
+    hub, base = served
+    secrets_ = [hub.admin_token, *hub.rooms]
+    for path, marker in (("/arm", "Connect an AI agent"), ("/instructor", "Workshop arms")):
+        page = httpx.get(base + path)
+        assert page.status_code == 200 and marker in page.text
+        assert page.headers["cache-control"] == "no-store"
+        assert not any(secret in page.text for secret in secrets_)
+        assert "sessionStorage" in page.text and "history.replaceState" in page.text
+
+
+def test_student_page_masks_the_key_until_asked(served):
+    hub, base = served
+    page = httpx.get(f"{base}/r/{rooms(hub)[0].token}").text
+    assert 'id="showKey"' in page  # the key is revealed only on purpose
+    assert "dataset.copy" in page  # copying still gives the real value
+    assert '$("token").textContent = token' not in page
+
+
+def test_instructor_page_has_no_links_to_hover_over(served):
+    hub, base = served
+    page = httpx.get(f"{base}/admin/{hub.admin_token}").text
+    assert 'el.querySelector("a").href' not in page and "window.open" in page
+
+
+def test_hub_start_up_text_keeps_keys_out_of_the_terminal():
+    from xbox_soarm_teleop.cli.hub import build_parser, startup_lines
+
+    args = build_parser().parse_args([])
+    assert args.open_browser is True and args.show_links is False
+    assert build_parser().parse_args(["--no-open"]).open_browser is False
+    quiet = "\n".join(
+        startup_lines("https://x.example", "ADMINKEY123", "roster.json", public=True, opened=True)
+    )
+    assert "ADMINKEY123" not in quiet and "roster.json" in quiet and "opened" in quiet
+    closed = "\n".join(
+        startup_lines("https://x.example", "ADMINKEY123", "roster.json", public=True, opened=False)
+    )
+    assert "ADMINKEY123" not in closed and "--show-links" in closed
+    shown = "\n".join(
+        startup_lines(
+            "https://x.example", "ADMINKEY123", "roster.json", public=True, opened=False, show=True
+        )
+    )
+    assert "https://x.example/admin/ADMINKEY123" in shown
+
+
+def test_student_page_explains_a_local_only_arm(served):
+    hub, base = served
+    page = httpx.get(f"{base}/r/{rooms(hub)[0].token}").text
+    assert 'id="localNote" hidden' in page and "--public-url" in page
+
+
+def test_instructor_page_hands_out_links_students_can_reach():
+    """Links come from --public-url, not from wherever the instructor page is open."""
+    from starlette.testclient import TestClient
+
+    hub = Hub(seats=1)
+    try:
+        local = TestClient(build_hub_app(hub), base_url="http://127.0.0.1:8800")
+        assert local.get(f"/admin/{hub.admin_token}/rooms").json()["public_url"] is None
+        public = TestClient(
+            build_hub_app(hub, public_url="https://class.example.org"), base_url="http://127.0.0.1:8800"
+        )
+        assert (
+            public.get(f"/admin/{hub.admin_token}/rooms").json()["public_url"]
+            == "https://class.example.org"
+        )
+        page = local.get("/instructor").text
+        assert "data.public_url" in page and "this tab has no instructor key" in page
+    finally:
+        hub.close()
+
+
+def test_hub_finds_a_running_quick_tunnel():
+    import http.server
+
+    from xbox_soarm_teleop.cli.hub import build_parser, find_quick_tunnel
+
+    class Status(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - the handler's fixed name
+            found = self.path == "/quicktunnel"
+            self.send_response(200 if found else 404)
+            self.end_headers()
+            if found:
+                self.wfile.write(b'{"hostname": "some-words.trycloudflare.com"}')
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Status)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        assert find_quick_tunnel(ports=[_free_port(), port]) == "https://some-words.trycloudflare.com"
+        assert find_quick_tunnel(ports=[_free_port()]) is None
+    finally:
+        server.shutdown()
+    assert build_parser().parse_args([]).find_tunnel is True
+    assert build_parser().parse_args(["--no-find-tunnel"]).find_tunnel is False

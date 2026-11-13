@@ -116,7 +116,7 @@ def measure(seats: int, mesh_detail_mm: float, picture_rate: float, seconds: flo
         roster_path = Path(tmp) / "roster.json"
         command = [
             sys.executable, "-m", "xbox_soarm_teleop.cli.hub", "--seats", str(seats),
-            "--port", str(port), "--no-log", "--roster", str(roster_path),
+            "--port", str(port), "--no-log", "--no-open", "--no-find-tunnel", "--roster", str(roster_path),
             "--mesh-detail-mm", str(mesh_detail_mm), "--picture-rate", str(picture_rate),
         ]  # fmt: skip
         hub = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

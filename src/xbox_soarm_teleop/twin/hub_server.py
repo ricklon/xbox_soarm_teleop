@@ -2,6 +2,10 @@
 
 One server, three audiences:
 
+- ``/arm`` and ``/instructor``: the same two pages without a key in the
+  address. A page opened by its link remembers the key for that browser tab
+  and moves here at once, so the key is not left in the address bar where a
+  shared screen would show it. Opened directly, they have no key and say so.
 - ``/r/<room token>``: the student's page (live camera, hold-to-move
   controls, stop) and the small JSON API it polls. ``/r/<room token>/tools``
   serves the agent tools to the page itself, which registers them with the
@@ -175,6 +179,14 @@ def build_hub_app(
         text = "SO-ARM workshop. Open the link your instructor sent you."
         return Response(text, media_type="text/plain", headers=PAGE_HEADERS)
 
+    @server.custom_route("/arm", methods=["GET"])
+    async def room_page_without_key(_request: Request) -> Response:
+        return HTMLResponse(_page("room.html"), headers=PAGE_HEADERS)
+
+    @server.custom_route("/instructor", methods=["GET"])
+    async def admin_page_without_key(_request: Request) -> Response:
+        return HTMLResponse(_page("admin.html"), headers=PAGE_HEADERS)
+
     @server.custom_route("/r/{token}", methods=["GET"])
     async def room_page(request: Request) -> Response:
         if room_of(request) is None:
@@ -288,7 +300,8 @@ def build_hub_app(
                     "last_event": summary["events"][-1] if summary["events"] else "",
                 }
             )
-        return JSONResponse({"rooms": rooms, "loop_hz": hub.loop_hz}, headers=PAGE_HEADERS)
+        listing = {"rooms": rooms, "loop_hz": hub.loop_hz, "public_url": public_url}
+        return JSONResponse(listing, headers=PAGE_HEADERS)
 
     def press_everywhere(button: str) -> Response:
         for room in hub.rooms.values():

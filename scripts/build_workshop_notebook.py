@@ -42,12 +42,15 @@ md("""
 ## 0. Connect to your arm
 
 On your arm's page, find **Connect an AI agent**. Click the **Address** to copy
-it and paste it below, then do the same with **Your key**.
+it and paste it below.
+
+Your key is not pasted into the notebook. The cell after the next one asks for
+it in a box that hides what you type: click **Your key** on the page to copy
+it, then paste it into that box.
 """)
 
 code("""
 ARM_URL = "PASTE THE ADDRESS HERE"   # ends in /mcp
-ARM_KEY = "PASTE YOUR KEY HERE"
 """)
 
 code("""
@@ -57,6 +60,9 @@ code("""
 code('''
 import json
 import os
+import sys
+from getpass import getpass
+from urllib.parse import urlsplit
 
 import httpx2
 from IPython.display import Image, display
@@ -64,7 +70,15 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 ARM_URL = os.environ.get("ARM_URL", ARM_URL).strip()
-ARM_KEY = os.environ.get("ARM_KEY", ARM_KEY).strip()
+if not ARM_URL.startswith("http"):
+    raise SystemExit("Paste your arm's address into the cell above (it ends in /mcp), run it, then run this cell again.")
+if urlsplit(ARM_URL).hostname in ("localhost", "127.0.0.1", "::1") and "google.colab" in sys.modules:
+    raise SystemExit(
+        "This address points at the computer the arm is running on, and this notebook is running\\n"
+        "on Google's computers, which cannot reach it. Use the arm's public address (it starts\\n"
+        "with https://), or open this notebook on the same computer as the arm."
+    )
+ARM_KEY = (os.environ.get("ARM_KEY") or getpass("Your arm's key (hidden as you type): ")).strip()
 
 
 class connect:
@@ -111,7 +125,8 @@ for tool in tools:
 
 md("""
 If that printed a list of tools, you are connected. If it failed with
-`401 Unauthorized`, check the address and key you pasted.
+`401 Unauthorized`, check the address, then run the cell again and paste the
+key again.
 
 ## 1. Look
 

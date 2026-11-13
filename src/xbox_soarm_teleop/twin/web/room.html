@@ -92,6 +92,7 @@
   #events li:last-child { color: var(--ink); border-bottom: 0; }
   a { color: var(--accent); }
   p { margin: 0 0 8px; }
+  .linkbtn { background: none; border: 0; padding: 0 0 0 6px; color: var(--accent); text-decoration: underline; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -176,12 +177,17 @@
       <p>Your agent drives this same arm. You can take over or stop it at any time.</p>
       <p class="sub">Address</p>
       <code class="copy" id="mcpUrl"></code>
-      <p class="sub">Your key (keep it to yourself)</p>
+      <p class="sub">Your key (hidden; click it to copy)
+        <button id="showKey" class="linkbtn" aria-pressed="false">Show</button></p>
       <code class="copy" id="token"></code>
       <p class="sub">Claude Code, in a terminal</p>
       <code class="copy" id="claudeCmd"></code>
       <p id="notebookLine" hidden>Or open the <a id="notebook" target="_blank" rel="noopener">workshop notebook</a>
         and paste the address and key into its first cell.</p>
+      <p id="localNote" hidden><b>This arm can only be reached from this computer.</b>
+        The Colab notebook and agents on other machines cannot connect to an address that starts with
+        <code>http://127.0.0.1</code> or <code>http://localhost</code>. To try the notebook here, run it
+        on this computer; for students, start the hub with <code>--public-url</code>.</p>
       <p class="sub">An agent in this browser</p>
       <p id="webmcp">Checking this browser...</p>
     </section>
@@ -189,9 +195,22 @@
 </main>
 <script>
 (() => {
-  const base = location.pathname.replace(/\/$/, "");
-  const token = base.split("/").pop();
   const $ = (id) => document.getElementById(id);
+  // The link carries the key. Keep it for this tab and take it out of the
+  // address bar, so a shared screen does not show it. Reloading still works.
+  const KEY_STORE = "soarm-room-key";
+  const linked = location.pathname.match(/^\/r\/([^/]+)\/?$/);
+  let token = linked ? linked[1] : null;
+  try {
+    if (token) { sessionStorage.setItem(KEY_STORE, token); history.replaceState(null, "", "/arm"); }
+    else token = sessionStorage.getItem(KEY_STORE);
+  } catch (err) { /* no storage: the key stays in the address and the page still works */ }
+  if (!token) {
+    $("status").querySelector(".headline").textContent = "No arm yet";
+    $("status").querySelector(".detail").textContent = "Open the link your instructor sent you.";
+    return;
+  }
+  const base = "/r/" + token;
   const axes = { fwd: 0, left: 0, up: 0, roll: 0 };
   const held = new Map();          // source (key or button) -> [axis, dir]
   let presses = [];
@@ -330,11 +349,25 @@
   // --- the agent card -------------------------------------------------------
   const mcp = location.origin + "/mcp";
   $("mcpUrl").textContent = mcp;
-  $("token").textContent = token;
-  $("claudeCmd").textContent =
-    `claude mcp add --transport http soarm-arm ${mcp} --header "Authorization: Bearer ${token}"`;
+  if (["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) $("localNote").hidden = false;
+  // The key is drawn as dots. Copying gives the real value; Show reveals it on purpose.
+  const DOTS = "\u2022".repeat(12);
+  const command = (key) =>
+    `claude mcp add --transport http soarm-arm ${mcp} --header "Authorization: Bearer ${key}"`;
+  let keyShown = false;
+  function drawKey() {
+    $("token").textContent = keyShown ? token : DOTS;
+    $("claudeCmd").textContent = command(keyShown ? token : DOTS);
+    $("showKey").textContent = keyShown ? "Hide" : "Show";
+    $("showKey").setAttribute("aria-pressed", keyShown);
+  }
+  $("token").dataset.copy = token;
+  $("claudeCmd").dataset.copy = command(token);
+  $("showKey").addEventListener("click", () => { keyShown = !keyShown; drawKey(); });
+  document.addEventListener("visibilitychange", () => { keyShown = false; drawKey(); });
+  drawKey();
   document.querySelectorAll(".copy").forEach((el) => el.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(el.textContent); } catch (err) { return; }
+    try { await navigator.clipboard.writeText(el.dataset.copy || el.textContent); } catch (err) { return; }
     el.classList.add("copied"); setTimeout(() => el.classList.remove("copied"), 1500);
   }));
 

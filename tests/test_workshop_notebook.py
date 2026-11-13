@@ -42,3 +42,15 @@ def test_both_agent_options_define_the_same_function():
     assert "/chat/completions" in other and "MODEL_BASE_URL" in other
     for cell in agents:
         assert "task: str, max_steps: int = 30" in cell
+
+
+def test_the_arm_key_is_typed_into_a_hidden_prompt():
+    setup = next(cell for cell in _code_cells() if "class connect" in cell)
+    assert 'getpass("Your arm' in setup
+    assert not any("PASTE YOUR KEY" in cell for cell in _code_cells())
+
+
+def test_notebook_explains_an_address_it_cannot_reach():
+    setup = next(cell for cell in _code_cells() if "class connect" in cell)
+    assert "google.colab" in setup and "public address" in setup
+    assert setup.index("google.colab") < setup.index("getpass(")  # before asking for the key
