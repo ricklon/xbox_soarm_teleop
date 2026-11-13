@@ -268,3 +268,85 @@ def test_hub_can_draw_the_original_meshes():
         assert hub.cameras.model is next(iter(hub.rooms.values())).service.sim.model
     finally:
         hub.close()
+
+
+def test_instructor_stop_is_released_only_by_the_instructor():
+    from xbox_soarm_teleop.twin.actions import ActionRejected
+
+    fresh = Hub(seats=1)
+    try:
+        room = next(iter(fresh.rooms.values()))
+        fresh.tick()
+        room.service.stop(by="instructor", client_id="instructor")
+        fresh.tick()
+        latched = lambda: room.service.observe()["control"]["stop_latched_by"]  # noqa: E731
+        assert latched() == "instructor"
+        room.controller.update({"press": ["release"]})  # the student tries
+        fresh.tick()
+        assert latched() == "instructor"
+        room.controller.update({"press": ["stop"]})  # the student's own stop does not take it over
+        fresh.tick()
+        room.controller.update({"press": ["release"]})
+        fresh.tick()
+        assert latched() == "instructor"
+        attempt = room.service.reset_stop(client_id="agent", confirm=True)  # an agent tries
+        fresh.tick()
+        with pytest.raises(ActionRejected) as refused:
+            attempt.result(timeout=0)
+        assert "instructor" in refused.value.detail
+        held = tool(room)
+        for _ in range(20):
+            room.controller.update({"fwd": 1})
+            fresh.tick()
+        np.testing.assert_allclose(tool(room), held, atol=1e-6)
+        room.service.release_stop(by="instructor")
+        fresh.tick()
+        assert latched() is None
+    finally:
+        fresh.close()
+
+
+def test_home_from_the_page_opens_the_gripper():
+    fresh = Hub(seats=1)
+    try:
+        room = next(iter(fresh.rooms.values()))
+        fresh.tick()
+        for _ in range(150):
+            room.controller.update({"hold": True, "grip": 1.0})
+            fresh.tick()
+        assert room.service.observe()["gripper"] > 0.95
+        for _ in range(150):  # hands off for three seconds
+            room.controller.update({})
+            fresh.tick()
+        room.controller.update({"press": ["home"]})
+        for _ in range(250):
+            fresh.tick()
+            room.controller.update({})
+        assert room.service.observe()["gripper"] < 0.05
+    finally:
+        fresh.close()
+
+
+def test_page_pictures_are_not_written_to_the_session_log(tmp_path):
+    import time
+
+    fresh = Hub(seats=1, log_dir=tmp_path)
+    try:
+        room = next(iter(fresh.rooms.values()))
+        futures = [
+            room.service.render("overhead", client_id="web", log=False),
+            room.service.render("overhead", client_id="agent-1"),
+        ]
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not all(f.done() for f in futures):
+            fresh.tick()
+            time.sleep(0.005)
+        room.service.log.flush()
+        cameras = [
+            line
+            for line in read_session_log(room.log_path)
+            if line["kind"] == "request" and line["data"].get("type") == "camera"
+        ]
+        assert [line["client_id"] for line in cameras] == ["agent-1"]
+    finally:
+        fresh.close()

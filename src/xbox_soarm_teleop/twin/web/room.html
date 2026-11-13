@@ -64,6 +64,7 @@
     background: var(--accent); color: var(--accent-ink); border-color: var(--accent);
   }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
   button kbd { opacity: 0.65; font: 12px ui-monospace, Menlo, monospace; margin-left: 4px; }
   .jog { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .jog .gap { visibility: hidden; }
@@ -82,7 +83,7 @@
     border-radius: 6px;
   }
   .copy {
-    display: block; padding: 8px 10px; white-space: pre-wrap; word-break: break-all;
+    display: block; padding: 8px 96px 8px 10px; white-space: pre-wrap; word-break: break-all;
     border: 1px solid var(--line); margin: 4px 0 10px; position: relative; cursor: copy;
   }
   .copy::after { content: "click to copy"; position: absolute; right: 8px; top: 6px; color: var(--muted); font-size: 11px; }
@@ -183,7 +184,7 @@
       <p class="sub">Claude Code, in a terminal</p>
       <code class="copy" id="claudeCmd"></code>
       <p id="notebookLine" hidden>Or open the <a id="notebook" target="_blank" rel="noopener">workshop notebook</a>
-        and paste the address and key into its first cell.</p>
+        and paste the address into its first cell. It asks for your key in a box that hides it.</p>
       <p id="localNote" hidden><b>This arm can only be reached from this computer.</b>
         The Colab notebook and agents on other machines cannot connect to an address that starts with
         <code>http://127.0.0.1</code> or <code>http://localhost</code>. To try the notebook here, run it
@@ -259,6 +260,7 @@
   let lastEvents = "";
   function show(s) {
     const kind = s.stop ? "stopped" : s.status[0].startsWith("Agent") ? "agent" : "";
+    $("release").disabled = s.status[0] === "STOPPED by your instructor";
     setStatus(kind, s.status[0], s.status[1]);
     $("title").textContent = s.name;
     $("scene").textContent = s.scene;
@@ -361,13 +363,16 @@
     $("showKey").textContent = keyShown ? "Hide" : "Show";
     $("showKey").setAttribute("aria-pressed", keyShown);
   }
-  $("token").dataset.copy = token;
-  $("claudeCmd").dataset.copy = command(token);
+  // What each box copies is kept here, not in the page's markup, so the key
+  // is not readable from the page even with the browser's developer tools.
+  const copies = new Map();
+  copies.set($("token"), token);
+  copies.set($("claudeCmd"), command(token));
   $("showKey").addEventListener("click", () => { keyShown = !keyShown; drawKey(); });
   document.addEventListener("visibilitychange", () => { keyShown = false; drawKey(); });
   drawKey();
   document.querySelectorAll(".copy").forEach((el) => el.addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(el.dataset.copy || el.textContent); } catch (err) { return; }
+    try { await navigator.clipboard.writeText(copies.get(el) || el.textContent); } catch (err) { return; }
     el.classList.add("copied"); setTimeout(() => el.classList.remove("copied"), 1500);
   }));
 

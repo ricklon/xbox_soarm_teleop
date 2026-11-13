@@ -36,17 +36,33 @@ _WEB_WORDS = {
 }
 
 
-def status_text(observation: dict[str, Any], *, web: bool = False) -> tuple[str, str]:
+def status_text(
+    observation: dict[str, Any], *, web: bool = False, instructor: bool = False
+) -> tuple[str, str]:
     """Return ``(headline, detail)`` describing who is in control and what to do.
 
     Args:
         observation: A ``soarm.observation/v1`` snapshot from the twin.
         web: The person drives from the hub's web page, not an Xbox controller.
+        instructor: Word it for the instructor watching someone else's arm
+            ("Student driving"), not for the person at the controls.
     """
     words = _WEB_WORDS if web else _PAD_WORDS
     control = observation["control"]
     connected = control["controller_connected"]
     latched_by = control["stop_latched_by"]
+    if instructor:
+        if latched_by is not None:
+            who = {"human": "student", "instructor": "you"}.get(latched_by, latched_by)
+            return f"STOPPED by {who}", ""
+        if control["human_in_control"]:
+            return "Student driving", ""
+        action = observation.get("action")
+        if action is not None and action["state"] in {"EXECUTING", "HELD"}:
+            return f"Agent: {action['type']}", ""
+        return "Ready", ""
+    if latched_by == "instructor":
+        return "STOPPED by your instructor", "Your instructor will release it"
     if latched_by == "human":
         return "STOPPED", f"{words['release']} to release"
     if latched_by is not None:
