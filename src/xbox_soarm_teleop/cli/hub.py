@@ -68,6 +68,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not open the instructor page in your browser when the hub starts",
     )
     parser.add_argument(
+        "--no-find-tunnel",
+        dest="find_tunnel",
+        action="store_false",
+        help="Without --public-url, do not look for a cloudflared quick tunnel running on this "
+        "computer to use as the students' address",
+    )
+    parser.add_argument(
         "--show-links",
         action="store_true",
         help="Print the instructor link, key included, in the terminal. Off by default so a "
@@ -94,6 +101,32 @@ def startup_lines(
         lines.append("  Only this computer can open these links. For students, see --public-url.")
     lines.append(f"Agents connect to {base}/mcp with their arm's key. Press Ctrl+C to quit.")
     return lines
+
+
+QUICK_TUNNEL_PORTS = range(20241, 20246)  # where cloudflared serves its own status
+
+
+def find_quick_tunnel(ports=QUICK_TUNNEL_PORTS, timeout_s: float = 0.4) -> str | None:
+    """The address of a cloudflared quick tunnel running on this computer, if any.
+
+    ``cloudflared tunnel --url ...`` reports its public host name on a local
+    status port. It does not say which local port it forwards to, so the
+    caller must tell the user what it found.
+    """
+    import json
+    import urllib.request
+
+    for port in ports:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/quicktunnel", timeout=timeout_s
+            ) as reply:
+                name = json.loads(reply.read().decode("utf-8")).get("hostname")
+        except (OSError, ValueError):
+            continue
+        if isinstance(name, str) and name and "/" not in name:
+            return f"https://{name}"
+    return None
 
 
 def _open_when_ready(url: str, host: str, port: int) -> None:
@@ -133,6 +166,17 @@ def main(argv: list[str] | None = None) -> int:
     if not _port_free(args.host, args.port):
         print(f"ERROR: port {args.port} is in use. Use --port.", flush=True)
         return 2
+
+    if args.public_url is None and args.find_tunnel and args.host in ("127.0.0.1", "localhost"):
+        args.public_url = find_quick_tunnel()
+        if args.public_url:
+            print(f"Found a cloudflared quick tunnel: {args.public_url}", flush=True)
+            print(
+                f"  Using it as the address students use. It must forward to port {args.port}: "
+                f"cloudflared tunnel --url http://localhost:{args.port}",
+                flush=True,
+            )
+            print("  Pass --public-url to use another address, or --no-find-tunnel.", flush=True)
 
     print(f"Building {args.seats} arms...", flush=True)
     hub = Hub(

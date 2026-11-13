@@ -339,3 +339,52 @@ def test_student_page_explains_a_local_only_arm(served):
     hub, base = served
     page = httpx.get(f"{base}/r/{rooms(hub)[0].token}").text
     assert 'id="localNote" hidden' in page and "--public-url" in page
+
+
+def test_instructor_page_hands_out_links_students_can_reach():
+    """Links come from --public-url, not from wherever the instructor page is open."""
+    from starlette.testclient import TestClient
+
+    hub = Hub(seats=1)
+    try:
+        local = TestClient(build_hub_app(hub), base_url="http://127.0.0.1:8800")
+        assert local.get(f"/admin/{hub.admin_token}/rooms").json()["public_url"] is None
+        public = TestClient(
+            build_hub_app(hub, public_url="https://class.example.org"), base_url="http://127.0.0.1:8800"
+        )
+        assert (
+            public.get(f"/admin/{hub.admin_token}/rooms").json()["public_url"]
+            == "https://class.example.org"
+        )
+        page = local.get("/instructor").text
+        assert "data.public_url" in page and "this tab has no instructor key" in page
+    finally:
+        hub.close()
+
+
+def test_hub_finds_a_running_quick_tunnel():
+    import http.server
+
+    from xbox_soarm_teleop.cli.hub import build_parser, find_quick_tunnel
+
+    class Status(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - the handler's fixed name
+            found = self.path == "/quicktunnel"
+            self.send_response(200 if found else 404)
+            self.end_headers()
+            if found:
+                self.wfile.write(b'{"hostname": "some-words.trycloudflare.com"}')
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Status)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        assert find_quick_tunnel(ports=[_free_port(), port]) == "https://some-words.trycloudflare.com"
+        assert find_quick_tunnel(ports=[_free_port()]) is None
+    finally:
+        server.shutdown()
+    assert build_parser().parse_args([]).find_tunnel is True
+    assert build_parser().parse_args(["--no-find-tunnel"]).find_tunnel is False

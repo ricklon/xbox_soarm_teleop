@@ -300,7 +300,8 @@ def build_hub_app(
                     "last_event": summary["events"][-1] if summary["events"] else "",
                 }
             )
-        return JSONResponse({"rooms": rooms, "loop_hz": hub.loop_hz}, headers=PAGE_HEADERS)
+        listing = {"rooms": rooms, "loop_hz": hub.loop_hz, "public_url": public_url}
+        return JSONResponse(listing, headers=PAGE_HEADERS)
 
     def press_everywhere(button: str) -> Response:
         for room in hub.rooms.values():

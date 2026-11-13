@@ -58,11 +58,32 @@ cloudflared tunnel --url http://localhost:8800
 ```
 
 It prints an address like `https://something-random.trycloudflare.com`. Leave
-it running and start the hub with that address:
+it running and start the hub. With no `--public-url`, the hub looks for a
+quick tunnel running on this computer and uses its address; the terminal says
+what it found:
+
+```bash
+uv run soarm-hub --seats 12
+```
+
+```
+Found a cloudflared quick tunnel: https://something-random.trycloudflare.com
+  Using it as the address students use. It must forward to port 8800: ...
+```
+
+The hub cannot see which port the tunnel forwards to, so check that it is the
+hub's (8800 unless you changed it). To name the address yourself, or with any
+other tunnel:
 
 ```bash
 uv run soarm-hub --seats 12 --public-url https://something-random.trycloudflare.com
 ```
+
+**Use the instructor page on this computer's own address** (the one the hub
+opens, `http://127.0.0.1:8800/instructor`). The page says which address the
+student links use. Typing the tunnel's name in front of `/instructor` gives a
+page with no arms: the key is remembered per address, and that address has
+never been given it.
 
 A quick tunnel gets a new address every time it starts, so get it running and
 leave it. With your own domain or a named tunnel the address stays the same.
@@ -231,6 +252,8 @@ Camera pictures are drawn without shadows or reflections to get these rates;
 |---|---|
 | `port 8800 is in use` | Another hub is running. Close it or use `--port` |
 | Student's page says **Not connected** | The tunnel or the hub stopped. Restart it; pages reconnect by themselves |
+| Instructor page says **No arms to show: this tab has no instructor key** | It was opened by the short address at a different host name (for example the tunnel's). Use the page the hub opened, or start the hub with `--show-links` and open the full link |
+| Instructor page says **Student links only work on this computer** | The hub has no public address. Start the tunnel first, then the hub, or pass `--public-url` |
 | Student's link shows `Not found` | The link is wrong or from an older roster. Copy it again from the instructor page |
 | Notebook stops with "This address points at the computer the arm is running on" | The hub was started without `--public-url`, so its address is `http://127.0.0.1...`, which Colab cannot reach. Use a tunnel (section 2), or run the notebook on the hub's computer (README, "Try the remote workshop") |
 | Notebook: `401 Unauthorized` | Address or key pasted wrongly. The address ends in `/mcp`; run the cell again to paste the key again |

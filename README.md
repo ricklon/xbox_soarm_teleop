@@ -211,16 +211,25 @@ any HTTPS tunnel works.
 cloudflared tunnel --url http://localhost:8800
 ```
 
-Start the hub with the address the tunnel prints:
+Then start the hub in a second terminal. It finds the running tunnel and uses
+its address for the students' links; the terminal says which address it found.
 
 ```bash
-uv run soarm-hub --seats 2 --public-url https://something-random.trycloudflare.com
+uv run soarm-hub --seats 2
 ```
+
+With another kind of tunnel, or to be explicit, pass the address yourself with
+`--public-url https://your-address`.
+
+The instructor page opens on this computer (`127.0.0.1`) and that is where you
+use it. Its address will not work if you swap in the tunnel's name, because
+the page's key is remembered per address. The links it copies for students do
+use the tunnel.
 
 Then, as a student would:
 
-1. Copy a student link from the instructor page, open it on a phone using
-   mobile data, and drive the arm.
+1. Click **Copy link** on an arm, open that link on a phone using mobile
+   data, and drive the arm.
 2. Follow the notebook link on that page into Google Colab and run it as in
    stage 2.
 
