@@ -176,13 +176,14 @@ def test_agent_grips_by_opening_and_sees_what_it_holds(twin_url):
     cube = payload(call(url, "observe"))["scene"]["objects"]["pick_cube"]
     x, y, z = cube["xyz_m"]
     call(url, "move_to", {"x": x, "y": y, "z": z + 0.06})
+    call(url, "set_wrist_roll", {"angle_rad": -1.5})
     call(url, "move_to", {"x": x, "y": y, "z": z + 0.025})
 
     both = payload(call(url, "set_gripper", {"position": 1.0, "opening_m": 0.04}))
     assert both["ok"] is False and both["reason"] == "invalid_request"
     assert payload(call(url, "set_gripper"))["reason"] == "invalid_request"
 
-    held = payload(call(url, "set_gripper", {"opening_m": cube["size_m"][2]}))
+    held = payload(call(url, "set_gripper", {"opening_m": cube["size_m"][0]}))
     assert held["ok"] is True and held["holding"] == "pick_cube"
     assert held["gripper_opening_m"] == pytest.approx(0.04, abs=0.006)
 

@@ -51,11 +51,19 @@ def grip(twin, position):
     return run(twin, {"type": "set_gripper", "params": {"position": float(position)}})
 
 
-def over(twin, name="pick_cube"):
-    """Put the open jaws around an object, clear of it."""
+SIDEWAYS = -1.5  # wrist roll that puts the jaws side to side
+
+
+def roll(twin, angle_rad):
+    return run(twin, {"type": "set_wrist_roll", "params": {"angle_rad": float(angle_rad)}})
+
+
+def over(twin, name="pick_cube", wrist=SIDEWAYS, dz=0.025):
+    """Put the open jaws around an object, clear of it, side to side by default."""
     xyz = twin.grasp.position(name)
     move(twin, xyz + [0.0, 0.0, 0.06])
-    move(twin, xyz + [0.0, 0.0, 0.025])
+    roll(twin, wrist)
+    move(twin, xyz + [0.0, 0.0, dz])
 
 
 def events(twin) -> list[str]:
@@ -140,16 +148,45 @@ def test_a_little_past_the_width_still_holds(twin):
     assert twin.grasp.attached == "pick_cube"
 
 
-def test_jaws_off_square_let_the_cube_slip(twin):
-    cube = twin.grasp.position("pick_cube")
-    move(twin, cube + [0.0, 0.0, 0.10])
-    run(twin, {"type": "set_wrist_roll", "params": {"angle_rad": float(np.deg2rad(45))}})
-    over(twin)
-    width, off_square = twin.grasp.fit("pick_cube")
-    assert off_square > SETTINGS.rigid_align_tol_deg
+def test_top_and_bottom_do_not_count_on_a_rigid_object(twin):
+    """At roll 0 the jaws close nearly top to bottom: refused, with the roll to use."""
+    assert twin.grasp.grip_faces("pick_cube") == [0, 1]  # its sides, not top and bottom
+    over(twin, wrist=0.0)
     grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
     assert twin.grasp.attached is None
-    assert any("slipped" in event for event in events(twin))
+    slipped = [event for event in events(twin) if "slipped" in event]
+    assert slipped and "set_wrist_roll(angle_rad=" in slipped[-1]
+
+
+@pytest.mark.parametrize("dz", [0.0, 0.025])  # at the cube's center, and the advised 2.5 cm above
+def test_the_suggested_roll_makes_the_grasp_work(twin, dz):
+    """What an agent does with a refusal: open, turn the wrist as told, close again."""
+    over(twin, wrist=0.0, dz=dz)
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    suggested = twin.grasp.squaring_roll("pick_cube")
+    assert twin.grasp.attached is None and suggested is not None
+    assert abs(abs(suggested) - np.pi / 2) < 0.3
+    grip(twin, 0.0)
+    over(twin, wrist=suggested, dz=dz)
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    assert twin.grasp.attached == "pick_cube"
+
+
+def test_a_cube_turned_too_far_says_so(twin):
+    """Skewed 45 degrees to the arm, no wrist roll can square the jaws to it."""
+    xyz = twin.grasp.position("pick_cube")
+    quat = np.zeros(4)
+    mujoco.mju_axisAngle2Quat(quat, np.array([0.0, 0.0, 1.0]), np.deg2rad(45))
+    obj = twin.grasp.objects["pick_cube"]
+    twin.sim.data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7] = quat
+    mujoco.mj_forward(twin.sim.model, twin.sim.data)
+    move(twin, xyz + [0.0, 0.0, 0.06])
+    roll(twin, SIDEWAYS)
+    move(twin, twin.grasp.position("pick_cube") + [0.0, 0.0, 0.025])
+    assert twin.grasp.best_square_deg("pick_cube") > SETTINGS.rigid_align_tol_deg
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    assert twin.grasp.attached is None
+    assert any("turned too far" in event for event in events(twin))
 
 
 def test_square_jaws_report_the_cubes_width(twin):
@@ -164,7 +201,7 @@ def test_the_bean_bag_takes_any_closure_and_angle():
     twin.tick()
     bag = twin.grasp.position("bean_bag")
     move(twin, bag + [0.0, 0.0, 0.08])
-    run(twin, {"type": "set_wrist_roll", "params": {"angle_rad": float(np.deg2rad(45))}})
+    roll(twin, 0.0)  # top to bottom: fine for something soft
     move(twin, bag + [0.0, 0.0, 0.01])
     grip(twin, 1.0)
     assert twin.grasp.attached == "bean_bag"
@@ -194,3 +231,36 @@ def test_a_person_closing_fully_stops_on_the_cube(twin):
     for _ in range(120):
         twin.tick(XboxState(left_bumper=True, right_trigger=0.0))
     assert twin.grasp.attached is None
+
+
+def test_observation_gives_the_goal_box(twin):
+    goal = twin.observe()["scene"]["goal"]
+    assert goal["name"] == "goal_box"
+    assert goal["center_xyz_m"] == pytest.approx([0.29, 0.13, 0.125], abs=1e-3)
+    assert goal["inner_size_m"] == pytest.approx([0.09, 0.09, 0.06])
+    assert twin.observe()["scene"]["objects"]["pick_cube"]["in_goal"] is False
+
+
+@pytest.mark.parametrize(
+    "xy, inside",
+    [((0.29, 0.13), True), ((0.31, 0.15), True), ((0.34, -0.03), False)],
+)
+def test_in_goal_only_when_resting_inside_the_walls(xy, inside):
+    twin = build_twin(scene="pick_place_easy", with_controller=False)
+    twin.tick()
+    twin.grasp.place("bean_bag", np.array([*xy, 0.20]))
+    mujoco.mj_forward(twin.sim.model, twin.sim.data)
+    for _ in range(150):
+        twin.tick()
+    bag = twin.observe()["scene"]["objects"]["bean_bag"]
+    assert bag["in_goal"] is inside, bag
+
+
+def test_resting_on_a_wall_is_not_in_the_goal():
+    """Where the bean bag ended up in a live session: across the box's left wall."""
+    from xbox_soarm_teleop.twin.layouts import GOALS
+
+    goal = GOALS["pick_place_basic"]
+    bag_half = (0.03, 0.025, 0.012)
+    assert goal.holds((0.259, 0.12, 0.155), bag_half) is False
+    assert goal.holds((0.29, 0.13, 0.137), bag_half) is True

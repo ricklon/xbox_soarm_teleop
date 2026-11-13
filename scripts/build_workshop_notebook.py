@@ -199,6 +199,9 @@ Your arm starts with a soft bean bag on the table. Grasping is assisted: bring
 the tool point within about 4 cm of the object's center and **close the jaws to
 its size**. It attaches when the jaws reach it, and lets go when they open.
 
+At wrist roll 0 the jaws close top to bottom, so the program turns the wrist
+first (`set_wrist_roll(angle_rad=-1.5)`) to put them side to side.
+
 `observe` tells you each object's `size_m`, and `set_gripper(opening_m=...)`
 closes to a gap in meters. The bean bag is forgiving. A rigid object like the
 cube (scene `pick_place_basic`) is not: close much past its width and it is
@@ -208,7 +211,7 @@ So a pick-and-place is six steps. Read them, then run the cell and watch your pa
 """)
 
 code("""
-GOAL = (0.29, 0.13)   # the goal box, from the map above
+GOAL = (0.29, 0.13)   # the goal box, from the map above (observe gives it too: scene.goal)
 
 
 async def step(tool: str, **arguments) -> None:
@@ -225,11 +228,12 @@ def the_object(state: dict) -> tuple[str, dict]:
 async def pick_and_place() -> None:
     await arm("reset_scene")
     name, thing = the_object(await arm("observe"))
-    at, height = thing["xyz_m"], thing["size_m"][2]
+    at, width = thing["xyz_m"], min(thing["size_m"][:2])   # across its sides
 
     await step("move_to", x=at[0], y=at[1], z=at[2] + 0.06)          # 1. above the object
+    await step("set_wrist_roll", angle_rad=-1.5)                     #    jaws side to side
     await step("move_to", x=at[0], y=at[1], z=at[2] + 0.025)         # 2. down to it
-    await step("set_gripper", opening_m=height)                      # 3. close to its size: grab
+    await step("set_gripper", opening_m=width)                       # 3. close to its size: grab
     await step("move_to", x=GOAL[0], y=GOAL[1], z=0.22)              # 4. carry over the box
     await step("set_gripper", position=0.0)                          # 5. open: let go
     await step("home")                                               # 6. out of the way
@@ -238,8 +242,7 @@ async def pick_and_place() -> None:
 await pick_and_place()
 name, thing = the_object(await arm("observe"))
 at = thing["xyz_m"]
-in_box = abs(at[0] - GOAL[0]) < 0.03 and abs(at[1] - GOAL[1]) < 0.03
-print(name, "is at", at, "- in the goal box!" if in_box else "- NOT in the goal box")
+print(name, "is at", at, "- in the goal box!" if thing["in_goal"] else "- NOT in the goal box")
 await look("overhead")
 """)
 

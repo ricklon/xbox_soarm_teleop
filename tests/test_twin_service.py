@@ -190,6 +190,7 @@ def _pick_cube(twin):
     above = cube + [0.0, 0.0, 0.06]
     for request in (
         {"type": "move_ee_to", "params": {"xyz_m": list(above)}},
+        {"type": "set_wrist_roll", "params": {"angle_rad": -1.5}},  # jaws side to side
         {"type": "move_ee_to", "params": {"xyz_m": list(cube + [0.0, 0.0, 0.025])}},
         {"type": "set_gripper", "params": {"position": CUBE_FIT}},
     ):

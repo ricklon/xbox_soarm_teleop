@@ -305,7 +305,12 @@ recompiles, so each hub room switches on its own.
 Grasping goes by jaw width (`twin/grasp.py`). An object within 4.5 cm of the
 tool point attaches when the jaws close to its width, stays held a little past
 that, and a rigid one is squeezed out if they close further or slips if they
-are not square to its faces. `observe` reports each object's `size_m` and the
+are not square to its sides. A rigid object's top and bottom do not count (one
+rests on a surface), and at wrist roll 0 the twin's jaws close nearly top to
+bottom, so a rigid object needs the wrist turned about 90 degrees. A refused
+grasp's event names the `set_wrist_roll` angle that squares the jaws, and says
+when the object is turned too far from the arm's heading for any roll to help.
+`observe` also reports the goal box (`scene.goal`) and each object's `in_goal`. `observe` reports each object's `size_m` and the
 `gripper_opening_m`; `set_gripper` takes `opening_m` as well as `position`, and
 its result names what is `holding`. Jaws a person drives shut (trigger, or the
 page's Close button) stop on a rigid object instead.

@@ -63,7 +63,7 @@ from xbox_soarm_teleop.twin.actions import (
 )
 from xbox_soarm_teleop.twin.cameras import DEFAULT_SIZE, VIEWS, CameraRig, encode
 from xbox_soarm_teleop.twin.grasp import AssistedGrasp
-from xbox_soarm_teleop.twin.layouts import Layout, layouts_for
+from xbox_soarm_teleop.twin.layouts import GOALS, Layout, layouts_for
 from xbox_soarm_teleop.twin.session_log import SessionLog
 
 ARM_JOINT_NAMES = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
@@ -860,6 +860,27 @@ class TwinService:
         joints = self.sim.get_joint_positions_deg()
         ik = getattr(self.kinematics, "last_ik_result", None)
         step = self.last_step
+        goal = GOALS.get(self.sim.scene)
+        objects = {}
+        for name, xyz in self.grasp.positions().items():
+            entry = {
+                "xyz_m": [round(float(v), 4) for v in xyz],
+                "size_m": [round(float(v), 4) for v in self.grasp.size(name)],
+                "attached": name == self.grasp.attached,
+                "off_table": self.table_top_z is not None
+                and float(xyz[2]) < self.table_top_z - OFF_TABLE_MARGIN_M,
+            }
+            if goal is not None:
+                entry["in_goal"] = name != self.grasp.attached and goal.holds(
+                    xyz, self.grasp.half_extents_world(name)
+                )
+            objects[name] = entry
+        scene = {
+            "name": self.layout.name if self.layout is not None else self.sim.scene,
+            "objects": objects,
+        }
+        if goal is not None:
+            scene["goal"] = goal.summary()
         observation = Observation(
             frame=self.frame,
             sim_time_s=round(self.now_s, 6),
@@ -880,19 +901,7 @@ class TwinService:
             ),
             limit=step.limit if step is not None else "",
             workspace=self.workspace_bounds,
-            scene={
-                "name": self.layout.name if self.layout is not None else self.sim.scene,
-                "objects": {
-                    name: {
-                        "xyz_m": [round(float(v), 4) for v in xyz],
-                        "size_m": [round(float(v), 4) for v in self.grasp.size(name)],
-                        "attached": name == self.grasp.attached,
-                        "off_table": self.table_top_z is not None
-                        and float(xyz[2]) < self.table_top_z - OFF_TABLE_MARGIN_M,
-                    }
-                    for name, xyz in self.grasp.positions().items()
-                },
-            },
+            scene=scene,
             control={
                 "stop_latched_by": self.stop_latched_by,
                 "human_in_control": self._human_in_control(self.now_s),

@@ -63,14 +63,23 @@ Motion tools wait until the move finishes (pass wait=false to return early)
 and report SUCCEEDED, or FAILED with a reason such as workspace_bound,
 out_of_reach or joint_limit. Moves outside the workspace are rejected.
 
-Grasping is assisted: move the tool point to within about 4 cm of an object's
-center, then close the jaws to fit it. `observe` gives each object's `size_m`
-and the current `gripper_opening_m`; set_gripper(opening_m=...) closes to a
-gap in meters. Closed to the object's width or slightly less, it is held and
-the result's `holding` names it. Closed much further, a rigid object is
-squeezed out and falls; open the gripper before trying again. A rigid object
-must also sit square between the jaws (set_wrist_roll turns them).
-set_gripper(position=0) releases.
+Grasping is assisted: bring the tool point within about 4 cm of an object's
+center, then close the jaws to fit it. Come down from above and stop about
+2.5 cm above its center: lower and the gripper shoves a rigid object away.
+`observe` gives each object's `size_m` and the current `gripper_opening_m`;
+set_gripper(opening_m=...) closes to a gap in meters. Closed to the object's
+width or slightly less, it is held and the result's `holding` names it. Closed
+much further, a rigid object is squeezed out and falls.
+
+At wrist roll 0 the jaws close top to bottom. A rigid object must be gripped
+by its sides, so turn the wrist first: set_wrist_roll(angle_rad=-1.5) or
+(1.5) puts the jaws side to side. If a grasp is refused, the event says which
+roll to use; open the gripper before trying again. A soft object takes any
+closure at any roll. set_gripper(position=0) releases.
+
+`observe` also gives the goal box (`scene.goal`: the center of its floor and
+its inside size) and, for each object, `in_goal`. Release an object a few
+centimeters above the box floor, inside its walls, and check `in_goal`.
 
 Scenes differ in how forgiving their objects are. `list_scenes` shows them,
 easiest first, and `load_scene` switches (it homes the arm and swaps the

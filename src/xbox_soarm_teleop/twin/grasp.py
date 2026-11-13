@@ -11,9 +11,13 @@ How far the jaws close matters, as it does on the real arm:
 - closed to its width, or a little past (``squeeze_m``): held;
 - closed further on a rigid object: it is squeezed out and falls.
 
-A rigid object must also sit square between the jaws (``align_tol_deg``).
-A soft object (one the arm does not collide with, like the bean bag) takes
-any closure and any angle.
+A rigid object must be gripped by two of its side faces, square between the
+jaws (``align_tol_deg``). Its top and bottom do not count: one of them rests
+on the table or box floor, where the lower jaw cannot reach, as on the real
+arm. At wrist roll 0 the twin's jaws close nearly top to bottom, so a rigid
+object needs the wrist turned about 90 degrees; a refused grasp says which
+roll would square the jaws. A soft object (one the arm does not collide with,
+like the bean bag) takes any closure and any angle.
 
 Only the act of closing grabs: jaws already closed past an object's width
 push it without picking it up, and re-arm once they open wider than it.
@@ -54,7 +58,8 @@ class GraspSettings:
         rigid_squeeze_m: How far past its width the jaws may close on a rigid
             object before it pops out. Measure: reading at slip, TPU jaw on.
         rigid_align_tol_deg: How far off square the jaws may be to a rigid
-            object's faces. Measure: largest wrist-roll error that still holds.
+            object's sides; closing jaws turn a slightly skewed cube square.
+            Measure: largest skew that still holds.
         radius_m: Maximum tool-to-object-center distance for attaching.
     """
 
@@ -63,7 +68,7 @@ class GraspSettings:
     touch_margin_m: float = 0.003
     release_margin_m: float = 0.005
     rigid_squeeze_m: float = 0.006
-    rigid_align_tol_deg: float = 25.0
+    rigid_align_tol_deg: float = 30.0
     radius_m: float = 0.045
 
     def jaw_opening_m(self, gripper: float) -> float:
@@ -109,6 +114,7 @@ class AssistedGrasp:
         self.radius_m = self.settings.radius_m
         self._gripper_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "gripper_link")
         self._jaw_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "moving_jaw_so101_v1_link")
+        self._roll_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "wrist_roll")
         self.objects: dict[str, _FreeObject] = {}
         for body_id in range(model.nbody):
             jnt = model.body_jntadr[body_id]
@@ -162,6 +168,10 @@ class AssistedGrasp:
         """Full extents of an object along its own axes (m)."""
         return self.objects[name].size_m.copy()
 
+    def half_extents_world(self, name: str) -> np.ndarray:
+        """Half the object's extent along the world x, y and z axes (m), as it is turned now."""
+        return np.abs(self._rotation(name)) @ (self.objects[name].size_m / 2.0)
+
     def closing_axis(self) -> np.ndarray | None:
         """Direction the jaws close along (world frame), or None without a gripper."""
         if self._gripper_body < 0 or self._jaw_body < 0:
@@ -172,22 +182,84 @@ class AssistedGrasp:
         norm = float(np.linalg.norm(axis))
         return axis / norm if norm > 1e-9 else None
 
+    def _rotation(self, name: str) -> np.ndarray:
+        obj = self.objects[name]
+        rotation = np.zeros(9)
+        mujoco.mju_quat2Mat(rotation, self.data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7])
+        return rotation.reshape(3, 3)
+
+    def grip_faces(self, name: str) -> list[int]:
+        """The object's axes whose faces the jaws may grip.
+
+        All three for a soft object; for a rigid one, the two axes that lie
+        most nearly level (its top and bottom face the surface it rests on).
+        """
+        if self.objects[name].soft:
+            return [0, 1, 2]
+        upright = int(np.argmax(np.abs(self._rotation(name)[2, :])))
+        return [axis for axis in range(3) if axis != upright]
+
     def fit(self, name: str) -> tuple[float, float]:
         """How an object sits between the jaws now: (width in m, degrees off square).
 
-        The width is the object's extent along whichever of its axes the jaws
-        most nearly close along.
+        The width is the object's extent along whichever of its grip axes
+        (:meth:`grip_faces`) the jaws most nearly close along.
         """
         obj = self.objects[name]
         axis = self.closing_axis()
+        faces = self.grip_faces(name)
         if axis is None:
-            return float(obj.size_m.min()), 0.0
-        rotation = np.zeros(9)
-        mujoco.mju_quat2Mat(rotation, self.data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7])
-        along = np.abs(rotation.reshape(3, 3).T @ axis)
-        face = int(np.argmax(along))
+            return float(min(obj.size_m[i] for i in faces)), 0.0
+        along = np.abs(self._rotation(name).T @ axis)
+        face = max(faces, key=lambda i: along[i])
         off_square = math.degrees(math.acos(min(1.0, float(along[face]))))
         return float(obj.size_m[face]), off_square
+
+    def squaring_roll(self, name: str) -> float | None:
+        """Wrist roll (rad) that would square the jaws to the object, or None if unknown.
+
+        Turns the closing axis about the wrist-roll axis onto the grip face it
+        can square up to best, by the smallest turn within the joint's range
+        (the jaws are the same either way round, so half a turn is a second choice).
+        """
+        axis = self.closing_axis()
+        if axis is None or self._roll_joint < 0:
+            return None
+        joint = self._roll_joint
+        roll_axis = self.data.xaxis[joint] / np.linalg.norm(self.data.xaxis[joint])
+        current = float(self.data.qpos[self.model.jnt_qposadr[joint]])
+        low, high = (float(v) for v in self.model.jnt_range[joint])
+        rotation = self._rotation(name)
+        axis = axis - roll_axis * float(axis @ roll_axis)  # the part the roll can turn
+        if np.linalg.norm(axis) < 1e-6:
+            return None
+        axis = axis / np.linalg.norm(axis)
+        # The face the turned jaws can square up to best is the one whose
+        # direction lies closest to the plane the wrist turns them in.
+        face = min(self.grip_faces(name), key=lambda i: abs(float(rotation[:, i] @ roll_axis)))
+        normal = rotation[:, face]
+        target = normal - roll_axis * float(normal @ roll_axis)
+        if np.linalg.norm(target) < 1e-6:
+            return None
+        target = target / np.linalg.norm(target)
+        best = None
+        for direction in (target, -target):  # the jaws are the same either way round
+            turn = math.atan2(float(np.cross(axis, direction) @ roll_axis), float(axis @ direction))
+            for roll in (current + turn, current + turn + 2 * math.pi, current + turn - 2 * math.pi):
+                if low <= roll <= high and (best is None or abs(roll - current) < abs(best - current)):
+                    best = roll
+        return best
+
+    def best_square_deg(self, name: str) -> float | None:
+        """Least the jaws can be off square to the object by turning the wrist alone."""
+        if self._roll_joint < 0:
+            return None
+        roll_axis = self.data.xaxis[self._roll_joint] / np.linalg.norm(
+            self.data.xaxis[self._roll_joint]
+        )
+        rotation = self._rotation(name)
+        lean = min(abs(float(rotation[:, i] @ roll_axis)) for i in self.grip_faces(name))
+        return math.degrees(math.asin(min(1.0, lean)))
 
     def hold_limit(self) -> float | None:
         """Gripper position at which jaws driven shut stop on a held rigid object.
@@ -235,7 +307,19 @@ class AssistedGrasp:
             return events
         self._armed = False
         if not obj.soft and off_square > cfg.rigid_align_tol_deg:
-            events.append(f"{nearest} slipped: the jaws are {off_square:.0f} deg off square to it")
+            hint = ""
+            roll = self.squaring_roll(nearest)
+            if roll is not None:
+                hint = f"; open, then try set_wrist_roll(angle_rad={roll:.2f})"
+                best = self.best_square_deg(nearest)
+                if best is not None and best > cfg.rigid_align_tol_deg:
+                    hint += (
+                        f" (even then about {best:.0f} deg off: it is turned too far"
+                        " from the way the arm faces it)"
+                    )
+            events.append(
+                f"{nearest} slipped: the jaws are {off_square:.0f} deg off square to its sides{hint}"
+            )
             return events
         self.attached = nearest
         self._held_width = width

@@ -18,8 +18,6 @@ import sys
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-GOAL_XY = (0.29, 0.13)
-
 
 async def run(url: str, image_path: str | None) -> bool:
     async with streamable_http_client(url) as (read, write):
@@ -31,27 +29,32 @@ async def run(url: str, image_path: str | None) -> bool:
                 return json.loads(result.content[0].text)
 
             await tool("reset_scene")
-            name, state = next(iter((await tool("observe"))["scene"]["objects"].items()))
+            observed = await tool("observe")
+            thing, state = next(iter(observed["scene"]["objects"].items()))
             cube = state["xyz_m"]
-            width = min(state["size_m"])  # the jaws close on the object from above
+            width = min(state["size_m"][:2])  # across its sides
+            goal = observed["scene"]["goal"]["center_xyz_m"]
             steps = [
                 ("move_to", {"x": cube[0], "y": cube[1], "z": cube[2] + 0.06}),
+                ("set_wrist_roll", {"angle_rad": -1.5}),  # jaws side to side
                 ("move_to", {"x": cube[0], "y": cube[1], "z": cube[2] + 0.025}),
                 ("set_gripper", {"opening_m": width}),
-                ("move_to", {"x": GOAL_XY[0], "y": GOAL_XY[1], "z": 0.22}),
+                ("move_to", {"x": goal[0], "y": goal[1], "z": 0.22}),
                 ("set_gripper", {"position": 0.0}),
                 ("home", {}),
             ]
             for name, args in steps:
                 result = await tool(name, **args)
                 state = result.get("action", {}).get("state", result.get("reason"))
-                print(f"{name:12s} {state}")
+                print(f"{name:14s} {state}")
                 if state != "SUCCEEDED":
                     return False
-            await asyncio.sleep(1.0)  # let the cube settle
-            final = (await tool("observe"))["scene"]["objects"][name]["xyz_m"]
-            in_box = abs(final[0] - GOAL_XY[0]) < 0.03 and abs(final[1] - GOAL_XY[1]) < 0.03
-            print(f"{name} at {final}: {'in the goal box' if in_box else 'NOT in the goal box'}")
+            await asyncio.sleep(1.0)  # let it settle
+            final = (await tool("observe"))["scene"]["objects"][thing]
+            in_box = final["in_goal"]
+            print(
+                f"{thing} at {final['xyz_m']}: {'in the goal box' if in_box else 'NOT in the goal box'}"
+            )
             image = (await session.call_tool("camera", {"view": "overhead"})).content[0]
             if image_path:
                 with open(image_path, "wb") as handle:
