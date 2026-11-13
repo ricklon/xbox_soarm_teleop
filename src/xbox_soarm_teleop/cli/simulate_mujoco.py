@@ -138,6 +138,16 @@ PICK_PLACE_CUBE_START = np.array([0.34, -0.03, PICK_PLACE_TABLE_HEIGHT + PICK_PL
 PICK_PLACE_GOAL_CENTER = np.array([0.29, 0.13, PICK_PLACE_TABLE_HEIGHT + 0.001], dtype=float)
 PICK_PLACE_GOAL_INNER_HALF_EXTENTS = np.array([0.045, 0.045, 0.03], dtype=float)
 PICK_PLACE_GOAL_WALL_THICKNESS = 0.005
+# A soft object for first grasps. It is a rigid box to the physics, but the arm
+# passes through it instead of pushing it (see ``SOFT_OBJECT_COLLISION_BIT``),
+# the way a real bean bag gives way to a jaw.
+BEAN_BAG_NAME = "bean_bag"
+BEAN_BAG_HALF_EXTENTS = np.array([0.03, 0.025, 0.012], dtype=float)
+BEAN_BAG_MASS = 0.03
+BEAN_BAG_START = np.array([0.26, -0.03, PICK_PLACE_TABLE_HEIGHT + BEAN_BAG_HALF_EXTENTS[2]], dtype=float)
+# Soft objects collide only with geoms that carry this bit: the table, the goal
+# box and the floor, but not the robot (whose geoms keep MuJoCo's default bit 1).
+SOFT_OBJECT_COLLISION_BIT = 2
 
 
 class StackChallenge:
@@ -629,6 +639,7 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
     table.pos = PICK_PLACE_TABLE_CENTER.tolist()
     table.rgba = [0.60, 0.60, 0.60, 1.0]
     table.friction = [1.1, 0.02, 0.001]
+    table.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
 
     cube_body = spec.worldbody.add_body()
     cube_body.name = "pick_cube"
@@ -641,6 +652,20 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
     cube_geom.mass = PICK_PLACE_CUBE_MASS
     cube_geom.rgba = [0.85, 0.25, 0.20, 1.0]
     cube_geom.friction = [1.1, 0.02, 0.001]
+
+    bag_body = spec.worldbody.add_body()
+    bag_body.name = BEAN_BAG_NAME
+    bag_body.pos = BEAN_BAG_START.tolist()
+    bag_body.add_freejoint()
+    bag_geom = bag_body.add_geom()
+    bag_geom.name = f"{BEAN_BAG_NAME}_geom"
+    bag_geom.type = mujoco.mjtGeom.mjGEOM_BOX
+    bag_geom.size = BEAN_BAG_HALF_EXTENTS.tolist()
+    bag_geom.mass = BEAN_BAG_MASS
+    bag_geom.rgba = [0.20, 0.40, 0.85, 1.0]
+    bag_geom.friction = [1.5, 0.05, 0.002]
+    bag_geom.contype = SOFT_OBJECT_COLLISION_BIT
+    bag_geom.conaffinity = SOFT_OBJECT_COLLISION_BIT
 
     goal_parts = [
         ("goal_base", [0.0, 0.0, 0.0], [*PICK_PLACE_GOAL_INNER_HALF_EXTENTS[:2], 0.004]),
@@ -673,7 +698,7 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
         geom.size = size
         geom.rgba = [0.10, 0.65, 0.35, 0.85]
         geom.contype = 1
-        geom.conaffinity = 1
+        geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
 
 
 def build_stack_scene_model(urdf_path: str, world: str = "plain") -> mujoco.MjModel:
@@ -708,6 +733,9 @@ def load_model_with_cameras(
         _add_stack_scene(spec, add_floor=not world_has_floor)
     elif scene == "pick_place_basic":
         _add_pick_place_scene(spec, add_floor=not world_has_floor)
+        for geom in spec.geoms:
+            if geom.type == mujoco.mjtGeom.mjGEOM_PLANE:  # soft objects land on any floor
+                geom.conaffinity = int(geom.conaffinity) | SOFT_OBJECT_COLLISION_BIT
     if mesh_cell_mm <= 0:
         return spec.compile()
 

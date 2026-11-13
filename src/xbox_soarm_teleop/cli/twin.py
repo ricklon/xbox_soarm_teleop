@@ -5,7 +5,7 @@ viewer and offscreen cameras. The Xbox pad is read by a helper process on
 macOS (the viewer owns the OS main thread there), and the MCP server listens
 on localhost in a background thread.
 
-    uv run soarm-twin                      # pick-and-place scene, viewer, Xbox, MCP
+    uv run soarm-twin                      # pick-and-place scene (bean bag), viewer, Xbox, MCP
     uv run soarm-twin --scene stack
     uv run soarm-twin --headless --no-controller   # agent only
 
@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-SCENES = ("pick_place_basic", "stack", "default")
+SCENES = ("pick_place_easy", "pick_place_basic", "stack", "default")
 
 
 def _wait_for_port(host: str, port: int, timeout_s: float = 10.0) -> bool:
@@ -47,7 +47,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="soarm-twin", description="SO-ARM101 digital twin for Xbox and AI agents."
     )
-    parser.add_argument("--scene", choices=SCENES, default="pick_place_basic")
+    parser.add_argument(
+        "--scene",
+        choices=SCENES,
+        default="pick_place_easy",
+        help="pick_place_easy: a soft bean bag (default). pick_place_basic: a rigid cube, "
+        "harder to grasp. Agents can switch between the two with load_scene.",
+    )
     parser.add_argument("--world", default=None, help="Lighting/floor preset (see simulate-mujoco)")
     parser.add_argument("--port", type=int, default=8765, help="MCP server port (localhost)")
     parser.add_argument("--no-mcp", action="store_true", help="Do not start the MCP server")

@@ -96,6 +96,8 @@ def test_tools_listed(twin_url):
         "camera",
         "wait_for_action",
         "cancel_action",
+        "list_scenes",
+        "load_scene",
     } <= tools
     assert "Assisted" in (init.instructions or "") or "assisted" in (init.instructions or "")
 
@@ -147,3 +149,22 @@ def test_stop_is_not_blocked_by_a_waiting_move(twin_url):
     assert payload(call(url, "reset_stop", {"confirm": True}))["released"] is True
     assert payload(call(url, "home"))["action"]["state"] == "SUCCEEDED"
     assert service.observe()["stop_latched"] is False
+
+
+def test_agent_lists_and_loads_scenes(twin_url):
+    url, service = twin_url
+    scenes = payload(call(url, "list_scenes"))["scenes"]
+    assert [(scene["name"], scene["current"]) for scene in scenes] == [
+        ("pick_place_easy", False),
+        ("pick_place_basic", True),
+    ]
+    loaded = payload(call(url, "load_scene", {"name": "pick_place_easy"}))
+    assert loaded["ok"] is True and loaded["scene"]["objects"] == ["bean_bag"]
+    assert list(payload(call(url, "observe"))["scene"]["objects"]) == ["bean_bag"]
+
+    unknown = payload(call(url, "load_scene", {"name": "moon_base"}))
+    assert unknown["ok"] is False and unknown["reason"] == "invalid_request"
+    assert "pick_place_easy" in unknown["detail"]
+
+    assert payload(call(url, "load_scene", {"name": "pick_place_basic"}))["ok"] is True
+    assert list(service.observe()["scene"]["objects"]) == ["pick_cube"]

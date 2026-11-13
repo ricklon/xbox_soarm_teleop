@@ -1,11 +1,11 @@
-"""Smoke-test a running twin over MCP: pick the cube into the goal box.
+"""Smoke-test a running twin over MCP: pick the object into the goal box.
 
 Start the twin first (in another terminal):
     uv run soarm-twin
 Then:
     uv run python scripts/twin_smoke.py [--url http://127.0.0.1:8765/mcp] [--image out.jpg]
 
-Exits 0 when the cube ends up in the goal box and a camera image was returned.
+Exits 0 when the object (bean bag or cube) ends up in the goal box and a camera image was returned.
 Use it to check a student laptop (viewer, cameras and MCP together).
 """
 
@@ -31,7 +31,8 @@ async def run(url: str, image_path: str | None) -> bool:
                 return json.loads(result.content[0].text)
 
             await tool("reset_scene")
-            cube = (await tool("observe"))["scene"]["objects"]["pick_cube"]["xyz_m"]
+            name, state = next(iter((await tool("observe"))["scene"]["objects"].items()))
+            cube = state["xyz_m"]
             steps = [
                 ("move_to", {"x": cube[0], "y": cube[1], "z": cube[2] + 0.06}),
                 ("move_to", {"x": cube[0], "y": cube[1], "z": cube[2] + 0.025}),
@@ -47,9 +48,9 @@ async def run(url: str, image_path: str | None) -> bool:
                 if state != "SUCCEEDED":
                     return False
             await asyncio.sleep(1.0)  # let the cube settle
-            final = (await tool("observe"))["scene"]["objects"]["pick_cube"]["xyz_m"]
+            final = (await tool("observe"))["scene"]["objects"][name]["xyz_m"]
             in_box = abs(final[0] - GOAL_XY[0]) < 0.03 and abs(final[1] - GOAL_XY[1]) < 0.03
-            print(f"cube at {final}: {'in the goal box' if in_box else 'NOT in the goal box'}")
+            print(f"{name} at {final}: {'in the goal box' if in_box else 'NOT in the goal box'}")
             image = (await session.call_tool("camera", {"view": "overhead"})).content[0]
             if image_path:
                 with open(image_path, "wb") as handle:

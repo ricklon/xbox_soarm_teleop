@@ -34,7 +34,13 @@ and report SUCCEEDED, or FAILED with a reason such as workspace_bound,
 out_of_reach or joint_limit. Moves outside the workspace are rejected.
 
 Grasping is assisted: move the tool point to within about 4 cm of an object's
-center, then set_gripper(1.0) to grab it; set_gripper(0.0) releases it.
+center, then set_gripper(1.0) to grab it; set_gripper(0.0) releases it. Check
+`observe` afterwards: the object reports `attached` only if the grab worked.
+
+Scenes differ in how forgiving their objects are. `list_scenes` shows them,
+easiest first, and `load_scene` switches (it homes the arm and swaps the
+objects). A soft object gives way to the gripper; a rigid one is pushed away
+if the gripper touches it before it closes.
 
 A human with an Xbox controller can take over at any time (reason
 `preempted`/`human`); wait until they are done. If the stop is latched, motion
@@ -219,6 +225,19 @@ def build_mcp_server(
         """Home the arm and put every object back where it started."""
         ok, result = run_command(twin(ctx).reset_scene(client_id=client_of(ctx)))
         return {"ok": True} if ok else result
+
+    @server.tool()
+    def list_scenes(ctx: Context | None = None) -> dict[str, Any]:
+        """Scenes you can load, easiest first: the objects in each, how hard
+        they are to grasp, and which scene is current."""
+        return {"ok": True, "scenes": twin(ctx).list_scenes()}
+
+    @server.tool()
+    def load_scene(name: str, ctx: Context | None = None) -> dict[str, Any]:
+        """Switch to another scene from list_scenes. Homes the arm, opens the
+        gripper and replaces the objects on the table."""
+        ok, result = run_command(twin(ctx).load_scene(name, client_id=client_of(ctx)))
+        return {"ok": True, "scene": result} if ok else result
 
     @server.tool()
     def release_control(ctx: Context | None = None) -> dict[str, Any]:

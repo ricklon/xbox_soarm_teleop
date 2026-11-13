@@ -292,6 +292,15 @@ Thin mapping of the interface; names indicative only.
 | `stop` | `stop()` | **no** |
 | `reset_stop` | `reset_stop(confirm=True)` | yes |
 | `reset_scene` | `reset_scene()` | yes |
+| `list_scenes` | `list_scenes()` | no |
+| `load_scene` | `load_scene(name)` | yes |
+
+Scenes of one compiled model are *layouts* (`twin/layouts.py`): the model holds
+every object, and a layout says which are on the table. `pick_place_easy` has a
+bean bag the arm passes through instead of pushing (a rigid box to the physics,
+but it does not collide with the robot); `pick_place_basic` has the rigid cube,
+which the gripper knocks away if it touches it before closing. Switching never
+recompiles, so each hub room switches on its own.
 
 Resources: the current observation, the workspace/limits in force, and the
 session log path. Tool descriptions must state units, frames and bounds, so an
