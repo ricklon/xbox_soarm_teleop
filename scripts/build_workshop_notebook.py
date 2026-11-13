@@ -207,8 +207,9 @@ then comes straight down onto it.
 At wrist roll 0 the jaws close top to bottom, so the program turns the wrist
 first (`set_wrist_roll(angle_rad=-1.5)`) to put them side to side.
 
-`observe` tells you each object's `size_m`, and `set_gripper(opening_m=...)`
-closes to a gap in meters. The bean bag is forgiving. A rigid object like the
+`observe` tells you each object's `size_m`, and its `grip_width_m`: its size
+across the jaws as they are turned now. `set_gripper(opening_m=...)` closes to
+a gap in meters. The bean bag is forgiving. A rigid object like the
 cube (scene `pick_place_basic`) is not: bump it on the way down and it slides
 away; close much past its width and it is squeezed out.
 
@@ -240,11 +241,13 @@ async def jaws_over(x: float, y: float) -> None:
 async def pick_and_place() -> None:
     await arm("reset_scene")
     name, thing = the_object(await arm("observe"))
-    at, width = thing["xyz_m"], min(thing["size_m"][:2])   # across its sides
+    at = thing["xyz_m"]
 
-    await step("set_gripper", opening_m=width + 0.03)                # 1. open a bit wider than it
-    await step("move_to", x=at[0], y=at[1], z=at[2] + 0.06)          # 2. above the object
+    await step("move_to", x=at[0], y=at[1], z=at[2] + 0.06)          # 1. above the object
     await step("set_wrist_roll", angle_rad=-1.5)                     #    jaws side to side
+    _, thing = the_object(await arm("observe"))
+    width = thing["grip_width_m"]                                    # its size across the jaws
+    await step("set_gripper", opening_m=width + 0.03)                # 2. open a bit wider than it
     await jaws_over(at[0], at[1])                                    # 3. jaws centered over it
     jaw = (await arm("observe"))["jaw_center_xyz_m"]
     await step("move_by", dx=0.0, dy=0.0, dz=max(at[2], 0.14) - jaw[2])  # 4. straight down

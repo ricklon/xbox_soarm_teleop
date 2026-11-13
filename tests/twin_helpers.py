@@ -21,16 +21,16 @@ def jaws_around(run, observe, name: str, wrist: float = -1.5) -> None:
     def obj():
         return observe()["scene"]["objects"][name]
 
-    width = float(min(obj()["size_m"][:2]))
+    x, y, z = obj()["xyz_m"]
+    run({"type": "move_ee_to", "params": {"xyz_m": [x, y, z + 0.06]}})
+    run({"type": "set_wrist_roll", "params": {"angle_rad": wrist}})
+    width = obj()["grip_width_m"]
     run(
         {
             "type": "set_gripper",
             "params": {"position": GraspSettings().gripper_for_opening(width + 0.03)},
         }
     )
-    x, y, z = obj()["xyz_m"]
-    run({"type": "move_ee_to", "params": {"xyz_m": [x, y, z + 0.06]}})
-    run({"type": "set_wrist_roll", "params": {"angle_rad": wrist}})
     for _ in range(2):
         jaw, at = observe()["jaw_center_xyz_m"], obj()["xyz_m"]
         run({"type": "move_ee_by", "params": {"dxyz_m": [at[0] - jaw[0], at[1] - jaw[1], 0.0]}})

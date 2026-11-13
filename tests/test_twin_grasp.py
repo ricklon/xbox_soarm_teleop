@@ -214,20 +214,61 @@ def test_a_cube_turned_too_far_says_so(twin):
     assert any("turned too far" in event for event in events(twin))
 
 
-def test_the_tool_point_above_the_cube_misses_and_says_how_far_to_move(twin):
+def follow(twin, event):
+    """Do what a "missed" event says: open as told, then each move_by in turn."""
+    import re
+
+    opening = float(re.search(r"opening_m=([-\d.]+)", event).group(1))
+    grip(twin, SETTINGS.gripper_for_opening(opening))
+    for move in re.findall(r"move_by\(dx=([-\d.]+), dy=([-\d.]+), dz=([-\d.]+)\)", event):
+        move_by(twin, [float(v) for v in move])
+
+
+@pytest.mark.parametrize("wrist", [SIDEWAYS, -SIDEWAYS])
+@pytest.mark.parametrize("dz", [0.0, 0.025, 0.05])
+def test_the_tool_point_above_the_cube_misses_and_says_how_to_fix_it(twin, wrist, dz):
     """The tool point is the fixed jaw's face: putting it over the cube leaves the
-    cube beside the pads. The refusal gives the move that centers the jaws."""
-    tool_over(twin)
+    cube beside the pads. Doing what the refusal says centers the jaws on it."""
+    tool_over(twin, wrist=wrist, dz=dz)
     grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
     assert twin.grasp.attached is None
     missed = [event for event in events(twin) if "missed" in event]
-    assert missed and "move_by(dx=" in missed[-1]
-    numbers = missed[-1].split("move_by(")[1].split(")")[0]
-    shift = [float(part.split("=")[1]) for part in numbers.split(", ")]
-    grip(twin, 0.0)
-    move_by(twin, shift)
+    assert missed and "set_gripper(opening_m=" in missed[-1] and "move_by(dx=" in missed[-1]
+    follow(twin, missed[-1])
     grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
     assert twin.grasp.attached == "pick_cube"
+    obs = twin.observe()
+    held = np.array(obs["scene"]["objects"]["pick_cube"]["xyz_m"])
+    assert np.linalg.norm(held - obs["jaw_center_xyz_m"]) < 0.006
+
+
+def test_a_cube_past_the_fingertips_is_not_held(twin):
+    """Held only by the last few millimetres of pad, as a live run once had it."""
+    over(twin)
+    data, body = twin.sim.data, twin.grasp._gripper_body
+    rotation = data.xmat[body].reshape(3, 3)
+    tips = data.xpos[body] + rotation @ np.array([0.012, 0.0, -0.118])  # 1.4 cm past the tips
+    twin.grasp.place("pick_cube", tips)
+    mujoco.mj_forward(twin.sim.model, twin.sim.data)
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    assert twin.grasp.attached is None
+    assert "missed" in events(twin)[-2]
+
+
+def test_closing_near_nothing_says_where_the_object_is(twin):
+    xyz = twin.grasp.position("pick_cube")
+    move(twin, xyz + [-0.06, 0.04, 0.06])
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    missed = [event for event in events(twin) if "missed (" in event]
+    assert missed and "cm away" in missed[-1] and "move_by(dx=" in missed[-1]
+
+
+def test_grip_width_is_the_size_across_the_jaws():
+    twin = build_twin(scene="pick_place_easy", with_controller=False)
+    twin.tick()
+    assert twin.observe()["scene"]["objects"]["bean_bag"]["grip_width_m"] == pytest.approx(0.024)
+    roll(twin, SIDEWAYS)  # jaws side to side: across the bag's 5 cm, not its 6 cm
+    assert twin.observe()["scene"]["objects"]["bean_bag"]["grip_width_m"] == pytest.approx(0.05)
 
 
 @pytest.mark.parametrize("wrist", [SIDEWAYS, -SIDEWAYS])

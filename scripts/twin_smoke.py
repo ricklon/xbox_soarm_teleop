@@ -32,7 +32,6 @@ async def run(url: str, image_path: str | None) -> bool:
             observed = await tool("observe")
             thing, state = next(iter(observed["scene"]["objects"].items()))
             cube = state["xyz_m"]
-            width = min(state["size_m"][:2])  # across its sides
             goal = observed["scene"]["goal"]["center_xyz_m"]
 
             async def do(name: str, **args) -> dict:
@@ -52,9 +51,11 @@ async def run(url: str, image_path: str | None) -> bool:
                 return result
 
             try:
-                await do("set_gripper", opening_m=width + 0.03)
                 await do("move_to", x=cube[0], y=cube[1], z=cube[2] + 0.06)
                 await do("set_wrist_roll", angle_rad=-1.5)  # jaws side to side
+                # Its size across the jaws as they are turned now.
+                width = (await tool("observe"))["scene"]["objects"][thing]["grip_width_m"]
+                await do("set_gripper", opening_m=width + 0.03)
                 jaw = (await jaws_over(cube[0], cube[1]))["jaw_center_xyz_m"]
                 await do("move_by", dx=0.0, dy=0.0, dz=max(cube[2], 0.14) - jaw[2])
                 held = await do("set_gripper", opening_m=width)

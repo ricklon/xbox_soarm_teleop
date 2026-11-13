@@ -868,6 +868,8 @@ class TwinService:
             entry = {
                 "xyz_m": [round(float(v), 4) for v in xyz],
                 "size_m": [round(float(v), 4) for v in self.grasp.size(name)],
+                # Its size across the jaws as the gripper is turned now: close to this.
+                "grip_width_m": round(self.grasp.fit(name)[0], 4),
                 "attached": name == self.grasp.attached,
                 "off_table": self.table_top_z is not None
                 and float(xyz[2]) < self.table_top_z - OFF_TABLE_MARGIN_M,

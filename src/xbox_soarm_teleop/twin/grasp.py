@@ -53,8 +53,19 @@ JAW_PAD_TOP_Z = -0.065
 # Where an object's center goes: toward the tips, so a 4 cm object clears the palm.
 JAW_GRIP_Z = -0.092
 JAW_PAD_HALF_WIDTH_M = 0.009
-# How much of an object a pad must cover, across and along the finger (m).
-JAW_MIN_OVERLAP_M = 0.012
+# How far an object's center may be off the line between the pads, across the
+# finger (pads 1.8 cm wide), and still be held (m). A soft object squashes into
+# the jaws, so it gets more. Along the finger it must be no further out than
+# the fingertips.
+JAW_ACROSS_TOL_M = 0.010
+JAW_ACROSS_TOL_SOFT_M = 0.013
+# Closing within this distance of an object (jaw center to its center, m)
+# without catching it says how to move to it; further off, nothing is said.
+JAW_HINT_RANGE_M = 0.15
+# How high a correcting move lifts the jaws before going across (m).
+JAW_CLEARANCE_M = 0.05
+# How much wider than an object to open the jaws before coming down on it (m).
+JAW_APPROACH_MARGIN_M = 0.03
 
 
 @dataclass(frozen=True)
@@ -310,21 +321,23 @@ class AssistedGrasp:
     def jaw_miss(self, name: str) -> np.ndarray | None:
         """How far (world, m) to move the tool to center the jaws on an object.
 
-        None when it already lies between the pads (or there is no gripper).
+        The jaws are taken as opened to its width plus ``JAW_APPROACH_MARGIN_M``,
+        the opening to come down with. None when it already lies between the
+        pads (or there is no gripper).
         """
         if self._gripper_body < 0:
             return None
         origin, rotation = self._gripper_frame()
         center = rotation.T @ (self.position(name) - origin)
-        half = np.abs(rotation.T @ self._rotation(name)) @ (self.objects[name].size_m / 2.0)
-        across = abs(center[1]) <= half[1] + JAW_PAD_HALF_WIDTH_M - JAW_MIN_OVERLAP_M
-        overlap = min(center[2] + half[2], JAW_PAD_TOP_Z) - max(center[2] - half[2], JAW_PAD_TIP_Z)
-        along = overlap >= min(JAW_MIN_OVERLAP_M, 2.0 * half[2])
-        inside = JAW_FIXED_FACE_X - 0.003 <= center[0] <= JAW_FIXED_FACE_X + 2.0 * half[0] + 0.02
+        tolerance = JAW_ACROSS_TOL_SOFT_M if self.objects[name].soft else JAW_ACROSS_TOL_M
+        across = abs(center[1]) <= tolerance
+        along = JAW_PAD_TIP_Z <= center[2] <= JAW_PAD_TOP_Z
+        half_width = self.fit(name)[0] / 2.0
+        inside = JAW_FIXED_FACE_X - 0.003 <= center[0] <= JAW_FIXED_FACE_X + 2.0 * half_width + 0.02
         if across and along and inside:
             return None
         width, _ = self.fit(name)
-        target = self.jaw_center(width)
+        target = self.jaw_center(width + JAW_APPROACH_MARGIN_M)
         return self.position(name) - target
 
     def update(self, tool_pos: np.ndarray, gripper: float) -> list[str]:
@@ -356,8 +369,8 @@ class AssistedGrasp:
             name: float(np.linalg.norm(xyz - middle)) for name, xyz in self.positions().items()
         }
         nearest = min(distances, key=distances.get) if distances else None
-        if nearest is None or distances[nearest] > self.radius_m:
-            self._armed = True  # nothing between the jaws: the next close can grab
+        if nearest is None or distances[nearest] > JAW_HINT_RANGE_M:
+            self._armed = True  # nothing near the jaws: the next close can grab
             return events
         obj = self.objects[nearest]
         width, off_square = self.fit(nearest)
@@ -367,7 +380,8 @@ class AssistedGrasp:
         if not self._armed:
             return events
         self._armed = False
-        if not obj.soft and off_square > cfg.rigid_align_tol_deg:
+        near = distances[nearest] <= self.radius_m
+        if near and not obj.soft and off_square > cfg.rigid_align_tol_deg:
             hint = ""
             roll = self.squaring_roll(nearest)
             if roll is not None:
@@ -385,9 +399,18 @@ class AssistedGrasp:
         miss = self.jaw_miss(nearest)
         if miss is not None:
             dx, dy, dz = (round(float(v), 3) + 0.0 for v in miss)
+            away = f" ({distances[nearest] * 100:.0f} cm away)" if not near else ""
+            # Up clear, across, then straight down: jaws moved sideways at its
+            # height would sweep into it and knock it away.
+            down = round(dz - JAW_CLEARANCE_M, 3) + 0.0
+            moves = (
+                f"move_by(dx=0.0, dy=0.0, dz={JAW_CLEARANCE_M}), move_by(dx={dx}, dy={dy}, dz=0.0),"
+                f" then move_by(dx=0.0, dy=0.0, dz={down})"
+            )
+            opening_hint = round(width + JAW_APPROACH_MARGIN_M, 3)
             events.append(
-                f"{nearest} missed: it is not between the jaw pads; open, then"
-                f" move_by(dx={dx}, dy={dy}, dz={dz}) to center the jaws on it"
+                f"{nearest} missed{away}: it is not between the jaw pads; set_gripper("
+                f"opening_m={opening_hint}), then {moves} to center the jaws on it"
             )
             return events
         self.attached = nearest

@@ -321,9 +321,16 @@ then go straight down to its center height (not below z 0.14). Coming in at an
 angle knocks a rigid object away. A held object rides with the gripper,
 keeping its place and turn between the jaws as the wrist moves.
 
+"Between the pads" means the object's center is within 1 cm of the line
+between them across the finger (1.3 cm for a soft object, which squashes into
+the jaws) and no further out than the fingertips. Each object's `grip_width_m`
+is its size across the jaws as the gripper is turned now, the gap to close to.
+
 A refused grasp's event says what to do: the `set_wrist_roll` angle that
 squares the jaws (and when the object is turned too far for any roll to
-help), or `missed` with the `move_by` that centers the jaws on it.
+help), or `missed` with the opening and the moves (up 5 cm, across, straight
+down) that center the jaws on it. A close within 15 cm of an object that
+catches nothing also says `missed`, with how far away it is.
 `observe` also reports the goal box (`scene.goal`) and each object's
 `in_goal`, each object's `size_m` and the `gripper_opening_m`; `set_gripper`
 takes `opening_m` as well as `position`, and its result names what is

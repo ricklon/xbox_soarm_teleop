@@ -36,22 +36,25 @@ out_of_reach or joint_limit. Moves outside the workspace are rejected.
 
 Grasping is assisted: an object is held when the jaws close to its width
 with it between their pads. To pick one up:
-1. set_gripper(opening_m=<its width + 0.03>) and move_to 6 cm above it.
-2. set_wrist_roll(angle_rad=-1.5) (or 1.5): at roll 0 the jaws close top to
-   bottom, and a rigid object must be gripped by its sides.
+1. move_to 6 cm above it, then set_wrist_roll(angle_rad=-1.5) (or 1.5): at
+   roll 0 the jaws close top to bottom, and a rigid object must be gripped by
+   its sides.
+2. observe: the object's `grip_width_m` is its size across the jaws as they
+   are turned now (not always size_m[0]). set_gripper(opening_m=grip_width_m
+   + 0.03).
 3. Center the jaws over it: move_by(dx, dy, dz=0) by the object's x, y minus
-   `jaw_center_xyz_m`; check once more (the gripper tilts a little as it moves).
+   `jaw_center_xyz_m`; do it twice (the gripper tilts a little as it moves).
 4. Go straight down: move_by(dz = object z - jaw center z), but keep the jaw
-   center at z 0.14 or higher (lower, the jaw tips hit the table). Coming in
-   sideways or at an angle knocks a rigid object away.
-5. set_gripper(opening_m=<its width>). The result's `holding` names it.
-`observe` (and every move result) gives `jaw_center_xyz_m`; `observe` gives each
-object's `size_m` and the current `gripper_opening_m`.
+   center at z 0.14 or higher (lower, the jaw tips hit the table). Moving the
+   jaws sideways or at an angle near a rigid object knocks it away.
+5. set_gripper(opening_m=grip_width_m). The result's `holding` names it.
+Every motion result gives `jaw_center_xyz_m` and the last few events.
 Closed a little past the width it still holds; much further, a rigid object is
-squeezed out and falls. A refused grasp's event says what to do: which wrist
-roll squares the jaws, or the move_by that centers them. Open before trying
-again. A soft object takes any closure at any roll. set_gripper(position=0)
-releases. A held object rides at the jaw center, so to drop it somewhere put
+squeezed out and falls. A refused grasp's event says exactly what to do: the
+wrist roll that squares the jaws ("slipped"), or the opening and moves that
+center the jaws on it ("missed"). Do those, in order, then close again. A soft
+object takes any closure at any roll. set_gripper(position=0) releases. A held
+object rides at the jaw center, so to drop it somewhere put
 `jaw_center_xyz_m` over that spot.
 
 `observe` also gives the goal box (`scene.goal`: the center of its floor and
@@ -143,7 +146,7 @@ def build_mcp_server(
             "gripper_opening_m": observation["gripper_opening_m"],
             "jaw_center_xyz_m": observation["jaw_center_xyz_m"],
             "holding": service.grasp.attached,
-            "events": observation["control"]["events"][-3:],
+            "events": observation["control"]["events"][-5:],
         }
 
     def speed_and_timeout(max_speed_m_s: float | None, timeout_s: float | None) -> dict:
