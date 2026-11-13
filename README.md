@@ -156,7 +156,58 @@ Students install nothing.
 uv run soarm-hub --seats 12
 ```
 
-See [Hosting a Remote Workshop](docs/workshop_hosting.md).
+See [Hosting a Remote Workshop](docs/workshop_hosting.md) for the full guide.
+
+### Try the remote workshop
+
+Three stages, each proving more than the last.
+
+**1. On your machine only (two minutes).**
+
+```bash
+uv run soarm-hub --seats 2
+```
+
+Open the instructor link the terminal prints, click **Open** on Arm 1, and
+drive the arm: W/A/S/D across the table, R/F up and down, O/C for the gripper,
+Space to stop. This shows the hub, the student page and the camera pictures
+work.
+
+**2. See what your machine can carry.** Stop the hub first; this starts its own.
+
+```bash
+uv run python scripts/hub_load.py --seats 30
+```
+
+It plays 30 students' pages and prints the pictures per second and the upload
+each one needs.
+
+**3. From outside, with the notebook.** Start a tunnel first, because the hub
+needs to know its address. This uses
+[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/);
+any HTTPS tunnel works.
+
+```bash
+cloudflared tunnel --url http://localhost:8800
+```
+
+Start the hub with the address the tunnel prints:
+
+```bash
+uv run soarm-hub --seats 2 --public-url https://something-random.trycloudflare.com
+```
+
+Then, as a student would:
+
+1. Open a student link on a phone using mobile data and drive the arm.
+2. Follow the notebook link on that page into Google Colab, paste the address
+   and key into the first cell, and run parts 0 to 4. They need no model key.
+3. Run part 5 with a key: Option A for Claude, Option B for a model on
+   OpenRouter or Hugging Face.
+
+Stage 3 has not been run by the project yet: the hub through a tunnel, the
+notebook in Colab and a real model driving the arm are all still to be proven.
+Do it before you invite a class.
 
 ## Supported Commands
 
