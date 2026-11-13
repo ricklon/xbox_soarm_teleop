@@ -79,12 +79,22 @@ other tunnel:
 uv run soarm-hub --seats 12 --public-url https://something-random.trycloudflare.com
 ```
 
-The instructor page opens on this computer's own address
-(`http://127.0.0.1:8800/instructor`) and says which address the student links
-use. Its key is remembered per address, so the same page at the tunnel's
-address, or on another device, starts without it and shows a box asking for
-the instructor link. Click **Copy instructor link** on the page you already
-have open and paste it into that box; what you paste is hidden.
+The instructor page opens at the public address when that address reaches
+this hub, and the terminal prints where, without the key:
+
+```
+Instructor page: https://something-random.trycloudflare.com/instructor
+```
+
+If the public address does not reach the hub (the tunnel is not running, or
+forwards to another port), the page opens on this computer
+(`http://127.0.0.1:8800/instructor`) and the terminal says so. Either way the
+page says which address the student links use.
+
+The key is remembered per address and per browser tab. Opened anywhere else,
+`/instructor` shows only a box asking for the instructor link: click **Copy
+instructor link** on the page you already have open and paste it there. What
+you paste is hidden.
 
 A quick tunnel gets a new address every time it starts, so get it running and
 leave it. With your own domain or a named tunnel the address stays the same.

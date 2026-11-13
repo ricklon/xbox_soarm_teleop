@@ -322,7 +322,7 @@ def test_hub_start_up_text_keeps_keys_out_of_the_terminal():
     quiet = "\n".join(
         startup_lines("https://x.example", "ADMINKEY123", "roster.json", public=True, opened=True)
     )
-    assert "ADMINKEY123" not in quiet and "roster.json" in quiet and "opened" in quiet
+    assert "ADMINKEY123" not in quiet and "roster.json" in quiet and "opening" in quiet
     closed = "\n".join(
         startup_lines("https://x.example", "ADMINKEY123", "roster.json", public=True, opened=False)
     )
@@ -391,3 +391,14 @@ def test_hub_finds_a_running_quick_tunnel():
         server.shutdown()
     assert build_parser().parse_args([]).find_tunnel is True
     assert build_parser().parse_args(["--no-find-tunnel"]).find_tunnel is False
+
+
+def test_hub_can_tell_whether_an_address_reaches_it(served):
+    from xbox_soarm_teleop.cli.hub import hub_answers_at
+
+    hub, base = served
+    instance = httpx.get(f"{base}/ping").json()["hub"]
+    assert len(instance) >= 8 and instance not in (hub.admin_token, *hub.rooms)
+    assert hub_answers_at(base, instance, attempts=1) is True
+    assert hub_answers_at(base, "another-hub", attempts=1) is False  # some other hub answers there
+    assert hub_answers_at(f"http://127.0.0.1:{_free_port()}", instance, attempts=1) is False

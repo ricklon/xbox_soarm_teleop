@@ -221,11 +221,16 @@ uv run soarm-hub --seats 2
 With another kind of tunnel, or to be explicit, pass the address yourself with
 `--public-url https://your-address`.
 
-The instructor page opens on this computer (`127.0.0.1`). The links it copies
-for students use the tunnel. To use the instructor page itself at the tunnel's
-address or on another device, click **Copy instructor link** and paste it
-there: opened without a key, the page shows a box for it that hides what you
-paste.
+The instructor page opens at the tunnel's address, and the terminal prints
+that address without the key, like
+`Instructor page: https://something-random.trycloudflare.com/instructor`. If
+the tunnel does not reach the hub, the page opens on this computer
+(`127.0.0.1`) instead and the terminal says so.
+
+Anyone can open `/instructor` at your tunnel's address, but without the key
+all it shows is a box asking for the instructor link. To open it on another
+device, click **Copy instructor link** and paste it into that box; what you
+paste is hidden.
 
 Then, as a student would:
 

@@ -91,7 +91,7 @@ def startup_lines(
     if show:
         lines.append(f"Instructor page (keep private): {base}/admin/{admin_token}")
     elif opened:
-        lines.append("Instructor page: opened in your browser. Keys are not printed here.")
+        lines.append("Instructor page: opening in your browser. Keys are not printed here.")
     else:
         lines.append("Instructor page: its link is in the roster file. Keys are not printed here;")
         lines.append("  run again with --show-links to print it, or without --no-open to open it.")
@@ -131,8 +131,37 @@ def find_quick_tunnel(ports=QUICK_TUNNEL_PORTS, timeout_s: float = 0.4) -> str |
     return None
 
 
-def _open_when_ready(url: str, host: str, port: int) -> None:
-    """Open ``url`` in the default browser once the server accepts connections."""
+def hub_answers_at(base: str, instance_id: str, *, attempts: int = 8, pause_s: float = 1.0) -> bool:
+    """Whether ``base`` (a tunnel or proxy address) reaches this running hub.
+
+    Asks ``base``/ping for the hub's instance id. A new quick tunnel can take
+    a few seconds to answer, so it tries a few times.
+    """
+    import json
+    import time
+    import urllib.request
+
+    request = urllib.request.Request(f"{base.rstrip('/')}/ping", headers={"User-Agent": "soarm-hub"})
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=4) as reply:
+                if json.loads(reply.read().decode("utf-8")).get("hub") == instance_id:
+                    return True
+        except (OSError, ValueError):
+            pass
+        if attempt + 1 < attempts:
+            time.sleep(pause_s)
+    return False
+
+
+def _open_when_ready(
+    local: str, public: str | None, admin_token: str, instance_id: str, host: str, port: int
+) -> None:
+    """Open the instructor page in the default browser once the hub is serving.
+
+    At the public address when there is one and it reaches this hub, so the
+    instructor is where the students' links are; otherwise at the local one.
+    """
     import socket
     import threading
     import time
@@ -148,7 +177,18 @@ def _open_when_ready(url: str, host: str, port: int) -> None:
                 time.sleep(0.2)
         else:
             return
-        webbrowser.open(url)
+        base = local
+        if public and public.rstrip("/") != local:
+            if hub_answers_at(public, instance_id):
+                base = public.rstrip("/")
+            else:
+                print(
+                    f"  {public} did not reach this hub. Check the tunnel forwards to port {port}."
+                    f"\n  Opening the instructor page on this computer instead.",
+                    flush=True,
+                )
+        print(f"Instructor page: {base}/instructor", flush=True)
+        webbrowser.open(f"{base}/admin/{admin_token}")
 
     threading.Thread(target=wait_then_open, name="open-instructor-page", daemon=True).start()
 
@@ -207,10 +247,15 @@ def main(argv: list[str] | None = None) -> int:
     ):
         print(line, flush=True)
     if args.open_browser:
-        # Opened on this computer's own address: it works before the tunnel does.
         local_host = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
-        local = f"http://{local_host}:{args.port}/admin/{hub.admin_token}"
-        _open_when_ready(local, local_host, args.port)
+        _open_when_ready(
+            f"http://{local_host}:{args.port}",
+            args.public_url,
+            hub.admin_token,
+            app.instance_id,
+            local_host,
+            args.port,
+        )
 
     hub.start()
     try:

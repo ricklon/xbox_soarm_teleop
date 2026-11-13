@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from contextvars import ContextVar
 from importlib import resources
 from typing import Any
@@ -179,6 +180,12 @@ def build_hub_app(
         text = "SO-ARM workshop. Open the link your instructor sent you."
         return Response(text, media_type="text/plain", headers=PAGE_HEADERS)
 
+    instance_id = secrets.token_hex(6)  # not a key: tells one running hub from another
+
+    @server.custom_route("/ping", methods=["GET"])
+    async def ping(_request: Request) -> Response:
+        return JSONResponse({"hub": instance_id}, headers=PAGE_HEADERS)
+
     @server.custom_route("/arm", methods=["GET"])
     async def room_page_without_key(_request: Request) -> Response:
         return HTMLResponse(_page("room.html"), headers=PAGE_HEADERS)
@@ -326,4 +333,6 @@ def build_hub_app(
         enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins
     )
     app = server.streamable_http_app(transport_security=security, host=host)
-    return _Gate(app, hub)
+    gate = _Gate(app, hub)
+    gate.instance_id = instance_id
+    return gate
