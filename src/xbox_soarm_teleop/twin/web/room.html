@@ -286,7 +286,7 @@
     $("grip").textContent = s.gripper < 0.1 ? "open" : s.gripper > 0.9 ? "closed" : s.gripper.toFixed(2);
     const cube = Object.entries(s.objects)[0];
     $("cube").textContent = cube
-      ? (cube[1].attached ? "in the gripper" : cube[1].off_table ? "off the table" : fmt(cube[1].xyz_m))
+      ? (cube[1].attached ? "in the gripper" : cube[1].off_table ? "off the table" : cube[1].xyz_m ? fmt(cube[1].xyz_m) : "hidden from agents")
       : "-";
     const joined = s.events.join("|");
     if (joined !== lastEvents && s.events.length) {

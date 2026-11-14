@@ -47,6 +47,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-dir", default="twin_logs", help="Directory for per-arm session logs")
     parser.add_argument("--no-log", action="store_true", help="Do not write session logs")
     parser.add_argument(
+        "--no-coordinates",
+        action="store_true",
+        help="Do not tell agents where objects are: observe leaves out their positions, so "
+        "agents must find them with the cameras (a perception benchmark). The session log "
+        "keeps the true positions, and report_estimate scores agents' guesses",
+    )
+    parser.add_argument(
         "--roster",
         default="twin_logs/hub_roster.json",
         help="File that keeps the links, so they stay the same after a restart",
@@ -234,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
         log_dir=None if args.no_log else args.log_dir,
         roster_path=args.roster,
         mesh_cell_mm=max(args.mesh_detail_mm, 0.0),
+        hide_positions=args.no_coordinates,
     )
     app = build_hub_app(
         hub,

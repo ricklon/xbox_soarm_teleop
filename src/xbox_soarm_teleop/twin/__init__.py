@@ -124,6 +124,7 @@ def build_twin(
     parts: TwinParts | None = None,
     controller: Any = _NO_CONTROLLER,
     cameras: Any = None,
+    hide_positions: bool = False,
 ) -> TwinService:
     """Create a twin with the same kinematics, mapping and bounds as teleop.
 
@@ -142,6 +143,8 @@ def build_twin(
         controller: Use this controller object (anything with ``read()`` and
             ``is_connected``) in place of the Xbox pad; None for no controller.
         cameras: A camera rig shared between twins of the same model.
+        hide_positions: No-coordinates mode: agents are not told where objects
+            are (``TwinService``); they must look with the cameras.
     """
     from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
     from xbox_soarm_teleop.control.safety import make_workspace_clipper
@@ -172,6 +175,7 @@ def build_twin(
                 "gripper_rate_per_s": runtime.gripper_rate,
                 "lease_timeout_s": twin_service.LEASE_TIMEOUT_S,
                 "human_idle_s": twin_service.HUMAN_IDLE_S,
+                "object_positions": "hidden" if hide_positions else "shown",
             },
         )
         log = SessionLog(log_path, header, dt=sim_cli.LOOP_PERIOD)
@@ -188,4 +192,5 @@ def build_twin(
         log=log,
         cameras=cameras,
         layout=parts.layout,
+        hide_positions=hide_positions,
     )

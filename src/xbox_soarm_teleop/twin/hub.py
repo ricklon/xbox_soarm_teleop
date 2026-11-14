@@ -170,6 +170,8 @@ class Hub:
             pictures a second and they look the same.
         roster_path: JSON file holding the room and admin tokens. Reused when
             it exists, so the links handed to students survive a restart.
+        hide_positions: No-coordinates mode for every arm: agents are not told
+            where objects are and must find them with the cameras.
     """
 
     def __init__(
@@ -182,6 +184,7 @@ class Hub:
         roster_path: str | Path | None = None,
         shadows: bool = False,
         mesh_cell_mm: float = DEFAULT_MESH_CELL_MM,
+        hide_positions: bool = False,
     ) -> None:
         if seats < 1:
             raise ValueError("seats must be at least 1")
@@ -212,7 +215,11 @@ class Hub:
             if log_dir is not None:
                 log_path = Path(log_dir) / f"hub-{stamp}" / f"arm-{index:02d}.jsonl"
             service = build_twin(
-                parts=self.parts, controller=controller, cameras=self.cameras, log_path=log_path
+                parts=self.parts,
+                controller=controller,
+                cameras=self.cameras,
+                log_path=log_path,
+                hide_positions=hide_positions,
             )
             controller.gripper_feedback = lambda service=service: float(service.state.gripper_pos)
             service.stop_release_hint = "press Release stop on the arm's web page"

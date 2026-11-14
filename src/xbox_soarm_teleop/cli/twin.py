@@ -66,6 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-log", action="store_true", help="Do not write a session log")
     parser.add_argument(
+        "--no-coordinates",
+        action="store_true",
+        help="Do not tell agents where objects are: observe leaves out their positions, so "
+        "agents must find them with the cameras (a perception benchmark). The session log "
+        "keeps the true positions, and report_estimate scores agents' guesses",
+    )
+    parser.add_argument(
         "--max-seconds", type=float, default=None, help="Exit after this long (automation)"
     )
     return parser
@@ -100,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         controller_backend=args.controller_backend,
         deadzone=args.deadzone,
         with_controller=not args.no_controller,
+        hide_positions=args.no_coordinates,
     )
     if service.log is not None:
         print(f"Session log: {service.log.path}", flush=True)
@@ -137,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGINT, on_signal)
     print(f"Scene: {args.scene}. Close the window or press Ctrl+C to quit.", flush=True)
+    if args.no_coordinates:
+        print("No-coordinates mode: agents are not told where objects are.", flush=True)
 
     shown_events: list[str] = []
     shown_status: tuple[str, str, str] | None = None

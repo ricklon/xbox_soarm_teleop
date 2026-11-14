@@ -97,6 +97,19 @@ its inside size) and, for each object, `in_goal`. Release an object with the
 jaw center a few centimeters above the box floor, inside its walls, and check
 `in_goal`.
 
+No-coordinates mode: when `observe` says `scene.object_positions` is
+"hidden", the twin does not tell you where objects are, as on the real arm.
+Each object's `xyz_m`, `in_goal` and `off_table` are left out, and a "missed"
+event says only that the jaws missed. You still get each object's `size_m`
+and `grip_width_m`, whether you hold it, the goal box, `ee` and
+`jaw_center_xyz_m`. Find objects with `camera`: the overhead view is a map,
+so judge an object against things whose positions you know (the jaw center,
+the goal box). Check a placement by looking. Whenever you have worked out
+where an object is, call report_estimate(name, x, y, z) with its center (m,
+base frame). It is scored against the truth for a benchmark and does not tell
+you the answer. Where the steps above say the object's x, y or z, use your
+estimate.
+
 Scenes differ in how forgiving their objects are. `list_scenes` shows them,
 easiest first, and `load_scene` switches (it homes the arm and swaps the
 objects). A soft object gives way to the gripper and takes any closure; a

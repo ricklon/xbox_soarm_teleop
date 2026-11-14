@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import math
 import queue
+import re
 import threading
 from collections import deque
 from concurrent.futures import Future
@@ -119,6 +120,13 @@ class TwinService:
         layout: Which of the scene's objects start on the table
             (``twin.layouts``); ``load_scene`` changes it. None leaves every
             object where the model has it.
+        hide_positions: No-coordinates mode, for testing perception. ``observe``
+            (and so every agent tool) leaves out each object's position and
+            what follows from it (``xyz_m``, ``in_goal``, ``off_table``), and a
+            refused grasp's event no longer says how far to move. An agent has
+            to find objects with the cameras, as on the real arm. The truth is
+            kept: in the session log, in :meth:`observe_truth`, and as the
+            grader of :meth:`report_estimate`.
     """
 
     def __init__(
@@ -138,8 +146,12 @@ class TwinService:
         log: SessionLog | None = None,
         cameras: CameraRig | None = None,
         layout: Layout | None = None,
+        hide_positions: bool = False,
     ) -> None:
         self.log = log
+        self.hide_positions = hide_positions
+        self._estimates: list[dict[str, Any]] = []
+        self._shown: dict[str, Any] | None = None
         self._shared_cameras = cameras is not None
         self._status_logged: tuple | None = None
         self._control_logged: tuple = (None, False)
@@ -339,8 +351,48 @@ class TwinService:
         return future
 
     def observe(self) -> dict[str, Any]:
-        """Latest ``soarm.observation/v1`` snapshot (do not mutate)."""
+        """Latest ``soarm.observation/v1`` snapshot (do not mutate).
+
+        In no-coordinates mode (``hide_positions``) object positions are left
+        out; :meth:`observe_truth` has them.
+        """
+        snapshot = self._snapshot
+        if not self.hide_positions:
+            return snapshot
+        shown = self._shown
+        if shown is None or shown["frame"] != snapshot["frame"]:
+            shown = self._shown = hide_object_positions(snapshot)
+        return shown
+
+    def observe_truth(self) -> dict[str, Any]:
+        """The latest snapshot with every object's true position, whatever the mode.
+
+        For graders, the session log and the people running the twin; never
+        hand it to an agent in no-coordinates mode.
+        """
         return self._snapshot
+
+    def report_estimate(self, name: str, xyz_m, *, client_id: str = "agent") -> Future:
+        """Score a guess at an object's center (m, base frame) against the truth.
+
+        Resolves to what the agent may see (that it was recorded), never the
+        error: an agent told how far off it was could home in on the answer.
+        The score goes to :meth:`estimate_scores` and the session log
+        (``estimate`` lines). Unknown or parked objects are rejected.
+        """
+        payload = {"name": name, "xyz_m": list(xyz_m) if xyz_m is not None else None}
+        return self.call(
+            self._logged(
+                "report_estimate",
+                client_id,
+                payload,
+                lambda: self._report_estimate(name, xyz_m, client_id),
+            )
+        )
+
+    def estimate_scores(self) -> list[dict[str, Any]]:
+        """Every scored estimate so far, oldest first (copies)."""
+        return [dict(score) for score in self._estimates]
 
     def wait(self, action_id: str, timeout_s: float) -> ActionStatus:
         """Block until an action ends or ``timeout_s`` elapses; return its status."""
@@ -565,7 +617,8 @@ class TwinService:
         )
 
     def _event(self, text: str) -> None:
-        self.events.append(text)
+        """Tell agents about something; the log always gets the full text."""
+        self.events.append(hide_event_position(text) if self.hide_positions else text)
         self._log("event", text=text)
 
     def _drain_commands(self) -> None:
@@ -738,6 +791,44 @@ class TwinService:
         self._event(f"scene loaded: {name}")
         return {**self.layout.summary(), "current": True}
 
+    def _report_estimate(self, name: str, xyz_m, client_id: str) -> dict[str, Any]:
+        positions = self.grasp.positions()  # parked objects are left out
+        if name not in positions:
+            known = ", ".join(positions) or "none"
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, f"Unknown object '{name}'. On the table: {known}"
+            )
+        try:
+            guess = np.asarray(xyz_m, dtype=float).reshape(3)
+        except (TypeError, ValueError) as exc:
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, "xyz_m must be three numbers (m, base frame)"
+            ) from exc
+        if not np.all(np.isfinite(guess)):
+            raise ActionRejected(ReasonCode.INVALID_REQUEST, "xyz_m must be finite")
+        truth = np.asarray(positions[name], dtype=float)
+        error = guess - truth
+        score = {
+            "t": round(self.now_s, 6),
+            "frame": self.frame,
+            "client_id": client_id,
+            "name": name,
+            "estimate_xyz_m": [float(v) for v in guess],
+            "truth_xyz_m": [round(float(v), 5) for v in truth],
+            "error_cm": round(float(np.linalg.norm(error)) * 100.0, 3),
+            "error_xy_cm": round(float(np.linalg.norm(error[:2])) * 100.0, 3),
+            "error_z_cm": round(float(error[2]) * 100.0, 3),
+            "attached": name == self.grasp.attached,
+            "positions_hidden": self.hide_positions,
+        }
+        self._estimates.append(score)
+        self._log(
+            "estimate",
+            client_id=client_id,
+            **{k: v for k, v in score.items() if k not in ("t", "frame", "client_id")},
+        )
+        return {"ok": True, "name": name, "recorded": len(self._estimates)}
+
     def _arrange_objects(self) -> None:
         """Put the layout's objects at their starts and park the others."""
         if self.layout is None:
@@ -881,6 +972,7 @@ class TwinService:
             objects[name] = entry
         scene = {
             "name": self.layout.name if self.layout is not None else self.sim.scene,
+            "object_positions": "hidden" if self.hide_positions else "shown",
             "objects": objects,
         }
         if goal is not None:
@@ -918,3 +1010,43 @@ class TwinService:
             ),
         )
         return observation.to_dict()
+
+
+# ------------------------------------------------- no-coordinates mode helpers
+# Object fields that give away where it is (or follow from where it is).
+POSITION_FIELDS = ("xyz_m", "in_goal", "off_table")
+
+_MISSED = re.compile(r"^(?P<name>\S+) missed(?: \(\d+ cm away\))?: ")
+
+
+def hide_object_positions(observation: dict[str, Any]) -> dict[str, Any]:
+    """A copy of an observation without object positions (no-coordinates mode).
+
+    Sizes, ``grip_width_m`` and ``attached`` stay: the arm knows what it was
+    told to pick up and can feel whether it holds something. The goal box,
+    the arm's own pose and the jaw center stay too.
+    """
+    scene = observation["scene"]
+    objects = {
+        name: {k: v for k, v in entry.items() if k not in POSITION_FIELDS}
+        for name, entry in scene["objects"].items()
+    }
+    return {
+        **observation,
+        "scene": {**scene, "object_positions": "hidden", "objects": objects},
+    }
+
+
+def hide_event_position(text: str) -> str:
+    """An event as an agent may see it when positions are hidden.
+
+    A refused grasp's "missed" event says exactly how far to move, which with
+    the jaw center gives the object's position away; this keeps only the fact.
+    """
+    match = _MISSED.match(text)
+    if match is None:
+        return text
+    return (
+        f"{match['name']} missed: it is not between the jaw pads. Open wider, lift the jaws "
+        "clear, look again with camera, center the jaws over it and come straight down"
+    )
