@@ -90,6 +90,35 @@ def random_table_spot(rng: np.random.Generator, clearance: float = 0.08) -> tupl
         return float(x), float(y)
 
 
+# How far a random start keeps an object's center from the goal box's center,
+# on at least one axis: the 4 cm cube then clears the box's outer walls by 3 cm.
+START_CLEARANCE_M = 0.10
+
+
+def start_spot(seed: int, run: int) -> tuple[float, float]:
+    """Run ``run``'s random start for an agent trial: the same for every variant
+    and model given the same seed, on the table, within reach, clear of the box."""
+    rng = np.random.default_rng([seed, run])
+    gx, gy, _ = _goal().center_xyz_m
+    while True:
+        x, y = float(rng.uniform(*TABLE_X)), float(rng.uniform(*TABLE_Y))
+        if max(abs(x - gx), abs(y - gy)) >= START_CLEARANCE_M:
+            return x, y
+
+
+def parse_start(text: str) -> tuple[float, float]:
+    """``"X,Y"`` (m, base frame) to a start spot."""
+    parts = text.split(",")
+    if len(parts) != 2:
+        raise ValueError(f"start must be X,Y in meters, not {text!r}")
+    return float(parts[0]), float(parts[1])
+
+
+def place_start(twin, name: str, x: float, y: float) -> np.ndarray:
+    """Start ``name`` flat on the table at (x, y), leaving every other object as it is."""
+    return _pose(twin, name, (x, y), twin.table_top_z, 0.0, park_others=False)
+
+
 def place_on_table(twin, name: str, x: float, y: float, yaw: float = 0.0) -> np.ndarray:
     """Lay the object flat on the table at (x, y)."""
     return _pose(twin, name, (x, y), twin.table_top_z, yaw)

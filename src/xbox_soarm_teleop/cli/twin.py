@@ -33,6 +33,8 @@ DISTRACTOR_SCENES = (
     "distractors_size",
     "distractors_clutter",
 )
+# The object an agent trial picks in each scene (--start moves it).
+START_TARGETS = {"pick_place_basic": "pick_cube", "pick_place_easy": "bean_bag"}
 SCENES = ("pick_place_easy", "pick_place_basic", *DISTRACTOR_SCENES, "stack", "default")
 
 
@@ -95,6 +97,13 @@ def build_parser() -> argparse.ArgumentParser:
         "ollama[:model], openrouter[:model] (OPENROUTER_API_KEY). Default: none (no locate)",
     )
     parser.add_argument(
+        "--start",
+        default=None,
+        metavar="X,Y",
+        help="Start the scene's target object flat on the table at X,Y (m, base frame) "
+        "instead of its usual spot (agent trials from random starts)",
+    )
+    parser.add_argument(
         "--max-seconds", type=float, default=None, help="Exit after this long (automation)"
     )
     return parser
@@ -135,6 +144,14 @@ def main(argv: list[str] | None = None) -> int:
         pointer=make_pointer(args.pointer),
         judge=make_judge(args.judge),
     )
+    if args.start:
+        from xbox_soarm_teleop.twin.layouts import layouts_for
+        from xbox_soarm_teleop.twin.scenarios import parse_start, place_start
+
+        x, y = parse_start(args.start)
+        target = START_TARGETS.get(args.scene) or next(iter(layouts_for(args.scene, True))).target
+        place_start(service, target, x, y)
+        print(f"Start: {target} at ({x:.3f}, {y:.3f})", flush=True)
     if service.log is not None:
         print(f"Session log: {service.log.path}", flush=True)
     controller = service.controller

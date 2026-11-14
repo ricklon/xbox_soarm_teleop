@@ -324,30 +324,46 @@ def run_loop(args, work: Path, port: int, prompt: str) -> dict:
     }
 
 
+def start_of(args, run: int) -> list[float] | None:
+    """Run ``run``'s start spot with --random-start (same per seed and run), else None."""
+    if not getattr(args, "random_start", False):
+        return None
+    from xbox_soarm_teleop.twin.scenarios import start_spot
+
+    return [round(v, 4) for v in start_spot(seed=args.seed, run=run)]
+
+
+def twin_command(args, port: int, logs: Path, run: int) -> list[str]:
+    """The twin a run talks to: headless, no coordinates, its own port and logs."""
+    start = start_of(args, run)
+    return [
+        sys.executable,
+        "-m",
+        "xbox_soarm_teleop.cli.twin",
+        "--headless",
+        "--no-controller",
+        "--no-coordinates",
+        "--scene",
+        args.scene,
+        "--port",
+        str(port),
+        "--log-dir",
+        str(logs),
+        "--max-seconds",
+        str(args.timeout + 60),
+        *(["--pointer", args.pointer] if args.pointer else []),
+        *(["--judge", args.judge] if args.judge else []),
+        *(["--start", f"{start[0]:.4f},{start[1]:.4f}"] if start else []),
+    ]
+
+
 def run_once(args, run: int) -> dict:
     name, description = DESCRIPTIONS[args.scene]
     port = free_port()
     work = Path(tempfile.mkdtemp(prefix="agent_trial_"))
     logs = work / "logs"
     twin = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "xbox_soarm_teleop.cli.twin",
-            "--headless",
-            "--no-controller",
-            "--no-coordinates",
-            "--scene",
-            args.scene,
-            "--port",
-            str(port),
-            "--log-dir",
-            str(logs),
-            "--max-seconds",
-            str(args.timeout + 60),
-            *(["--pointer", args.pointer] if args.pointer else []),
-            *(["--judge", args.judge] if args.judge else []),
-        ],
+        twin_command(args, port, logs, run),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -373,6 +389,7 @@ def run_once(args, run: int) -> dict:
         "scene": args.scene,
         "pointer": args.pointer,
         "judge": args.judge,
+        "start_xy_m": start_of(args, run),
     }
     variant = ("judge" if args.judge else "no_judge") + ("+required" if args.require_check else "")
     final_text = outcome.pop("agent_final", "")
@@ -436,6 +453,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pointer", default="molmo", help="Pointing model spec for locate")
     parser.add_argument("--scene", default="pick_place_basic", choices=sorted(DESCRIPTIONS))
     parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument(
+        "--random-start",
+        action="store_true",
+        help="Start the object at a random table spot per run (the same for run i in every "
+        "variant with the same --seed)",
+    )
+    parser.add_argument("--seed", type=int, default=0, help="Seed for --random-start")
     parser.add_argument("--timeout", type=float, default=900.0, help="Seconds per run")
     parser.add_argument("--out", default="twin_logs/agent_trials.jsonl")
     args = parser.parse_args(argv)
