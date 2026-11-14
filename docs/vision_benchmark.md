@@ -6,23 +6,28 @@ grader for perception. This page covers how to run the twin as a benchmark and
 the results so far.
 
 Status: step 1 (no-coordinates mode and scoring) and step 2 (a `locate` tool
-backed by pointing models) are done. Gemini Robotics-ER and OpenRouter models
-are wired in but not measured yet (no API keys). Step 3 (a Workers AI success
-judge) is not built yet.
+backed by pointing models) are done. Gemini Robotics-ER 2 is wired in and
+answers (one call: 2 px off), but the free tier's quota ran out before a full
+run; OpenRouter's free Gemma 4 31B was rate-limited upstream. Step 3 (a
+Workers AI success judge) is not built yet.
 
 ## Results so far
 
-Pointing, 16 random placements, 640x480, against the twin's truth
-(`twin_logs/pointing_benchmark_molmo_gemma.json`):
+Pointing, the same 16 random placements (seed 0), 640x480, against the twin's
+truth (`twin_logs/pointing_benchmark_molmo_gemma.json`,
+`twin_logs/pointing_benchmark_gemini_openrouter.json`):
 
 | backend | found | median error | 90th percentile | s per call |
 |---|---|---|---|---|
+| Gemini 3.5 Flash (OpenRouter) | 58/58 | 0.1-0.3 cm | 0.3-1.0 cm | 1.7-2.3 |
 | Molmo2-ER (local, MPS) | 58/58 | 0.5-0.7 cm | 1.2-1.7 cm | 4.2-4.7 |
 | Gemma 4 12B (local Ollama) | 58/58 | 0.9-1.1 cm | 1.4-3.1 cm | 1.9-2.8 |
 | perfect pixel (segmentation) | 58/58 | 0.1-0.3 cm | 0.2-1.0 cm | - |
 | image center (for scale) | - | 6.8-12.8 cm | 10-21 cm | - |
 
-Ranges are over the four views (front, overhead, side, wrist).
+Ranges are over the four views (front, overhead, side, wrist). Gemini 3.5
+Flash is as close as the method allows: the rest is the gap between the
+visible surface and the object's center.
 
 Pick and place with no coordinates, a text-only agent (GLM 5.3 Flash via
 opencode) using `locate`, the rigid cube (`pick_place_basic`), graded from the
