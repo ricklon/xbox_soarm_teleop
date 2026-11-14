@@ -175,7 +175,7 @@ def test_agent_grips_by_opening_and_sees_what_it_holds(twin_url):
     call(url, "reset_scene")
     cube = payload(call(url, "observe"))["scene"]["objects"]["pick_cube"]
     x, y, z = cube["xyz_m"]
-    call(url, "set_gripper", {"opening_m": cube["size_m"][0] + 0.03})
+    call(url, "set_gripper", {"opening_m": cube["size_m"][0] + 0.05})
     call(url, "move_to", {"x": x, "y": y, "z": z + 0.06})
     call(url, "set_wrist_roll", {"angle_rad": -1.5})
     for _ in range(2):  # the tool point is a jaw face: center the jaws, not the tool

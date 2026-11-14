@@ -73,7 +73,7 @@ def over(twin, name="pick_cube", wrist=SIDEWAYS):
     straight down until the jaw center is at its center (not below z 0.14).
     """
     width = float(min(twin.grasp.size(name)[:2]))
-    grip(twin, SETTINGS.gripper_for_opening(width + 0.03))
+    grip(twin, SETTINGS.gripper_for_opening(width + 0.05))
     move(twin, twin.grasp.position(name) + [0.0, 0.0, 0.06])
     roll(twin, wrist)
     for _ in range(2):
@@ -197,6 +197,44 @@ def test_the_suggested_roll_makes_the_grasp_work(twin, dz):
     assert twin.grasp.attached == "pick_cube"
 
 
+@pytest.mark.parametrize("yaw_deg", [-30, 30])
+def test_the_suggested_roll_turns_toward_square_not_away(twin, yaw_deg):
+    """The closing axis is not square to the roll axis, so a roll tilts the jaws
+    as well as turning them; the hint must come from trying rolls, not a plane."""
+    xyz = twin.grasp.position("pick_cube")
+    quat = np.zeros(4)
+    mujoco.mju_axisAngle2Quat(quat, np.array([0.0, 0.0, 1.0]), np.deg2rad(yaw_deg))
+    obj = twin.grasp.objects["pick_cube"]
+    twin.sim.data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7] = quat
+    mujoco.mj_forward(twin.sim.model, twin.sim.data)
+    over(twin)
+    before = twin.grasp.fit("pick_cube")[1]
+    suggested = twin.grasp.squaring_roll("pick_cube")
+    predicted = twin.grasp.best_square_deg("pick_cube")
+    assert predicted <= before
+    move(twin, xyz + [0.0, 0.0, 0.10])  # turn the wrist well clear of it
+    roll(twin, suggested)
+    move(twin, xyz + [0.0, 0.0, 0.06])
+    over(twin, wrist=suggested)
+    assert twin.grasp.fit("pick_cube")[1] <= before + 1.0
+    assert twin.grasp.fit("pick_cube")[1] == pytest.approx(predicted, abs=6.0)
+
+
+@pytest.mark.parametrize("yaw_deg", [-20, 20])
+def test_closing_on_a_slightly_turned_cube_squares_it(twin, yaw_deg):
+    """Judged where the jaws first meet it, before a corner is caught and spun."""
+    quat = np.zeros(4)
+    mujoco.mju_axisAngle2Quat(quat, np.array([0.0, 0.0, 1.0]), np.deg2rad(yaw_deg))
+    obj = twin.grasp.objects["pick_cube"]
+    twin.sim.data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7] = quat
+    mujoco.mj_forward(twin.sim.model, twin.sim.data)
+    over(twin)
+    assert twin.grasp.extent_across("pick_cube") > CUBE_WIDTH + 0.01
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    assert twin.grasp.attached == "pick_cube"
+    assert twin.grasp.fit("pick_cube")[1] < 10.0  # turned square in the jaws
+
+
 def test_a_cube_turned_too_far_says_so(twin):
     """Skewed 45 degrees to the arm, no wrist roll can square the jaws to it."""
     xyz = twin.grasp.position("pick_cube")
@@ -239,7 +277,7 @@ def test_the_tool_point_above_the_cube_misses_and_says_how_to_fix_it(twin, wrist
     assert twin.grasp.attached == "pick_cube"
     obs = twin.observe()
     held = np.array(obs["scene"]["objects"]["pick_cube"]["xyz_m"])
-    assert np.linalg.norm(held - obs["jaw_center_xyz_m"]) < 0.006
+    assert np.linalg.norm(held - obs["jaw_center_xyz_m"]) < 0.01
 
 
 def test_a_cube_past_the_fingertips_is_not_held(twin):

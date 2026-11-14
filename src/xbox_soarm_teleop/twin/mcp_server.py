@@ -41,7 +41,7 @@ with it between their pads. To pick one up:
    its sides.
 2. observe: the object's `grip_width_m` is its size across the jaws as they
    are turned now (not always size_m[0]). set_gripper(opening_m=grip_width_m
-   + 0.03).
+   + 0.05): room for an object that sits a little turned.
 3. Center the jaws over it: move_by(dx, dy, dz=0) by the object's x, y minus
    `jaw_center_xyz_m`; do it twice (the gripper tilts a little as it moves).
 4. Go straight down: move_by(dz = object z - jaw center z), but keep the jaw

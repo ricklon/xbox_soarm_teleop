@@ -28,7 +28,7 @@ def jaws_around(run, observe, name: str, wrist: float = -1.5) -> None:
     run(
         {
             "type": "set_gripper",
-            "params": {"position": GraspSettings().gripper_for_opening(width + 0.03)},
+            "params": {"position": GraspSettings().gripper_for_opening(width + 0.05)},
         }
     )
     for _ in range(2):

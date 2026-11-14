@@ -315,7 +315,7 @@ the middle of the jaws. `observe` (and each motion tool's result) gives
 `jaw_center_xyz_m`, the point between the pads, 1.2 cm short of the tips,
 where an object's center should be. The pad geometry it is built from
 (`JAW_*` in `grasp.py`) is measured from the SO-ARM101 meshes, not guessed.
-The approach the agent instructions give: open to the width plus 3 cm, come
+The approach the agent instructions give: open to the width plus 5 cm, come
 over the object, roll the wrist, center the jaw point over it with `move_by`,
 then go straight down to its center height (not below z 0.14). Coming in at an
 angle knocks a rigid object away. A held object rides with the gripper,
@@ -329,13 +329,26 @@ is its size across the jaws as the gripper is turned now, the gap to close to.
 A refused grasp's event says what to do: the `set_wrist_roll` angle that
 squares the jaws (and when the object is turned too far for any roll to
 help), or `missed` with the opening and the moves (up 5 cm, across, straight
-down) that center the jaws on it. A close within 15 cm of an object that
+down) that center the jaws on it. The roll is found by trying every roll in
+the joint's range: the closing axis is not square to the roll axis (the
+gripper is tilted), so a roll tilts the jaws as well as turning them. The
+arm has no wrist yaw, so an object turned away from the arm's heading can
+only be squared so far; the event says so when even the best roll is off. A close within 15 cm of an object that
 catches nothing also says `missed`, with how far away it is.
 `observe` also reports the goal box (`scene.goal`) and each object's
 `in_goal`, each object's `size_m` and the `gripper_opening_m`; `set_gripper`
 takes `opening_m` as well as `position`, and its result names what is
 `holding`. Jaws a person drives shut (trigger, or the page's Close button)
 stop on a rigid object instead.
+
+A grasp is judged where the jaws first meet the object (its extent across
+them, wider than its width when it sits turned), not when they reach its
+width: by then a corner caught by the moving jaw would have spun it. A rigid
+object within the skew tolerance is then turned square in the jaws. That is
+an **assumption**, from parallel jaws with the TPU pad squaring a slightly
+turned object; check it on the real arm. A cube resting against the goal box
+walls can still shift as the jaws close, so lifting one out of the box takes
+more tries than off the open table.
 
 The numbers behind this are in `GraspSettings` and are **placeholders until
 measured on the real arm**: reading at first touch, at firm hold and at slip

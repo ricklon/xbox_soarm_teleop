@@ -247,7 +247,7 @@ async def pick_and_place() -> None:
     await step("set_wrist_roll", angle_rad=-1.5)                     #    jaws side to side
     _, thing = the_object(await arm("observe"))
     width = thing["grip_width_m"]                                    # its size across the jaws
-    await step("set_gripper", opening_m=width + 0.03)                # 2. open a bit wider than it
+    await step("set_gripper", opening_m=width + 0.05)                # 2. open a bit wider than it
     await jaws_over(at[0], at[1])                                    # 3. jaws centered over it
     jaw = (await arm("observe"))["jaw_center_xyz_m"]
     await step("move_by", dx=0.0, dy=0.0, dz=max(at[2], 0.14) - jaw[2])  # 4. straight down
