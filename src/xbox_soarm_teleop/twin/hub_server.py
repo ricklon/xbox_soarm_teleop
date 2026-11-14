@@ -349,6 +349,26 @@ def build_hub_app(
             return not_found
         return JSONResponse({"prompts": STARTER_PROMPTS}, headers=PAGE_HEADERS)
 
+    @server.custom_route("/r/{token}/scores", methods=["GET"])
+    async def scores(request: Request) -> Response:
+        # The answer key for the room's own notebook: each guess against the
+        # truth, and each success check against it. Deliberately not a tool,
+        # so an agent driving the arm is never told the truth.
+        room = room_of(request)
+        if room is None:
+            return not_found
+        return JSONResponse(
+            {
+                "objects": {
+                    name: {key: thing.get(key) for key in ("xyz_m", "in_goal", "off_table")}
+                    for name, thing in room.service.observe_truth()["scene"]["objects"].items()
+                },
+                "estimates": room.service.estimate_scores(),
+                "success_checks": room.service.success_checks(),
+            },
+            headers=PAGE_HEADERS,
+        )
+
     @server.custom_route("/r/{token}/tools", methods=["GET"])
     async def page_tools(request: Request) -> Response:
         if room_of(request) is None:

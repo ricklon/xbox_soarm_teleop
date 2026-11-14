@@ -470,3 +470,25 @@ def test_docs_carry_the_same_agent_checks_the_hub_serves():
     doc = (Path(__file__).parent.parent / "docs" / "agent_checks.md").read_text()
     block = re.search(r"```text\n(You are connected.*?)```", doc, re.S).group(1)
     assert block == served_text.read_text("utf-8")
+
+
+def test_a_room_can_read_its_own_scores_but_agents_cannot(served):
+    """The notebook's answer key: how far off each guess was, and whether each
+    success check was right. A page route under the room's key, never a tool."""
+    hub, base = served
+    room = rooms(hub)[0]
+    reply = httpx.post(
+        f"{base}/r/{room.token}/tools/report_estimate",
+        json={"name": "pick_cube", "x": 0.30, "y": 0.0, "z": 0.14},
+    ).json()
+    guess = json.loads(reply["content"][0]["text"])
+    assert guess["ok"] is True and "error_cm" not in guess
+    scores = httpx.get(f"{base}/r/{room.token}/scores").json()
+    last = scores["estimates"][-1]
+    assert last["name"] == "pick_cube" and last["error_cm"] > 0 and len(last["truth_xyz_m"]) == 3
+    assert scores["success_checks"] == []
+    assert len(scores["objects"]["pick_cube"]["xyz_m"]) == 3
+    assert scores["objects"]["pick_cube"]["in_goal"] is False
+    assert httpx.get(f"{base}/r/not-a-room/scores").status_code == 404
+    tools = {tool["name"] for tool in httpx.get(f"{base}/r/{room.token}/tools").json()["tools"]}
+    assert "scores" not in tools and "report_estimate" in tools
