@@ -2,7 +2,9 @@
 
     uv run python scripts/agent_report.py twin_logs/agent_ab.jsonl
 
-One row per model, harness and variant (no_judge, judge, judge+required):
+One row per model, harness and variant (no_judge, judge, judge+required).
+Judged runs where the judge could not answer (check_errors) are counted as
+invalid and left out of the rates:
 how often the object really ended in the box, how often the agent stopped by
 itself, how often its RESULT claim was true, how many success checks it made
 and how many of those were right, median time, and median and total cost
@@ -29,9 +31,23 @@ def summarize(rows: list[dict]) -> list[dict]:
         key = (row.get("model"), row.get("harness", "opencode"), row.get("variant", "no_judge"))
         groups.setdefault(key, []).append(row)
     table = []
-    for (model, harness, variant), group in sorted(
+    for (model, harness, variant), everything in sorted(
         groups.items(), key=lambda item: tuple(map(str, item[0]))
     ):
+        # A judged run whose judge could not answer tests nothing about the judge.
+        group = [row for row in everything if not row.get("check_errors")]
+        invalid = len(everything) - len(group)
+        if not group:
+            table.append(
+                {
+                    "model": model,
+                    "harness": harness,
+                    "variant": variant,
+                    "runs": 0,
+                    "invalid_runs": invalid,
+                }
+            )
+            continue
         checks = [check for row in group for check in row.get("success_checks") or []]
         costs = [row.get("total_cost_usd") for row in group if row.get("total_cost_usd") is not None]
         seconds = [row.get("seconds") for row in group if row.get("seconds") is not None]
@@ -41,6 +57,7 @@ def summarize(rows: list[dict]) -> list[dict]:
                 "harness": harness,
                 "variant": variant,
                 "runs": len(group),
+                "invalid_runs": invalid,
                 "in_box": _rate(row.get("in_goal") for row in group),
                 "stopped_cleanly": _rate(row.get("stopped_cleanly") for row in group),
                 "claim_correct": _rate(row.get("claim_correct") for row in group),
@@ -59,6 +76,7 @@ def print_table(table: list[dict]) -> None:
         ("model", "model"),
         ("variant", "variant"),
         ("runs", "runs"),
+        ("invalid_runs", "invalid"),
         ("in_box", "in box"),
         ("stopped_cleanly", "stopped itself"),
         ("claim_correct", "claim right"),
@@ -72,7 +90,9 @@ def print_table(table: list[dict]) -> None:
     print("|" + "---|" * len(columns))
     for row in table:
         print(
-            "| " + " | ".join("-" if row[key] is None else str(row[key]) for key, _ in columns) + " |"
+            "| "
+            + " | ".join("-" if row.get(key) is None else str(row[key]) for key, _ in columns)
+            + " |"
         )
 
 

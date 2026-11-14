@@ -177,6 +177,11 @@ def grade(log_path: Path, name: str) -> dict:
             for line in lines
             if line["kind"] == "success_check" and line["data"].get("ok", True)
         ],
+        # check_success calls the judge could not answer (quota, network): a judged
+        # run with any is not a fair test of the judge.
+        "check_errors": sum(
+            1 for line in lines if line["kind"] == "success_check" and line["data"].get("ok") is False
+        ),
         "time": time_split(lines),
         # What the pointer and the judge cost, from the twin's log.
         "pointer_cost_usd": sum(
@@ -372,6 +377,25 @@ def run_once(args, run: int) -> dict:
     return result
 
 
+def judge_answers(model: str) -> bool:
+    """Ask the judge once before any run: a judge that cannot answer (no key,
+    a used-up daily quota) would make every judged run a test of nothing."""
+    import io
+
+    from PIL import Image
+
+    from xbox_soarm_teleop.twin.judge import ClefJudge, JudgeError
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), (128, 128, 128)).save(buffer, "PNG")
+    try:
+        ClefJudge(model=model).judge([buffer.getvalue()], "red cube", views=["front"])
+    except JudgeError as exc:
+        print(f"The judge ({model}) cannot answer, so no runs were started: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -405,6 +429,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=900.0, help="Seconds per run")
     parser.add_argument("--out", default="twin_logs/agent_trials.jsonl")
     args = parser.parse_args(argv)
+    if args.judge and not judge_answers(args.judge):
+        return 2
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     successes = 0

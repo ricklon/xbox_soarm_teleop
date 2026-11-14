@@ -257,6 +257,9 @@ def parse_molmo(text: str, width: int, height: int) -> Point | None:
 
 
 # ------------------------------------------------------------------ HTTP
+_DAILY_QUOTA = re.compile(r"daily|PerDay|per day", re.IGNORECASE)
+
+
 def _retry_delay(exc: urllib.error.HTTPError, body: str, attempt: int) -> float:
     """How long a rate-limited API asks us to wait (s): its own hint, else backoff."""
     header = exc.headers.get("Retry-After") if exc.headers is not None else None
@@ -283,7 +286,8 @@ def _post_json(url: str, body: dict, headers: dict[str, str] | None = None, time
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")
-            if exc.code == 429 and attempt < RATE_LIMIT_RETRIES:
+            # A used-up daily quota is a 429 too, but waiting a minute cannot help.
+            if exc.code == 429 and attempt < RATE_LIMIT_RETRIES and not _DAILY_QUOTA.search(detail):
                 time.sleep(_retry_delay(exc, detail, attempt))
                 continue
             raise PointerError(mask_secrets(f"HTTP {exc.code} from {url}: {detail[:500]}")) from None

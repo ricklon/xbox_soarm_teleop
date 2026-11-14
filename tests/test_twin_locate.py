@@ -457,3 +457,54 @@ def test_usage_totals_add_up():
     total = add_usage(total, {"input_tokens": 5, "output_tokens": None, "cost_usd": None})
     # A call whose cost is unknown makes the total unknown too, but tokens still add.
     assert total == {"input_tokens": 15, "output_tokens": 2, "cost_usd": None, "calls": 2}
+
+
+def test_a_used_up_daily_quota_fails_at_once(monkeypatch):
+    waits = []
+    monkeypatch.setattr(pointing.time, "sleep", waits.append)
+    calls = []
+
+    def urlopen(request, timeout=None):
+        calls.append(1)
+        raise _http_error(
+            429,
+            {
+                "errors": [
+                    {
+                        "message": "AiError: you have used up your daily free allocation of 10,000 neurons"
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(pointing.urllib.request, "urlopen", urlopen)
+    with pytest.raises(PointerError, match="daily"):
+        pointing._post_json("http://x", {})
+    assert len(calls) == 1 and waits == []  # waiting a minute cannot help
+
+
+def test_gemini_per_day_quota_is_not_retried_either(monkeypatch):
+    monkeypatch.setattr(pointing.time, "sleep", lambda s: None)
+    calls = []
+
+    def urlopen(request, timeout=None):
+        calls.append(1)
+        raise _http_error(
+            429,
+            {
+                "error": {
+                    "details": [
+                        {
+                            "violations": [
+                                {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}
+                            ]
+                        }
+                    ]
+                }
+            },
+        )
+
+    monkeypatch.setattr(pointing.urllib.request, "urlopen", urlopen)
+    with pytest.raises(PointerError):
+        pointing._post_json("http://x", {})
+    assert len(calls) == 1

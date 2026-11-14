@@ -175,3 +175,33 @@ def test_the_report_compares_conditions():
     assert base["runs"] == 2 and base["in_box"] == 0.5 and base["stopped_cleanly"] == 0.5
     assert base["median_s"] == pytest.approx(80.0) and base["total_cost_usd"] == pytest.approx(0.08)
     assert judged["checks_per_run"] == 1.0 and judged["checks_right"] == 1.0
+
+
+def test_failed_checks_are_counted_and_make_a_judged_run_invalid(tmp_path):
+    import json
+
+    lines = [
+        _line("header", 0.0),
+        _line("success_check", 3.0, ok=False, name="pick_cube", detail="HTTP 429 daily allocation"),
+        _line(
+            "success_check", 6.0, ok=True, verdict="done", p_in_goal=0.95, correct=True, cost_usd=0.0002
+        ),
+        _line("observation", 7.0, scene={"objects": {"pick_cube": {"in_goal": True}}}),
+    ]
+    log = tmp_path / "s.jsonl"
+    log.write_text("\n".join(json.dumps(line) for line in lines))
+    graded = agent_trial.grade(log, "pick_cube")
+    assert graded["check_errors"] == 1
+    assert graded["success_checks"] == [{"verdict": "done", "p_in_goal": 0.95, "correct": True}]
+
+    spec = importlib.util.spec_from_file_location(
+        "agent_report", Path(__file__).parent.parent / "scripts" / "agent_report.py"
+    )
+    report = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(report)
+    rows = [
+        {"model": "m", "variant": "judge", "in_goal": True, "check_errors": 2, "success_checks": []},
+        {"model": "m", "variant": "judge", "in_goal": False, "check_errors": 0, "success_checks": []},
+    ]
+    (row,) = report.summarize(rows)
+    assert row["runs"] == 1 and row["invalid_runs"] == 1 and row["in_box"] == 0.0
