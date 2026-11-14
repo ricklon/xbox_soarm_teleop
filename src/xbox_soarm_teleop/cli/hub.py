@@ -31,11 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seats", type=int, default=4, help="Number of students (arms)")
     parser.add_argument(
         "--scene",
-        choices=("pick_place_easy", "pick_place_basic", "stack"),
+        choices=("pick_place_easy", "pick_place_basic", "sort_colors", "stack"),
         default="pick_place_easy",
         help="What every arm starts with. pick_place_easy: a soft bean bag (default). "
         "pick_place_basic: a rigid cube, harder to grasp. Students' agents can switch "
-        "between the two with load_scene.",
+        "between the two with load_scene. sort_colors: three cubes and a bin of each "
+        "colour, on a different table; agents switch only between the sort scenes there.",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Address to listen on")
     parser.add_argument("--port", type=int, default=8800)

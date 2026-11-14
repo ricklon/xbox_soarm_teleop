@@ -16,7 +16,7 @@ import numpy as np
 
 from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
 from xbox_soarm_teleop.twin.grasp import GraspSettings
-from xbox_soarm_teleop.twin.layouts import GOALS
+from xbox_soarm_teleop.twin.layouts import BINS, GOALS
 
 # The table top (m, base frame), and how far inside its edges an object's
 # center stays: half the largest object's diagonal footprint.
@@ -122,6 +122,16 @@ def place_start(twin, name: str, x: float, y: float) -> np.ndarray:
 def place_on_table(twin, name: str, x: float, y: float, yaw: float = 0.0) -> np.ndarray:
     """Lay the object flat on the table at (x, y)."""
     return _pose(twin, name, (x, y), twin.table_top_z, yaw)
+
+
+def place_in_bin(
+    twin, name: str, bin_name: str, dx: float = 0.0, dy: float = 0.0, yaw: float = 0.0
+) -> np.ndarray:
+    """Lay the object flat on a bin's floor, (dx, dy) from its center, leaving
+    every other object as it is."""
+    box = next(box for box in BINS[twin.sim.scene] if box.name == bin_name)
+    cx, cy, floor = box.center_xyz_m
+    return _pose(twin, name, (cx + dx, cy + dy), floor, yaw, park_others=False)
 
 
 def place_in_goal(

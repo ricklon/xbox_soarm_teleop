@@ -33,9 +33,18 @@ DISTRACTOR_SCENES = (
     "distractors_size",
     "distractors_clutter",
 )
+# The colour-sort scenes (twin.layouts, on the sort_bins table scene).
+SORT_SCENES = ("sort_colors", "sort_colors_decoy")
 # The object an agent trial picks in each scene (--start moves it).
 START_TARGETS = {"pick_place_basic": "pick_cube", "pick_place_easy": "bean_bag"}
-SCENES = ("pick_place_easy", "pick_place_basic", *DISTRACTOR_SCENES, "stack", "default")
+SCENES = (
+    "pick_place_easy",
+    "pick_place_basic",
+    *DISTRACTOR_SCENES,
+    *SORT_SCENES,
+    "stack",
+    "default",
+)
 
 
 def _wait_for_port(host: str, port: int, timeout_s: float = 10.0) -> bool:
@@ -62,7 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=SCENES,
         default="pick_place_easy",
         help="pick_place_easy: a soft bean bag (default). pick_place_basic: a rigid cube, "
-        "harder to grasp. Agents can switch between the two with load_scene.",
+        "harder to grasp. Agents can switch between the two with load_scene. sort_colors: "
+        "three cubes and a bin of each colour (sort_colors_decoy adds a cube with no bin); "
+        "a different table, so load_scene switches only between the sort scenes there.",
     )
     parser.add_argument("--world", default=None, help="Lighting/floor preset (see simulate-mujoco)")
     parser.add_argument("--port", type=int, default=8765, help="MCP server port (localhost)")

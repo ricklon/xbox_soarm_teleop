@@ -68,6 +68,12 @@ from xbox_soarm_teleop.control.safety import make_workspace_clipper
 from xbox_soarm_teleop.control.step import CartesianStepConfig, cartesian_step
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
 from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
+from xbox_soarm_teleop.sim.table_scenes import (
+    GOAL_BOX,
+    TABLE_HEIGHT_M,
+    TABLE_SCENES,
+    is_table_scene,
+)
 from xbox_soarm_teleop.sim.world import DEFAULT_WORLD, WORLD_NAMES, apply_world
 
 # Project paths
@@ -129,7 +135,7 @@ STACK_COLORS = [
     (0.65, 0.65, 0.12, 1.0),
     (0.12, 0.12, 0.65, 1.0),
 ]
-PICK_PLACE_TABLE_HEIGHT = 0.12
+PICK_PLACE_TABLE_HEIGHT = TABLE_HEIGHT_M
 PICK_PLACE_TABLE_CENTER = np.array([0.31, 0.04, PICK_PLACE_TABLE_HEIGHT / 2.0], dtype=float)
 PICK_PLACE_TABLE_HALF_EXTENTS = np.array([0.16, 0.14, PICK_PLACE_TABLE_HEIGHT / 2.0], dtype=float)
 PICK_PLACE_CUBE_HALF_EXTENT = 0.02
@@ -137,9 +143,10 @@ PICK_PLACE_CUBE_MASS = 0.04
 PICK_PLACE_CUBE_START = np.array(
     [0.34, -0.03, PICK_PLACE_TABLE_HEIGHT + PICK_PLACE_CUBE_HALF_EXTENT], dtype=float
 )
-PICK_PLACE_GOAL_CENTER = np.array([0.29, 0.13, PICK_PLACE_TABLE_HEIGHT + 0.001], dtype=float)
-PICK_PLACE_GOAL_INNER_HALF_EXTENTS = np.array([0.045, 0.045, 0.03], dtype=float)
-PICK_PLACE_GOAL_WALL_THICKNESS = 0.005
+# The single-box scene's goal box (a bin recipe; see sim/table_scenes.py).
+PICK_PLACE_GOAL_CENTER = np.array(GOAL_BOX.base_center_m, dtype=float)
+PICK_PLACE_GOAL_INNER_HALF_EXTENTS = np.array(GOAL_BOX.inner_half_m, dtype=float)
+PICK_PLACE_GOAL_WALL_THICKNESS = GOAL_BOX.wall_m
 # A soft object for first grasps. It is a rigid box to the physics, but the arm
 # passes through it instead of pushing it (see ``SOFT_OBJECT_COLLISION_BIT``),
 # the way a real bean bag gives way to a jaw.
@@ -358,7 +365,7 @@ class MuJoCoSimulator:
             model = load_model_with_cameras(urdf_path, scene=scene, world=world)
         self.model = model
         self.data = mujoco.MjData(self.model)
-        self.physics_scene_active = scene in {"stack", "pick_place_basic"}
+        self.physics_scene_active = scene == "stack" or is_table_scene(scene)
 
         # Get joint indices
         self.joint_ids = {}
@@ -382,7 +389,7 @@ class MuJoCoSimulator:
         self.go_home()
         if scene == "stack":
             self._settle_stack_scene()
-        elif scene == "pick_place_basic":
+        elif is_table_scene(scene):
             self._bind_pick_place_scene()
 
     def go_home(self) -> None:
@@ -480,7 +487,8 @@ class MuJoCoSimulator:
         return self.scene == "stack"
 
     def has_pick_place_scene(self) -> bool:
-        return self.scene == "pick_place_basic"
+        """The table, with objects and bins (``pick_place_basic`` or another table scene)."""
+        return is_table_scene(self.scene)
 
     def _settle_stack_scene(self, steps: int = 200) -> None:
         """Let the stack fall onto the plane and record resting positions."""
@@ -762,8 +770,11 @@ def _add_stack_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
         geom.friction = [1.1, 0.02, 0.001]
 
 
-def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
-    """Add table, cube and goal box (and a grey ground plane if the world has none)."""
+def _add_pick_place_scene(
+    spec: mujoco.MjSpec, *, add_floor: bool, scene: str = "pick_place_basic"
+) -> None:
+    """Add the table, its objects and the scene's bins (and a grey ground plane if
+    the world has none). ``scene`` names the recipe in ``TABLE_SCENES``."""
     if add_floor:
         floor = spec.worldbody.add_geom()
         floor.name = "pick_place_floor"
@@ -822,70 +833,16 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
         geom.rgba = list(rgba)
         geom.friction = [1.1, 0.02, 0.001]
 
-    goal_parts = [
-        ("goal_base", [0.0, 0.0, 0.0], [*PICK_PLACE_GOAL_INNER_HALF_EXTENTS[:2], 0.004]),
-        (
-            "goal_wall_left",
-            [
-                -(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS),
-                0.0,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-            [
-                PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1],
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-        ),
-        (
-            "goal_wall_right",
-            [
-                (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS),
-                0.0,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-            [
-                PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1],
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-        ),
-        (
-            "goal_wall_back",
-            [
-                0.0,
-                -(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS),
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-            [
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-        ),
-        (
-            "goal_wall_front",
-            [
-                0.0,
-                (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS),
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-            [
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-        ),
-    ]
-    for name, offset, size in goal_parts:
-        geom = spec.worldbody.add_geom()
-        geom.name = name
-        geom.type = mujoco.mjtGeom.mjGEOM_BOX
-        geom.pos = (PICK_PLACE_GOAL_CENTER + np.array(offset, dtype=float)).tolist()
-        geom.size = size
-        geom.rgba = [0.10, 0.65, 0.35, 0.85]
-        geom.contype = 1
-        geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
+    for bin_ in TABLE_SCENES[scene].bins:
+        for name, offset, size in bin_.parts():
+            geom = spec.worldbody.add_geom()
+            geom.name = name
+            geom.type = mujoco.mjtGeom.mjGEOM_BOX
+            geom.pos = (np.array(bin_.base_center_m) + np.array(offset, dtype=float)).tolist()
+            geom.size = list(size)
+            geom.rgba = list(bin_.rgba)
+            geom.contype = 1
+            geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
 
 
 def build_stack_scene_model(urdf_path: str, world: str = "plain") -> mujoco.MjModel:
@@ -908,7 +865,8 @@ def load_model_with_cameras(
 
     Args:
         urdf_path: Robot URDF.
-        scene: ``"default"``, ``"stack"`` or ``"pick_place_basic"``.
+        scene: ``"default"``, ``"stack"``, or a table scene (``"pick_place_basic"``,
+            ``"sort_bins"``; see ``sim/table_scenes.py``).
         world: Lighting/sky/floor preset from ``xbox_soarm_teleop.sim.world``.
         mesh_cell_mm: Above 0, use meshes simplified on a grid this fine
             (``xbox_soarm_teleop.sim.mesh_detail``): the same robot with far
@@ -918,8 +876,8 @@ def load_model_with_cameras(
     world_has_floor = apply_world(spec, world)
     if scene == "stack":
         _add_stack_scene(spec, add_floor=not world_has_floor)
-    elif scene == "pick_place_basic":
-        _add_pick_place_scene(spec, add_floor=not world_has_floor)
+    elif is_table_scene(scene):
+        _add_pick_place_scene(spec, add_floor=not world_has_floor, scene=scene)
         for geom in spec.geoms:
             if geom.type == mujoco.mjtGeom.mjGEOM_PLANE:  # soft objects land on any floor
                 geom.conaffinity = int(geom.conaffinity) | SOFT_OBJECT_COLLISION_BIT

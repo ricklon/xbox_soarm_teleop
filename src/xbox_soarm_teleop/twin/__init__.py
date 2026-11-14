@@ -26,8 +26,9 @@ TABLE_CLEARANCE_M = 0.005
 def table_top_z(scene: str) -> float | None:
     """Height of the scene's table top, or None when objects rest on the ground."""
     from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
+    from xbox_soarm_teleop.sim.table_scenes import is_table_scene
 
-    return sim_cli.PICK_PLACE_TABLE_HEIGHT if scene == "pick_place_basic" else None
+    return sim_cli.PICK_PLACE_TABLE_HEIGHT if is_table_scene(scene) else None
 
 
 def scene_workspace(scene: str) -> dict:

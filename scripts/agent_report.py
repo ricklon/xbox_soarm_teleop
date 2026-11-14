@@ -3,8 +3,9 @@
     uv run python scripts/agent_report.py twin_logs/agent_ab.jsonl
 
 One row per model, harness and variant (no_judge, judge, judge+required).
-Judged runs where the judge could not answer (check_errors) are counted as
-invalid and left out of the rates:
+Judged runs where the judge could not answer (check_errors), and runs the
+model service cut off (agent_error, such as HTTP 402: no credit), are counted
+as invalid and left out of the rates:
 how often the object really ended in the box, how often the agent stopped by
 itself, how often its RESULT claim was true, how many success checks it made
 and how many of those were right, median time, and median and total cost
@@ -28,14 +29,22 @@ def _rate(values) -> float | None:
 def summarize(rows: list[dict]) -> list[dict]:
     groups: dict[tuple, list[dict]] = {}
     for row in rows:
-        key = (row.get("model"), row.get("harness", "opencode"), row.get("variant", "no_judge"))
+        key = (
+            row.get("model"),
+            row.get("harness", "opencode"),
+            row.get("variant", "no_judge"),
+            row.get("task") or "pick_place",
+        )
         groups.setdefault(key, []).append(row)
     table = []
-    for (model, harness, variant), everything in sorted(
+    for (model, harness, variant, task), everything in sorted(
         groups.items(), key=lambda item: tuple(map(str, item[0]))
     ):
-        # A judged run whose judge could not answer tests nothing about the judge.
-        group = [row for row in everything if not row.get("check_errors")]
+        # A judged run whose judge could not answer tests nothing about the judge,
+        # and a run its model service cut off (no credit, rate limit) tests nothing.
+        group = [
+            row for row in everything if not row.get("check_errors") and not row.get("agent_error")
+        ]
         invalid = len(everything) - len(group)
         if not group:
             table.append(
@@ -43,6 +52,7 @@ def summarize(rows: list[dict]) -> list[dict]:
                     "model": model,
                     "harness": harness,
                     "variant": variant,
+                    "task": task,
                     "runs": 0,
                     "invalid_runs": invalid,
                 }
@@ -56,9 +66,11 @@ def summarize(rows: list[dict]) -> list[dict]:
                 "model": model,
                 "harness": harness,
                 "variant": variant,
+                "task": task,
                 "runs": len(group),
                 "invalid_runs": invalid,
-                "in_box": _rate(row.get("in_goal") for row in group),
+                # Success: the object in the box, or a sort task done as asked.
+                "in_box": _rate(row.get("done", row.get("in_goal")) for row in group),
                 "stopped_cleanly": _rate(row.get("stopped_cleanly") for row in group),
                 "claim_correct": _rate(row.get("claim_correct") for row in group),
                 "checks_per_run": round(len(checks) / len(group), 2),
@@ -75,9 +87,10 @@ def print_table(table: list[dict]) -> None:
     columns = [
         ("model", "model"),
         ("variant", "variant"),
+        ("task", "task"),
         ("runs", "runs"),
         ("invalid_runs", "invalid"),
-        ("in_box", "in box"),
+        ("in_box", "success"),
         ("stopped_cleanly", "stopped itself"),
         ("claim_correct", "claim right"),
         ("checks_per_run", "checks/run"),

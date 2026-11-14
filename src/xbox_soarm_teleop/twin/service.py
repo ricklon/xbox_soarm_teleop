@@ -65,7 +65,13 @@ from xbox_soarm_teleop.twin.actions import (
 )
 from xbox_soarm_teleop.twin.cameras import DEFAULT_SIZE, VIEWS, CameraRig, encode
 from xbox_soarm_teleop.twin.grasp import AssistedGrasp
-from xbox_soarm_teleop.twin.layouts import GOALS, Layout, layouts_for, object_description
+from xbox_soarm_teleop.twin.layouts import (
+    BINS,
+    GOALS,
+    Layout,
+    layouts_for,
+    object_description,
+)
 from xbox_soarm_teleop.twin.pointing import Pointer, PointRequest, mask_secrets
 from xbox_soarm_teleop.twin.projection import CameraGeometry, camera_geometry, pixel_to_xyz
 from xbox_soarm_teleop.twin.session_log import SessionLog
@@ -435,6 +441,16 @@ class TwinService:
         lines, :meth:`success_checks`) and never returned. Blocks while the
         judge answers; call it from a client thread.
         """
+        if GOALS.get(self.sim.scene) is None:
+            # Clef's in-the-box question has been measured for the one goal box,
+            # not for "which bin": asking it about bins would give unmeasured answers.
+            return {
+                "ok": False,
+                "reason": "not_supported",
+                "detail": "this scene has bins, not one goal box, and check_success only "
+                "judges the goal box. Look with camera, or locate(name, rest_z_m=the bin "
+                "floor z) and compare with scene.bins",
+            }
         judge = self.judge
         if judge is None:
             return {
@@ -1239,6 +1255,8 @@ class TwinService:
         ik = getattr(self.kinematics, "last_ik_result", None)
         step = self.last_step
         goal = GOALS.get(self.sim.scene)
+        # A scene with several bins (a sorting scene) says which bin each object is in.
+        bins = BINS.get(self.sim.scene, ()) if goal is None else ()
         opening = self.grasp.settings.jaw_opening_m(self.state.gripper_pos)
         jaw_center = self.grasp.jaw_center(opening)
         objects = {}
@@ -1256,6 +1274,12 @@ class TwinService:
                 entry["in_goal"] = name != self.grasp.attached and goal.holds(
                     xyz, self.grasp.half_extents_world(name)
                 )
+            if bins:
+                half = self.grasp.half_extents_world(name)
+                entry["in_bin"] = next(
+                    (box.name for box in bins if name != self.grasp.attached and box.holds(xyz, half)),
+                    None,
+                )
             objects[name] = entry
         scene = {
             "name": self.layout.name if self.layout is not None else self.sim.scene,
@@ -1264,6 +1288,8 @@ class TwinService:
         }
         if goal is not None:
             scene["goal"] = goal.summary()
+        if bins:  # where each object should go is the request's business, not the scene's
+            scene["bins"] = [box.summary() for box in bins]
         observation = Observation(
             frame=self.frame,
             sim_time_s=round(self.now_s, 6),
@@ -1301,7 +1327,7 @@ class TwinService:
 
 # ------------------------------------------------- no-coordinates mode helpers
 # Object fields that give away where it is (or follow from where it is).
-POSITION_FIELDS = ("xyz_m", "in_goal", "off_table")
+POSITION_FIELDS = ("xyz_m", "in_goal", "in_bin", "off_table")
 
 _MISSED = re.compile(r"^(?P<name>\S+) missed(?: \(\d+ cm away\))?: ")
 

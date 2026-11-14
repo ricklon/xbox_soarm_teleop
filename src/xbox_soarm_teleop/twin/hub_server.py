@@ -99,9 +99,16 @@ straight up 5 cm with move_by(dx=0, dy=0, dz=0.05) before any other move: the
 open jaws still straddle the object, and homing from there drags it out of the
 box. Then check `in_goal`.
 
+Sorting scenes (sort_colors) have bins instead of a goal box: `scene.bins`
+gives each bin's name, label, floor center and inside size, and each object's
+`in_bin` says which bin it is in (null: none). Which object goes in which bin
+is up to the request you were given; if it leaves something open, say what
+you assumed. Release into a bin as into the goal box, then lift straight up
+5 cm before any other move. check_success does not judge bins.
+
 No-coordinates mode: when `observe` says `scene.object_positions` is
 "hidden", the twin does not tell you where objects are, as on the real arm.
-Each object's `xyz_m`, `in_goal` and `off_table` are left out, and a "missed"
+Each object's `xyz_m`, `in_goal`, `in_bin` and `off_table` are left out, and a "missed"
 event says only that the jaws missed. You still get each object's `size_m`
 and `grip_width_m`, whether you hold it, the goal box, `ee` and
 `jaw_center_xyz_m`. Find an object with locate(name): a vision model looks
@@ -357,11 +364,12 @@ def build_hub_app(
         room = room_of(request)
         if room is None:
             return not_found
+        truth = room.service.observe_truth()
         return JSONResponse(
             {
                 "objects": {
-                    name: {key: thing.get(key) for key in ("xyz_m", "in_goal", "off_table")}
-                    for name, thing in room.service.observe_truth()["scene"]["objects"].items()
+                    name: {key: thing.get(key) for key in ("xyz_m", "in_goal", "in_bin", "off_table")}
+                    for name, thing in truth["scene"]["objects"].items()
                 },
                 "estimates": room.service.estimate_scores(),
                 "success_checks": room.service.success_checks(),

@@ -223,3 +223,62 @@ def test_a_check_that_never_answered_counts_as_an_error(tmp_path):
     log = tmp_path / "s.jsonl"
     log.write_text("\n".join(json.dumps(line) for line in lines))
     assert agent_trial.grade(log, "pick_cube")["check_errors"] == 1
+
+
+def _task_args(**overrides):
+    from types import SimpleNamespace
+
+    base = dict(scene="pick_place_basic", task="swap", require_check=False)
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_a_sort_task_run_asks_in_turn_in_each_wording():
+    from xbox_soarm_teleop.twin.tasks import TASKS
+
+    swap = TASKS["swap"]
+    prompts = [agent_trial.prompt_for(_task_args(), run) for run in range(3)]
+    assert swap.requests[0] in prompts[0] and swap.requests[1] in prompts[1]
+    assert swap.requests[0] in prompts[2]  # and round again
+    assert "RESULT: done" in prompts[0] and "red_bin" not in prompts[0]
+    single = agent_trial.prompt_for(_task_args(task=None), 0)
+    assert "goal box" in single and "RESULT: in_box" in single
+
+
+def test_a_sort_task_is_graded_against_what_was_asked(tmp_path):
+    import json
+
+    from xbox_soarm_teleop.twin.tasks import TASKS
+
+    objects = {
+        "pick_cube": {"xyz_m": [0.41, 0.04, 0.14], "in_bin": "blue_bin"},
+        "blue_cube": {"xyz_m": [0.41, 0.13, 0.14], "in_bin": "red_bin"},
+        "green_cube": {"xyz_m": [0.41, -0.05, 0.14], "in_bin": "green_bin"},
+    }
+    lines = [
+        _line("header", 0.0),
+        _line("observation", 5.0, scene={"objects": objects}),
+    ]
+    log = tmp_path / "s.jsonl"
+    log.write_text("\n".join(json.dumps(line) for line in lines))
+    graded = agent_trial.grade_task(log, TASKS["swap"])
+    assert graded["task"] == "swap" and graded["done"] is False  # the green cube was to stay
+    assert (graded["right"], graded["wrong"], graded["unsorted"]) == (2, 1, 0)
+    assert graded["in_bin"]["green_cube"] == "green_bin" and "in_goal" not in graded
+    scored = agent_trial.score_run(graded, final_text="RESULT: done", agent_cost=0.01, stopped=True)
+    assert scored["claim"] == "done" and scored["claim_correct"] is False
+
+
+def test_runs_cut_short_by_the_model_service_are_invalid():
+    """An agent stopped by HTTP 402 or 429 from its model service tested nothing."""
+    spec = importlib.util.spec_from_file_location(
+        "agent_report", Path(__file__).parent.parent / "scripts" / "agent_report.py"
+    )
+    report = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(report)
+    rows = [
+        {"model": "m", "variant": "no_judge", "in_goal": True, "agent_error": None},
+        {"model": "m", "variant": "no_judge", "in_goal": False, "agent_error": "HTTP 402 from x"},
+    ]
+    (row,) = report.summarize(rows)
+    assert row["runs"] == 1 and row["invalid_runs"] == 1 and row["in_box"] == 1.0

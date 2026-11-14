@@ -8,9 +8,10 @@ twin keeps the rest parked out of sight and out of reach.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
+from xbox_soarm_teleop.sim.table_scenes import TABLE_SCENES, Bin
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,10 @@ _CUBE = tuple(float(v) for v in sim_cli.PICK_PLACE_CUBE_START)
 
 def _on_table(name: str, x: float, y: float) -> tuple[float, float, float]:
     return (x, y, _TABLE + _HALF[name][2])
+
+
+def _on_table_cube(x: float, y: float) -> tuple[float, float, float]:
+    return (x, y, _CUBE[2])
 
 
 def _distractors(name: str, description: str, others: dict, descriptions=None) -> "Layout":
@@ -127,6 +132,35 @@ LAYOUTS: dict[str, Layout] = {
             },
             {"pick_cube": "large red cube"},
         ),
+        # The sort table (sim/table_scenes.py): what goes where is up to the
+        # request (twin/tasks.py), not the layout. Starts are near the base,
+        # well behind the bins and clear of the arm's path from home.
+        Layout(
+            name="sort_colors",
+            model_scene="sort_bins",
+            difficulty="easy",
+            description="A red, a blue and a green cube, and a red, a blue and a green bin.",
+            objects={
+                "pick_cube": _on_table_cube(0.22, -0.06),
+                "blue_cube": _on_table("blue_cube", 0.28, -0.08),
+                "green_cube": _on_table("green_cube", 0.21, 0.01),
+            },
+        ),
+        Layout(
+            name="sort_colors_decoy",
+            model_scene="sort_bins",
+            difficulty="hard",
+            description=(
+                "A red, a blue, a green and a yellow cube, and a red, a blue and a green "
+                "bin. There is no yellow bin."
+            ),
+            objects={
+                "pick_cube": _on_table_cube(0.22, -0.06),
+                "blue_cube": _on_table("blue_cube", 0.28, -0.08),
+                "green_cube": _on_table("green_cube", 0.21, 0.01),
+                "yellow_cube": _on_table("yellow_cube", 0.30, -0.02),
+            },
+        ),
     )
 }
 DISTRACTOR_LAYOUTS = tuple(name for name in LAYOUTS if name.startswith("distractors_"))
@@ -134,18 +168,22 @@ DISTRACTOR_LAYOUTS = tuple(name for name in LAYOUTS if name.startswith("distract
 
 @dataclass(frozen=True)
 class GoalBox:
-    """An open box objects are placed in (m, base frame)."""
+    """An open box objects are placed in (m, base frame): the goal box, or a bin."""
 
     name: str
     center_xyz_m: tuple[float, float, float]  # middle of its floor's top face
     inner_size_m: tuple[float, float, float]  # inside length, width and wall height
+    label: str = ""
 
     def summary(self) -> dict:
-        return {
+        summary = {
             "name": self.name,
             "center_xyz_m": [round(v, 4) for v in self.center_xyz_m],
             "inner_size_m": [round(v, 4) for v in self.inner_size_m],
         }
+        if self.label:
+            summary["label"] = self.label
+        return summary
 
     def holds(self, center, half_extents_world) -> bool:
         """An object with this center and half-extents (along x, y, z) lies inside."""
@@ -158,17 +196,22 @@ class GoalBox:
         return inside and resting
 
 
-_GOAL_FLOOR = float(sim_cli.PICK_PLACE_GOAL_CENTER[2]) + 0.004  # top of the box's floor plate
-GOALS: dict[str, GoalBox] = {
-    "pick_place_basic": GoalBox(
-        name="goal_box",
-        center_xyz_m=(
-            float(sim_cli.PICK_PLACE_GOAL_CENTER[0]),
-            float(sim_cli.PICK_PLACE_GOAL_CENTER[1]),
-            round(_GOAL_FLOOR, 4),
-        ),
-        inner_size_m=tuple(float(2 * v) for v in sim_cli.PICK_PLACE_GOAL_INNER_HALF_EXTENTS),
+def _box(bin_: Bin) -> GoalBox:
+    return GoalBox(
+        name=bin_.name,
+        center_xyz_m=(*(float(v) for v in bin_.center_xy_m), round(bin_.floor_top_m, 4)),
+        inner_size_m=tuple(float(2 * v) for v in bin_.inner_half_m),
+        label=bin_.label,
     )
+
+
+# Every table scene's bins; a scene with exactly one is a goal-box scene, whose
+# box is also in GOALS (and in observe as scene.goal, and objects' in_goal).
+BINS: dict[str, tuple[GoalBox, ...]] = {
+    name: tuple(_box(bin_) for bin_ in scene.bins) for name, scene in TABLE_SCENES.items()
+}
+GOALS: dict[str, GoalBox] = {
+    name: replace(boxes[0], label="") for name, boxes in BINS.items() if len(boxes) == 1
 }
 
 

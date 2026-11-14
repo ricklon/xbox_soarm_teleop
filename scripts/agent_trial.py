@@ -46,6 +46,19 @@ up 5 cm, then home the arm. Work step by step with the tools; check the result o
 you are finished, end your reply with exactly one line, RESULT: in_box or
 RESULT: not_in_box, saying whether it is in the box.
 """
+# --task: a request in a sorting scene. What goes where is in the request's
+# own words (twin/tasks.py); each run uses the next wording.
+SORT_PROMPT = """\
+You are connected to a simulated robot arm through the soarm-bench MCP tools.
+Read the server instructions. Object coordinates are hidden in this twin:
+observe will not tell you where objects are. Use locate to find them.
+
+Request: {request}
+
+Work step by step with the tools; check the result of every call. When you
+are finished, end your reply with exactly one line, RESULT: done or
+RESULT: not_done, saying whether you did what was asked.
+"""
 # --require-check: the task also asks for the judge's confirmation.
 REQUIRE_CHECK = """Before you finish, after homing, confirm the placement with check_success.
 If it says retry, pick the {description} up again; if it says look_again, ask
@@ -207,11 +220,11 @@ def grade(log_path: Path, name: str) -> dict:
     }
 
 
-_CLAIM = re.compile(r"RESULT:\s*(in_box|not_in_box)", re.IGNORECASE)
+_CLAIM = re.compile(r"RESULT:\s*(in_box|not_in_box|done|not_done)", re.IGNORECASE)
 
 
 def parse_claim(text: str) -> str | None:
-    """The agent's last ``RESULT: in_box`` / ``RESULT: not_in_box``, or None."""
+    """The agent's last ``RESULT:`` line (in_box, not_in_box, done, not_done), or None."""
     found = _CLAIM.findall(text or "")
     return found[-1].lower() if found else None
 
@@ -220,12 +233,45 @@ def score_run(graded: dict, *, final_text: str, agent_cost: float | None, stoppe
     """Score the agent's own claim against the truth, and add up the run's cost."""
     claim = parse_claim(final_text)
     costs = [agent_cost, graded.get("pointer_cost_usd"), graded.get("judge_cost_usd")]
+    succeeded = graded["done"] if "done" in graded else graded.get("in_goal")
     return {
         "claim": claim,
-        "claim_correct": None if claim is None else (claim == "in_box") == bool(graded.get("in_goal")),
+        "claim_correct": None if claim is None else (claim in ("in_box", "done")) == bool(succeeded),
         "stopped_cleanly": bool(stopped),
         "total_cost_usd": round(sum(float(c or 0.0) for c in costs), 6),
     }
+
+
+def grade_task(log_path: Path, task) -> dict:
+    """A sort task's run, from the session log: where every object ended up,
+    graded against what was asked (``twin.tasks.grade``), plus the run's tool
+    use, time and costs."""
+    from xbox_soarm_teleop.twin.tasks import grade as grade_sort
+
+    lines = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+    observations = [line for line in lines if line["kind"] == "observation"]
+    objects = observations[-1]["data"]["scene"]["objects"] if observations else {}
+    common = grade(log_path, "")
+    for key in ("in_goal", "ever_held", "final_xyz_m", "misses"):
+        common.pop(key, None)
+    in_bin = {name: entry.get("in_bin") for name, entry in objects.items()}
+    return {**common, **grade_sort(task, in_bin)}
+
+
+def prompt_for(args, run: int) -> str:
+    """What the agent is asked: a sort task's request (the next wording each
+    run), or the single-object pick and place."""
+    task_name = getattr(args, "task", None)
+    if task_name:
+        from xbox_soarm_teleop.twin.tasks import TASKS
+
+        requests = TASKS[task_name].requests
+        return SORT_PROMPT.format(request=requests[run % len(requests)])
+    name, description = DESCRIPTIONS[args.scene]
+    prompt = PROMPT.format(description=description, name=name)
+    if args.require_check:
+        prompt += "\n" + REQUIRE_CHECK.format(description=description)
+    return prompt
 
 
 def run_opencode(args, work: Path, port: int, prompt: str) -> dict:
@@ -358,7 +404,11 @@ def twin_command(args, port: int, logs: Path, run: int) -> list[str]:
 
 
 def run_once(args, run: int) -> dict:
-    name, description = DESCRIPTIONS[args.scene]
+    task = None
+    if getattr(args, "task", None):
+        from xbox_soarm_teleop.twin.tasks import TASKS
+
+        task = TASKS[args.task]
     port = free_port()
     work = Path(tempfile.mkdtemp(prefix="agent_trial_"))
     logs = work / "logs"
@@ -370,9 +420,7 @@ def run_once(args, run: int) -> dict:
     try:
         if not wait_for_port(port):
             return {"run": run, "error": "twin did not start"}
-        prompt = PROMPT.format(description=description, name=name)
-        if args.require_check:
-            prompt += "\n" + REQUIRE_CHECK.format(description=description)
+        prompt = prompt_for(args, run)
         harness = run_loop if args.harness == "loop" else run_opencode
         outcome = harness(args, work, port, prompt)
     finally:
@@ -391,12 +439,17 @@ def run_once(args, run: int) -> dict:
         "judge": args.judge,
         "start_xy_m": start_of(args, run),
     }
+    if task is not None:
+        result["request"] = task.requests[run % len(task.requests)]
     variant = ("judge" if args.judge else "no_judge") + ("+required" if args.require_check else "")
     final_text = outcome.pop("agent_final", "")
     stopped = outcome.pop("stopped", False)
     result.update(harness=args.harness, variant=variant, work_dir=str(work), **outcome)
     if log_files:
-        result.update(grade(log_files[-1], name))
+        if task is not None:
+            result.update(grade_task(log_files[-1], task))
+        else:
+            result.update(grade(log_files[-1], DESCRIPTIONS[args.scene][0]))
         usage = result.get("agent_usage") or {}
         result.update(
             score_run(result, final_text=final_text, agent_cost=usage.get("cost_usd"), stopped=stopped)
@@ -454,6 +507,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scene", default="pick_place_basic", choices=sorted(DESCRIPTIONS))
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument(
+        "--task",
+        default=None,
+        help="A sort task from twin/tasks.py (by_colour, swap, only_red, mismatch, "
+        "decoy_stays, decoy_open): runs it in its scene, each run asking in the next "
+        "wording, graded against what was asked",
+    )
+    parser.add_argument(
         "--random-start",
         action="store_true",
         help="Start the object at a random table spot per run (the same for run i in every "
@@ -463,6 +523,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=900.0, help="Seconds per run")
     parser.add_argument("--out", default="twin_logs/agent_trials.jsonl")
     args = parser.parse_args(argv)
+    if args.task:
+        from xbox_soarm_teleop.twin.tasks import TASKS
+
+        if args.task not in TASKS:
+            parser.error(f"--task must be one of {', '.join(sorted(TASKS))}")
+        if args.random_start or args.judge or args.require_check:
+            parser.error("--task runs without --random-start, --judge or --require-check")
+        args.scene = TASKS[args.task].scene
     if args.judge and not judge_answers(args.judge):
         return 2
     out = Path(args.out)
@@ -470,13 +538,14 @@ def main(argv: list[str] | None = None) -> int:
     successes = 0
     for run in range(args.runs):
         result = run_once(args, run)
-        successes += bool(result.get("in_goal"))
+        successes += bool(result.get("done", result.get("in_goal")))
         print(json.dumps(result), flush=True)
         with out.open("a") as handle:
             handle.write(json.dumps(result) + "\n")
+    what = f"task {args.task} done" if args.task else "in the goal box"
     print(
         f"{args.model} ({args.harness}) {args.scene} pointer={args.pointer}: "
-        f"{successes}/{args.runs} in the goal box"
+        f"{successes}/{args.runs} {what}"
     )
     return 0
 
