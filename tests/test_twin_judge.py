@@ -185,9 +185,11 @@ def test_truth_tipped_onto_an_edge(twin):
     )
 
 
-def test_truth_held_after_a_real_grasp(twin):
-    assert grasp_and_lift(twin, "pick_cube", lift_to=[0.28, 0.0, 0.24])
-    labels = truth_labels(twin, "pick_cube")
+@pytest.mark.parametrize("name", ["pick_cube", "bean_bag"])
+def test_truth_held_after_a_real_grasp(twin, name):
+    place_on_table(twin, name, 0.30, -0.03)  # the bean bag starts parked in this layout
+    assert grasp_and_lift(twin, name, lift_to=[0.28, 0.0, 0.24])
+    labels = truth_labels(twin, name)
     assert labels["held"] is True and labels["where"] == "in_gripper" and labels["in_goal"] is False
 
 

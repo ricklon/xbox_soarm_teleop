@@ -151,6 +151,7 @@ def grasp_and_lift(twin, name: str, lift_to) -> bool:
     finding the object). True if it is held at the end.
     """
     settings = GraspSettings()
+    twin.tick()  # the snapshot read below must list an object just placed
 
     def obj() -> dict:
         return twin.observe_truth()["scene"]["objects"][name]
