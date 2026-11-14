@@ -94,8 +94,10 @@ with the gripper, so it may land on an edge and rock flat.
 
 `observe` also gives the goal box (`scene.goal`: the center of its floor and
 its inside size) and, for each object, `in_goal`. Release an object with the
-jaw center a few centimeters above the box floor, inside its walls, and check
-`in_goal`.
+jaw center a few centimeters above the box floor, inside its walls. Then lift
+straight up 5 cm with move_by(dx=0, dy=0, dz=0.05) before any other move: the
+open jaws still straddle the object, and homing from there drags it out of the
+box. Then check `in_goal`.
 
 No-coordinates mode: when `observe` says `scene.object_positions` is
 "hidden", the twin does not tell you where objects are, as on the real arm.
@@ -114,8 +116,9 @@ view="overhead". To pick an object up: locate it; move_to 6 cm above its
 `jaw_move_m.dz`; then set_gripper(opening_m=grip_width_m). Make one tool call
 at a time and wait for its result: two motion calls at once are refused as
 busy. A "missed" event means the estimate was off: open, lift 5 cm, locate
-again and repeat. After releasing, check the placement with
-check_success(name): a judge looks at a front picture and says "done" (it is
+again and repeat. After releasing, lift straight up 5 cm
+and home, then check the placement with check_success(name), after the last
+move: a judge looks at a front picture and says "done" (it is
 in the box), "retry" (it is not: locate it and pick again) or "look_again"
 (unsure: ask again or look with `camera`). Without a judge (reason no_judge),
 use locate(name, rest_z_m=the goal box floor z) or `camera`. Without locate

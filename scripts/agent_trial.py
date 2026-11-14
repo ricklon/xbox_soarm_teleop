@@ -41,14 +41,15 @@ You are connected to a simulated robot arm through the soarm-bench MCP tools.
 Read the server instructions. Object coordinates are hidden in this twin:
 observe will not tell you where objects are. Use locate to find them.
 
-Task: put the {description} ({name}) into the green goal box, then home the
-arm. Work step by step with the tools; check the result of every call. When
+Task: put the {description} ({name}) into the green goal box, lift straight
+up 5 cm, then home the arm. Work step by step with the tools; check the result of every call. When
 you are finished, end your reply with exactly one line, RESULT: in_box or
 RESULT: not_in_box, saying whether it is in the box.
 """
 # --require-check: the task also asks for the judge's confirmation.
-REQUIRE_CHECK = """Before you finish, confirm the placement with check_success. If it says
-retry, pick the {description} up again; if it says look_again, ask again.
+REQUIRE_CHECK = """Before you finish, after homing, confirm the placement with check_success.
+If it says retry, pick the {description} up again; if it says look_again, ask
+again.
 """
 
 DESCRIPTIONS = {
