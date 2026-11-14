@@ -482,7 +482,7 @@ class TwinService:
         record = {
             **result,
             "client_id": client_id,
-            "t": round(self.now_s, 3),
+            "sim_time_s": round(self.now_s, 3),  # not "t": the log line has its own
             "truth": truth,
             # A verdict is right when "done" means in the box and "retry" means not;
             # "look again" claims nothing.
