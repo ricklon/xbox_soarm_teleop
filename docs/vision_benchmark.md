@@ -362,11 +362,13 @@ in the box, and answers `done` (p >= 0.9), `look_again` or `retry`
 
 Every task now ends with a line `RESULT: in_box` or `RESULT: not_in_box`, so
 the agent's claim is scored as well as the outcome. Three variants, 4 runs
-each, on `pick_place_basic` with Gemini 3.5 Flash behind `locate`:
+each in the first round, on `pick_place_basic` with Gemini 3.5 Flash behind `locate`:
 `no_judge`; `judge` (the tool exists); `judge+required` (the task says to
 confirm with it). `scripts/agent_report.py` compares them and leaves out
-judged runs where a check failed or never answered
-(`twin_logs/agent_ab_glm.jsonl`, `twin_logs/agent_ab_gemma.jsonl`):
+judged runs where a check failed or never answered.
+
+First round, task "place it, then home" (`twin_logs/agent_ab_glm.jsonl`,
+`twin_logs/agent_ab_gemma.jsonl`):
 
 | agent model | variant | runs | in box | stopped itself | claim right | checks right | median s | median $ |
 |---|---|---|---|---|---|---|---|---|
@@ -388,21 +390,51 @@ What it shows:
 - With the check, Gemma stops by itself and its claim matches what Clef saw;
   without it, Gemma kept going until the step limit 3 times in 4. The judged
   runs were also cheaper and faster (median $0.02-0.06 against $0.12).
-- **Homing after the check knocks the cube out of the box.** In 7 of the 13
-  failed runs, across all variants, the cube was in the box until the agent
-  called `home`. Straight after the release the jaws still straddle the cube,
-  and the home path lifts it to about 20 cm and throws it 5-10 cm. The task
-  said "place it, then home"; agents checked before homing, so 4 `done`
-  answers were right when given and wrong by the end.
-- `look_again` (p 0.5-0.89) is where agents get stuck: the 2 Gemma
+- **Homing knocks the cube out of the box.** In 5 of the 13 failed runs the
+  cube was correctly placed until the agent called `home`. Straight after the
+  release the jaws still straddle the cube, and the home path lifts it to
+  about 20 cm and throws it 5-10 cm. Agents checked before homing, so 4
+  `done` answers were right when given and wrong by the end. (Of the other
+  failures, one cube hung on the open jaws and fell when homing, and one was
+  knocked out before homing.) Replaying the 5 runs' exact actions with a 5 cm
+  lift straight up before `home` kept the cube in the box every time; 3 cm
+  still nudged it 1 cm.
+- `look_again` (p 0.5-0.89) is where agents got stuck: the 2 Gemma
   `judge+required` runs that hit the step limit had the cube in the box all
   along, and kept re-checking and nudging it. A second view would settle these.
 - GLM's other failures are its own: 5 runs never got the cube into the box,
   and 1 knocked it out while re-gripping.
 
-Too few runs to separate the variants' success rates; the home-move problem is
-larger than any difference between them. Fix the order first (open, lift
-straight up, then home, then check), then rerun.
+### After the fix: lift 5 cm, home, then check
+
+The instructions, the `home` tool and the task now say: release, lift straight
+up 5 cm, home, and only then call `check_success`. Second round, 6 runs per
+variant (`twin_logs/agent_ab2_glm.jsonl`, `twin_logs/agent_ab2_gemma.jsonl`):
+
+| agent model | variant | runs | in box | stopped itself | claim right | checks right | median s | median $ |
+|---|---|---|---|---|---|---|---|---|
+| Gemma 4 31B | no_judge | 6 | 6/6 | 4/6 | 4/4 | - | 47 | 0.031 |
+| Gemma 4 31B | judge | 6 | 6/6 | 6/6 | 6/6 | 6/6 | 44 | 0.026 |
+| Gemma 4 31B | judge+required | 6 | 6/6 | 6/6 | 6/6 | 6/6 | 42 | 0.026 |
+| GLM 5.3 Flash | no_judge | 6 | 6/6 | 6/6 | 6/6 | - | 78 | 0.033 |
+| GLM 5.3 Flash | judge | 6 | 6/6 | 6/6 | 6/6 | 6/6 | 69 | 0.016 |
+| GLM 5.3 Flash | judge+required | 6 | 6/6 | 6/6 | 6/6 | 6/6 | 72 | 0.014 |
+
+- **36 of 36 in the box**, from 13 of 26 valid runs in the first round. Every
+  agent lifted and homed as told. The fix was in the task, not the vision.
+- **Clef: 12 of 12 `done`, all right** (p 0.96).
+- **The check still pays where agents can't tell they are done.** Without it,
+  Gemma ran to the step limit 2 times in 6, locating, photographing and
+  re-gripping a cube that was already in the box about 13 times; those 2 runs
+  cost $0.13 each, against $0.026 for every checked run. With the check, both
+  models stopped by themselves 12 of 12, and GLM's runs cost half as much.
+- `judge` and `judge+required` came out the same: given the tool, agents used
+  it unasked.
+
+Caveat: `pick_place_basic` starts the cube in the same spot every run, so
+these are repeats of one placement; the locate errors repeat to the
+millimetre. They show the loop is reliable, not that it generalizes. Next:
+random start positions, and the distractor scenes.
 
 Early runs were invalid twice: the Cloudflare daily free allowance ran out
 (the trial now checks that Clef answers before it starts and counts failed
@@ -423,9 +455,9 @@ checks), then `check_success` crashed on twins that write a session log
 - Choose the agent model first: it decided success more than the pointer.
   Keep `jaw_move_m` and the one-call-at-a-time rule. Run agents in the lean
   loop rather than opencode.
-- Keep `check_success` and ask for it: with it, agents stop when done and
-  their claims are true. Check after the last motion: lift clear of the
-  object before homing, and check after homing.
+- Keep `check_success`: with it, agents stop when done, their claims are
+  true, and runs cost less. After a release, lift straight up 5 cm before
+  homing, and check after the last move.
 - Hold off on Gemini Robotics-ER 2 for agent loops while it is in preview:
   its speed swung from 2 s to over 70 s in a day.
 
