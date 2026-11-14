@@ -9,7 +9,7 @@ def jaws_around(run, observe, name: str, wrist: float = -1.5) -> None:
     The tool point is the fixed jaw's inner face, so line up the observed
     jaw center instead: open a little wider than the object, come over it,
     turn the jaws side to side, center them above it, then go straight down
-    to its center height (not below z 0.14).
+    to its center height (not below 1.5 cm over the workspace floor: z 0.14 on the table).
 
     Args:
         run: Submits one action request dict and returns once it has finished.
@@ -34,5 +34,6 @@ def jaws_around(run, observe, name: str, wrist: float = -1.5) -> None:
     for _ in range(2):
         jaw, at = observe()["jaw_center_xyz_m"], obj()["xyz_m"]
         run({"type": "move_ee_by", "params": {"dxyz_m": [at[0] - jaw[0], at[1] - jaw[1], 0.0]}})
-    drop = max(obj()["xyz_m"][2], 0.14) - observe()["jaw_center_xyz_m"][2]
+    lowest = observe()["workspace"]["z"][0] + 0.015
+    drop = max(obj()["xyz_m"][2], lowest) - observe()["jaw_center_xyz_m"][2]
     run({"type": "move_ee_by", "params": {"dxyz_m": [0.0, 0.0, drop]}})

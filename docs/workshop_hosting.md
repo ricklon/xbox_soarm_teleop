@@ -37,6 +37,10 @@ works on this computer; the next section makes the arms reachable.
 The hub does not print any key in the terminal. `--no-open` stops it opening
 the browser, and `--show-links` prints the instructor link if you need it.
 
+To check every scene end to end without clicking, run the smoke test against
+the last arm (see [agent_checks.md](agent_checks.md), which also has the
+14-check script for trying an AI agent or comparing models).
+
 Decide two things in advance:
 
 - **How students reach your computer** (section 2).

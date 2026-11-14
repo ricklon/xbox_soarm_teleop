@@ -317,7 +317,8 @@ where an object's center should be. The pad geometry it is built from
 (`JAW_*` in `grasp.py`) is measured from the SO-ARM101 meshes, not guessed.
 The approach the agent instructions give: open to the width plus 5 cm, come
 over the object, roll the wrist, center the jaw point over it with `move_by`,
-then go straight down to its center height (not below z 0.14). Coming in at an
+then go straight down to its center height (not below 1.5 cm over the
+workspace floor, z 0.14 on the table). Coming in at an
 angle knocks a rigid object away. A held object rides with the gripper,
 keeping its place and turn between the jaws as the wrist moves.
 
