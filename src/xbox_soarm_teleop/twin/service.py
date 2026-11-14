@@ -79,6 +79,13 @@ OFF_TABLE_MARGIN_M = 0.01
 KEPT_ACTIONS = 200
 LOCATE_SIZE = (640, 480)  # pointing models do better on the largest picture
 LOCATE_TIMEOUT_S = 5.0
+# check_success: the judge's P(in the goal box) at or above DONE_AT says done, at
+# or below RETRY_AT says retry, and anything between says look again. Clef's
+# answers at 0.9 or more were right 93% of the time, at 0.1 or less always
+# (docs/vision_benchmark.md).
+DONE_AT = 0.9
+RETRY_AT = 0.1
+CHECK_SIZE = (640, 480)
 JAW_FLOOR_CLEARANCE_M = 0.015  # the jaw center no lower than this over the workspace floor  # for the loop to answer; the model itself may take longer
 
 
@@ -134,6 +141,7 @@ class TwinService:
             kept: in the session log, in :meth:`observe_truth`, and as the
             grader of :meth:`report_estimate`.
         pointer: The pointing model behind :meth:`locate` (``twin.pointing``).
+        judge: The success judge behind :meth:`check_success` (``twin.judge.ClefJudge``).
     """
 
     def __init__(
@@ -155,6 +163,7 @@ class TwinService:
         layout: Layout | None = None,
         hide_positions: bool = False,
         pointer: Pointer | None = None,
+        judge: Any = None,
     ) -> None:
         self.log = log
         self.hide_positions = hide_positions
@@ -162,6 +171,9 @@ class TwinService:
         self._shown: dict[str, Any] | None = None
         self.pointer = pointer
         """The pointing model ``locate`` asks (``twin.pointing``); None: no ``locate``."""
+        self.judge = judge
+        """The judge ``check_success`` asks (``twin.judge.ClefJudge``); None: no checks."""
+        self._success_checks: list[dict[str, Any]] = []
         self._shared_cameras = cameras is not None
         self._status_logged: tuple | None = None
         self._control_logged: tuple = (None, False)
@@ -403,6 +415,104 @@ class TwinService:
     def estimate_scores(self) -> list[dict[str, Any]]:
         """Every scored estimate so far, oldest first (copies)."""
         return [dict(score) for score in self._estimates]
+
+    def success_checks(self) -> list[dict[str, Any]]:
+        """Every ``check_success`` so far, with the truth beside the judge's answer (copies)."""
+        return [dict(check) for check in self._success_checks]
+
+    def check_success(
+        self,
+        name: str,
+        *,
+        client_id: str = "agent",
+        timeout_s: float = LOCATE_TIMEOUT_S,
+    ) -> dict[str, Any]:
+        """Is ``name`` in the goal box? Ask the judge about a front picture.
+
+        Returns the judge's probabilities and a verdict: ``done`` at
+        ``DONE_AT`` or more, ``retry`` at ``RETRY_AT`` or less, ``look_again``
+        between. The twin's truth is logged beside the answer (``success_check``
+        lines, :meth:`success_checks`) and never returned. Blocks while the
+        judge answers; call it from a client thread.
+        """
+        judge = self.judge
+        if judge is None:
+            return {
+                "ok": False,
+                "reason": "no_judge",
+                "detail": "this twin has no success judge (start it with --judge)",
+            }
+        try:
+            self._log("request", client_id=client_id, type="check_success", name=name)
+            setup = self.call(lambda: self._check_setup(name)).result(timeout=timeout_s)
+            picture = self.render(
+                "front", width=CHECK_SIZE[0], height=CHECK_SIZE[1], fmt="png", client_id=client_id
+            ).result(timeout=timeout_s)
+        except ActionRejected as exc:
+            return {"ok": False, "reason": exc.reason.value, "detail": exc.detail}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"ok": False, "reason": "error", "detail": str(exc)}
+        started = time.monotonic()
+        try:
+            answer = judge.judge(
+                [picture], setup["description"], views=["front"], others=setup["others"]
+            )
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            detail = mask_secrets(str(exc))
+            self._log("success_check", client_id=client_id, ok=False, name=name, detail=detail)
+            return {"ok": False, "reason": "judge_error", "detail": detail}
+        seconds = round(time.monotonic() - started, 3)
+        p_in_goal = float(answer["in_goal"])
+        verdict = verdict_for(p_in_goal)
+        where = max(answer["where"], key=answer["where"].get)
+        result = {
+            "ok": True,
+            "name": name,
+            "description": setup["description"],
+            "verdict": verdict,
+            "p_in_goal": round(p_in_goal, 4),
+            "p_held": round(float(answer["held"]), 4),
+            "p_tipped": round(float(answer["tipped"]), 4),
+            "where": where,
+            "judge": getattr(judge, "model", "judge"),
+            "seconds": seconds,
+            "cost_usd": answer.get("cost_usd"),
+        }
+        truth = setup["truth"]
+        record = {
+            **result,
+            "client_id": client_id,
+            "t": round(self.now_s, 3),
+            "truth": truth,
+            # A verdict is right when "done" means in the box and "retry" means not;
+            # "look again" claims nothing.
+            "correct": None
+            if verdict == "look_again"
+            else (verdict == "done") == bool(truth["in_goal"]),
+        }
+        self._success_checks.append(record)
+        self._log(
+            "success_check",
+            client_id=client_id,
+            **{k: v for k, v in record.items() if k != "client_id"},
+        )
+        return result
+
+    def _check_setup(self, name: str) -> dict[str, Any]:
+        """On the loop thread: check the name, word the question, read the truth."""
+        from xbox_soarm_teleop.twin.judge import truth_labels
+
+        positions = self.grasp.positions()
+        if name not in positions:
+            known = ", ".join(positions) or "none"
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, f"Unknown object '{name}'. On the table: {known}"
+            )
+        return {
+            "description": object_description(name, self.layout),
+            "others": [object_description(other, self.layout) for other in positions if other != name],
+            "truth": truth_labels(self, name),
+        }
 
     def locate(
         self,
@@ -1187,6 +1297,15 @@ class TwinService:
 POSITION_FIELDS = ("xyz_m", "in_goal", "off_table")
 
 _MISSED = re.compile(r"^(?P<name>\S+) missed(?: \(\d+ cm away\))?: ")
+
+
+def verdict_for(p_in_goal: float) -> str:
+    """``done``, ``look_again`` or ``retry`` for the judge's P(in the goal box)."""
+    if p_in_goal >= DONE_AT:
+        return "done"
+    if p_in_goal <= RETRY_AT:
+        return "retry"
+    return "look_again"
 
 
 def hide_object_positions(observation: dict[str, Any]) -> dict[str, Any]:

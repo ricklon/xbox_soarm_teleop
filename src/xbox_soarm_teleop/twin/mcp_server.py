@@ -85,8 +85,11 @@ view="overhead". To pick an object up: locate it; move_to 6 cm above its
 `jaw_move_m.dz`; then set_gripper(opening_m=grip_width_m). Make one tool call
 at a time and wait for its result: two motion calls at once are refused as
 busy. A "missed" event means the estimate was off: open, lift 5 cm, locate
-again and repeat. Check a placement with
-locate(name, rest_z_m=the goal box floor z) or with `camera`. Without locate
+again and repeat. After releasing, check the placement with
+check_success(name): a judge looks at a front picture and says "done" (it is
+in the box), "retry" (it is not: locate it and pick again) or "look_again"
+(unsure: ask again or look with `camera`). Without a judge (reason no_judge),
+use locate(name, rest_z_m=the goal box floor z) or `camera`. Without locate
 (reason no_pointer), use `camera`: the overhead view is a map, so judge an
 object against things whose positions you know (the jaw center, the goal
 box). locate's answers are scored against the truth for a benchmark; when you
@@ -324,6 +327,16 @@ def build_mcp_server(
         (`scene.object_positions` is "hidden")."""
         _, result = run_command(twin(ctx).report_estimate(name, [x, y, z], client_id=client_of(ctx)))
         return result
+
+    @server.tool()
+    def check_success(name: str, ctx: Context | None = None) -> dict[str, Any]:
+        """Is the object in the goal box? A judge model (Clef) looks at a front
+        picture and answers with probabilities and a verdict: "done" (p_in_goal
+        0.9 or more), "retry" (0.1 or less: it is not in the box; locate it and
+        pick again) or "look_again" (unsure: check again after a moment, or
+        look with camera). Use it after releasing an object, since no
+        coordinates say where it ended up."""
+        return twin(ctx).check_success(name, client_id=client_of(ctx))
 
     @server.tool()
     def locate(

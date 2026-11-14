@@ -54,6 +54,15 @@ VIEW_TEXT = {
 }
 
 
+def make_judge(spec: str | None) -> "ClefJudge | None":
+    """A judge from a command-line spec: ``clef``, ``clef-flash`` or ``none``."""
+    if not spec or spec == "none":
+        return None
+    if spec not in MODELS:
+        raise ValueError(f"Unknown judge '{spec}'. Known: {', '.join(MODELS)}, none")
+    return ClefJudge(model=spec)
+
+
 class JudgeError(RuntimeError):
     """The judge could not be asked, or its answer made no sense."""
 

@@ -54,6 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
         "keeps the true positions, and report_estimate scores agents' guesses",
     )
     parser.add_argument(
+        "--judge",
+        default=None,
+        choices=("clef", "clef-flash", "none"),
+        help="Success judge behind the check_success tool: clef or clef-flash on Cloudflare "
+        "Workers AI (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID). Default: none",
+    )
+    parser.add_argument(
         "--pointer",
         default=None,
         help="Pointing model behind the locate tool: oracle (the truth; for tests), "
@@ -250,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         mesh_cell_mm=max(args.mesh_detail_mm, 0.0),
         hide_positions=args.no_coordinates,
         pointer=args.pointer,
+        judge=args.judge,
     )
     app = build_hub_app(
         hub,

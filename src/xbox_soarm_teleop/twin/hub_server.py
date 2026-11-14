@@ -114,8 +114,11 @@ view="overhead". To pick an object up: locate it; move_to 6 cm above its
 `jaw_move_m.dz`; then set_gripper(opening_m=grip_width_m). Make one tool call
 at a time and wait for its result: two motion calls at once are refused as
 busy. A "missed" event means the estimate was off: open, lift 5 cm, locate
-again and repeat. Check a placement with
-locate(name, rest_z_m=the goal box floor z) or with `camera`. Without locate
+again and repeat. After releasing, check the placement with
+check_success(name): a judge looks at a front picture and says "done" (it is
+in the box), "retry" (it is not: locate it and pick again) or "look_again"
+(unsure: ask again or look with `camera`). Without a judge (reason no_judge),
+use locate(name, rest_z_m=the goal box floor z) or `camera`. Without locate
 (reason no_pointer), use `camera`: the overhead view is a map, so judge an
 object against things whose positions you know (the jaw center, the goal
 box). locate's answers are scored against the truth for a benchmark; when you

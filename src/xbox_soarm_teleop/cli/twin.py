@@ -81,6 +81,13 @@ def build_parser() -> argparse.ArgumentParser:
         "keeps the true positions, and report_estimate scores agents' guesses",
     )
     parser.add_argument(
+        "--judge",
+        default=None,
+        choices=("clef", "clef-flash", "none"),
+        help="Success judge behind the check_success tool: clef or clef-flash on Cloudflare "
+        "Workers AI (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID). Default: none",
+    )
+    parser.add_argument(
         "--pointer",
         default=None,
         help="Pointing model behind the locate tool: oracle (the truth; for tests), "
@@ -104,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     import mujoco.viewer
 
     from xbox_soarm_teleop.twin import build_twin
+    from xbox_soarm_teleop.twin.judge import make_judge
     from xbox_soarm_teleop.twin.mcp_server import McpThread, build_mcp_server
     from xbox_soarm_teleop.twin.pointing import make_pointer
     from xbox_soarm_teleop.twin.status import MENU_BUTTON
@@ -125,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         with_controller=not args.no_controller,
         hide_positions=args.no_coordinates,
         pointer=make_pointer(args.pointer),
+        judge=make_judge(args.judge),
     )
     if service.log is not None:
         print(f"Session log: {service.log.path}", flush=True)
@@ -166,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
         print("No-coordinates mode: agents are not told where objects are.", flush=True)
     if service.pointer is not None:
         print(f"locate: pointing model {service.pointer.name}", flush=True)
+    if service.judge is not None:
+        print(f"check_success: judge {service.judge.model}", flush=True)
 
     shown_events: list[str] = []
     shown_status: tuple[str, str, str] | None = None

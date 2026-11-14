@@ -166,6 +166,11 @@ def grade(log_path: Path, name: str) -> dict:
             e["error_cm"] for e in estimates if e.get("source", "").startswith("locate")
         ],
         "misses": sum(1 for text in events if f"{name} missed" in text),
+        "success_checks": [
+            {k: line["data"].get(k) for k in ("verdict", "p_in_goal", "correct")}
+            for line in lines
+            if line["kind"] == "success_check" and line["data"].get("ok", True)
+        ],
         "time": time_split(lines),
     }
 
@@ -284,6 +289,7 @@ def run_once(args, run: int) -> dict:
             "--max-seconds",
             str(args.timeout + 60),
             *(["--pointer", args.pointer] if args.pointer else []),
+            *(["--judge", args.judge] if args.judge else []),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -302,7 +308,13 @@ def run_once(args, run: int) -> dict:
         except subprocess.TimeoutExpired:
             twin.kill()
     log_files = sorted(logs.glob("*.jsonl"))
-    result = {"run": run, "model": args.model, "scene": args.scene, "pointer": args.pointer}
+    result = {
+        "run": run,
+        "model": args.model,
+        "scene": args.scene,
+        "pointer": args.pointer,
+        "judge": args.judge,
+    }
     result.update(harness=args.harness, work_dir=str(work), **outcome)
     if log_files:
         result.update(grade(log_files[-1], name))
@@ -323,6 +335,9 @@ def main(argv: list[str] | None = None) -> int:
         default="opencode",
         help="opencode: the CLI students use. loop: the lean agent loop (twin.agent_loop), the same "
         "prompt and tools for every model, OpenRouter models only",
+    )
+    parser.add_argument(
+        "--judge", default=None, choices=("clef", "clef-flash"), help="Success judge for check_success"
     )
     parser.add_argument("--max-steps", type=int, default=60, help="Model replies at most (loop)")
     parser.add_argument(
