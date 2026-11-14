@@ -27,7 +27,8 @@ truth (`twin_logs/pointing_benchmark_molmo_gemma.json`,
 | perfect pixel (segmentation) | 58/58 | 0.1-0.3 cm | 0.2-1.0 cm | - |
 | image center (for scale) | - | 6.8-12.8 cm | 10-21 cm | - |
 
-Ranges are over the four views (front, overhead, side, wrist). Gemini 3.5
+Ranges are over the four views (front, overhead, side, wrist), with the
+first wrist camera; see below for the wrist camera as mounted on the real arm. Gemini 3.5
 Flash is as close as the method allows: the rest is the gap between the
 visible surface and the object's center.
 
@@ -58,6 +59,35 @@ its first step.
 iceman-free fails even with the oracle pointer (0/2): it computes moves itself
 and gets the height wrong, and it issues motion calls in parallel. GLM uses
 `jaw_move_m` as given.
+
+### The wrist camera, as mounted on the real arm
+
+The twin's wrist camera now sits where the real arm's Seeed Studio camera
+does (RGB USB camera, OV9732, 100 degrees, 1280x720): on a post 50 mm out
+from the gripper's side, 20 mm along the fingers, tilted 40 degrees in, with
+a 61-degree vertical field of view, drawn at 16:9. Both jaw tips come in from
+the picture's left and right with the object between them, as on the real
+camera (checked against it by eye, holding a cube). The first camera, beside
+the fixed jaw, lost the object once the jaws were over it.
+
+Pointing from the grasp's starting pose (6 cm above the object, jaws side to
+side), 640x360, 11 placements (5 dropped: moving there nudged the object)
+(`twin_logs/pointing_benchmark_wrist_seeed.json`):
+
+| backend | median error | 90th percentile | s per call |
+|---|---|---|---|
+| Gemini 3.5 Flash (OpenRouter) | 0.41 cm | 1.0 cm | 2.5 |
+| Gemma 4 31B (OpenRouter) | 0.51 cm | 1.0 cm | 3.4 |
+| perfect pixel | 0.65 cm | 0.9 cm | - |
+| Gemini Robotics-ER 2 | 0.71 cm | 1.1 cm | 2.1 |
+| Molmo2-ER | 0.84 cm | 1.2 cm | 3.8 |
+| Gemma 4 12B (local) | 3.2 cm | 3.9 cm | 1.8 |
+| image center | 5.3 cm | 7.0 cm | - |
+
+Close up and steeply angled, the visible surface's centroid is 0.65 cm from
+the object's center, so a model that points nearer the center can beat the
+"perfect" pixel (the two Gemini/Gemma OpenRouter models do). The local Gemma 4
+12B, fine in the fixed views, is poor this close.
 
 ## Step 1: no-coordinates mode
 
@@ -217,10 +247,10 @@ rate answers every question with how often it is yes.
 | base rate | - | 0.73 / 0.196 / 0 | 0.73 / 0.196 / 0 | 0.71 / 0.207 / 0 | 0.46 / 0.36 |
 | clef | 1 | 0.98 / 0.031 / 0.056 | 0.95 / 0.043 / 0.123 | 0.90 / 0.071 / 0.130 | 0.93 / 0.88 |
 | clef | 2 | 0.88 / 0.063 / 0.102 | 0.93 / 0.045 / 0.119 | 0.90 / 0.090 / 0.153 | 0.98 / 0.88 |
-| clef | 4 | 0.93 / 0.055 / 0.110 | 0.93 / 0.049 / 0.151 | 0.76 / 0.137 / 0.164 | 0.98 / 0.86 |
+| clef | 4 | 0.95 / 0.052 / 0.101 | 1.00 / 0.026 / 0.123 | 0.85 / 0.104 / 0.125 | 0.98 / 0.89 |
 | clef-flash | 1 | 0.93 / 0.053 / 0.078 | 0.90 / 0.064 / 0.128 | 0.85 / 0.124 / 0.127 | 0.90 / 0.86 |
 | clef-flash | 2 | 0.88 / 0.068 / 0.092 | 0.93 / 0.063 / 0.119 | 0.83 / 0.118 / 0.115 | 0.90 / 0.85 |
-| clef-flash | 4 | 0.88 / 0.080 / 0.138 | 0.88 / 0.081 / 0.116 | 0.78 / 0.146 / 0.120 | 0.88 / 0.80 |
+| clef-flash | 4 | 0.93 / 0.065 / 0.129 | 0.90 / 0.047 / 0.138 | 0.83 / 0.120 / 0.133 | 0.98 / 0.83 |
 
 What it shows:
 
@@ -228,9 +258,12 @@ What it shows:
   robotics or spatial use. With one front picture it answers "in the goal
   box?" right 40 times in 41 (Brier 0.031 against 0.196 for the base rate),
   and never takes an object just outside the wall for one inside.
-- More pictures do not help. With all four, "tipped" gets worse (0.90 to
-  0.76): it calls flat objects next to the box tipped. One front picture is
-  the best setting, and the cheapest.
+- More pictures help little. With all four (the 4-picture rows use the
+  real arm's wrist camera; `twin_logs/judge_benchmark_seeed_wrist.json`),
+  "held" becomes perfect (1.00), but "tipped" drops (0.90 to 0.85): it calls
+  some flat objects next to the box tipped. One front picture is the best
+  setting overall, and the cheapest. (With the first wrist camera, "tipped"
+  fell to 0.76.)
 - Hardest cases: a tipped object inside the box (the walls hide the tilt;
   clef got 3 of 6, clef-flash 1 of 6), and an object held over the box
   (clef-flash says "in the goal box" for half of them).
