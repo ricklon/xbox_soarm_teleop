@@ -154,6 +154,11 @@ def time_split(lines: list[dict]) -> dict:
     }
 
 
+# A provider refusing a request (no credit, rate limit, outage): the run then
+# tests the provider, not the agent. agent_report.py uses the same pattern.
+PROVIDER_ERROR = re.compile(r"HTTP (402|429|5\d\d)")
+
+
 def grade(log_path: Path, name: str) -> dict:
     """What really happened, from the session log."""
     lines = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
@@ -191,6 +196,14 @@ def grade(log_path: Path, name: str) -> dict:
             - sum(
                 1 for line in lines if line["kind"] == "success_check" and line["data"].get("ok", True)
             ),
+        ),
+        # locate calls the pointer's provider refused (not_found is a real answer).
+        "provider_errors": sum(
+            1
+            for line in lines
+            if line["kind"] == "locate_result"
+            and line["data"].get("ok") is False
+            and PROVIDER_ERROR.search(str(line["data"].get("detail") or ""))
         ),
         "time": time_split(lines),
         # What the pointer and the judge cost, from the twin's log.
@@ -404,6 +417,39 @@ def run_once(args, run: int) -> dict:
     return result
 
 
+def openrouter_credit_ok(min_usd: float, fetch=None) -> bool:
+    """Is there at least ``min_usd`` of OpenRouter credit left? A run that runs
+    out part way tests nothing, as the first random-start A/B found (HTTP 402)."""
+    from xbox_soarm_teleop.twin.pointing import load_secret, mask_secrets
+
+    if fetch is None:
+        import urllib.request
+
+        def fetch(url, headers):
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return json.load(response)
+
+    try:
+        data = fetch(
+            "https://openrouter.ai/api/v1/credits",
+            {"Authorization": f"Bearer {load_secret('OPENROUTER_API_KEY') or ''}"},
+        )["data"]
+    except Exception as exc:  # noqa: BLE001 - any failure here means do not start
+        print(f"Could not read the OpenRouter credit: {mask_secrets(str(exc))}", file=sys.stderr)
+        return False
+    remaining = float(data["total_credits"]) - float(data["total_usage"])
+    if remaining < min_usd:
+        print(
+            f"OpenRouter credit is ${remaining:.2f}, under --min-credit ${min_usd:.2f}: "
+            "no runs were started. Add credit at openrouter.ai/settings/credits.",
+            file=sys.stderr,
+        )
+        return False
+    print(f"OpenRouter credit: ${remaining:.2f}", file=sys.stderr)
+    return True
+
+
 def judge_answers(model: str) -> bool:
     """Ask the judge once before any run: a judge that cannot answer (no key,
     a used-up daily quota) would make every judged run a test of nothing."""
@@ -460,10 +506,19 @@ def main(argv: list[str] | None = None) -> int:
         "variant with the same --seed)",
     )
     parser.add_argument("--seed", type=int, default=0, help="Seed for --random-start")
+    parser.add_argument(
+        "--min-credit",
+        type=float,
+        default=1.0,
+        help="OpenRouter credit (USD) needed before any run starts",
+    )
     parser.add_argument("--timeout", type=float, default=900.0, help="Seconds per run")
     parser.add_argument("--out", default="twin_logs/agent_trials.jsonl")
     args = parser.parse_args(argv)
     if args.judge and not judge_answers(args.judge):
+        return 2
+    uses_openrouter = args.harness == "loop" or str(args.pointer).startswith("openrouter")
+    if uses_openrouter and not openrouter_credit_ok(args.min_credit):
         return 2
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
