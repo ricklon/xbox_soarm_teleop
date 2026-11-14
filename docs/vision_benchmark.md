@@ -290,3 +290,81 @@ picture counts; `--images DIR` saves every picture. It needs
 Note: the pointing benchmark placed some objects at y < -0.10 m, beyond the
 table's edge (drawn at table height). Pointing is graded the same there, but
 `twin/scenarios.py` keeps every judge situation on the table.
+
+## Distractors: finding the right object
+
+Five rigid look-alikes were added to the pick-and-place model (a small red
+cube, a blue cube, a red bar, a green cube, a yellow cube; all at least 3 cm
+tall, because the jaw center stops 1.5 cm over the table and shorter objects
+cannot be gripped). Four hidden scenes load by name and stay out of
+`list_scenes`: `distractors_color`, `_shape`, `_size` and `_clutter`. Each
+names a target and words for it that are unambiguous in that scene ("large
+red cube"); a control test picks the target in each with true positions and
+checks that nothing else moves.
+
+`pointing_benchmark.py --distractors KIND` tries each target spot alone and
+then among the look-alikes, and classifies the pointed pixel as the target,
+a named distractor or background. Wrong-object rate, 8 placements per kind
+(`twin_logs/pointing_distractors_*.json`):
+
+| pointer | colour | shape (front / wrist) | size | clutter front | clutter wrist |
+|---|---|---|---|---|---|
+| Gemini 3.5 Flash | 0% | 0% / 12% | 0% | 0% | 50% |
+| Gemini Robotics-ER 2 | 0% | 0% / 12% | 0% | 0% | 38% |
+| Gemma 4 31B | 0% | 0% / 12% | 0% | 25% | 50% |
+| Molmo2-ER | 0% | 25% / 25% | front: found 2 of 8 | 67% (found 3 of 8) | 33% |
+| Gemma 4 12B | 0% | 38% / 25% | 0% | 62% | 50% |
+
+Colour is easy for every model. From the front, both Gemini models never
+picked the wrong object, even in clutter. From the wrist camera every model
+gets clutter wrong a third to half of the time: up close the small red cube
+looks "large", and most of the table is out of view. Molmo2-ER rejects the
+word "large": it found the "large red cube" in none of 8 front pictures with
+the cube alone.
+
+`judge_benchmark.py --distractors KIND` adds a distractor in the box with
+the target outside, both in the box, and a held distractor, and tells Clef
+every object on the table. Over 10 situations per kind
+(`twin_logs/judge_distractors_*.json`), Clef answers "is the target in the
+box?" right 90-100% of the time; Clef-flash drops to 60-70% in the shape,
+size and clutter scenes.
+
+## Time and cost
+
+Both benchmarks now write `timing` (start, end, wall time, time waiting on
+models and time simulating) and tokens and cost per backend; `agent_trial.py`
+records the agent model's tokens and cost from opencode's JSON events and
+splits each run's time from the session log.
+
+| model | s per call | cost per call |
+|---|---|---|
+| Gemini 3.5 Flash (OpenRouter) | 1.7-2.7 | $0.0042 (it spends tokens reasoning) |
+| Gemma 4 31B (OpenRouter) | 2.4-4.9 | $0.0002 |
+| Gemini Robotics-ER 2 | 2-16, up to 70 | not reported (tokens only, about 1,150 in) |
+| Molmo2-ER, Gemma 4 12B (local) | 1.8-5.7 | $0 |
+| Clef / Clef-flash (judge) | 0.4 / 0.2 | $0.0002 / $0.00003 |
+
+In successful agent runs about 63% of the time is the agent's own model
+thinking, 25-28% arm motion and 5-15% `locate`. opencode sends about 18,000
+tokens of instructions and tool descriptions on every step, so the agent
+model is the main cost: one failed 82-step run with GLM 5.3 Flash cost $0.12.
+
+## Recommendations
+
+- Put Gemini 3.5 Flash (via OpenRouter) behind `locate`. Gemma 4 31B is 20
+  times cheaper and nearly as accurate alone, but picked the wrong object 1
+  time in 4 in clutter.
+- Find objects from an external front camera; use the wrist camera to
+  confirm. On the real arm that means calibrating the external camera's pose.
+- Describe objects by colour and shape, not relative size, and test each
+  wording with each model.
+- Check success with Clef (27B) and one front picture. Act on 0.9 and above
+  or 0.1 and below; look again in between. Avoid Clef-flash with look-alikes.
+- Choose the agent model first: it decided success more than the pointer.
+  Keep `jaw_move_m` and the one-call-at-a-time rule.
+- Hold off on Gemini Robotics-ER 2 for agent loops while it is in preview:
+  its speed swung from 2 s to over 70 s in a day.
+
+Still to do: hide which object is held in no-coordinates mode before agent
+trials in the distractor scenes; more runs per pairing; lighting, texture
+and camera-noise variation; and scoring real camera frames.
