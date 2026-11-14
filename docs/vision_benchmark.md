@@ -6,20 +6,22 @@ grader for perception. This page covers how to run the twin as a benchmark and
 the results so far.
 
 Status: step 1 (no-coordinates mode and scoring) and step 2 (a `locate` tool
-backed by pointing models) are done. Gemini Robotics-ER 2 is wired in and
-answers (one call: 2 px off), but the free tier's quota ran out before a full
-run; OpenRouter's free Gemma 4 31B was rate-limited upstream. Step 3 (a
-Workers AI success judge) is not built yet.
+backed by pointing models) are done. Step 3 (a Workers AI success judge) is
+not built yet.
 
 ## Results so far
 
 Pointing, the same 16 random placements (seed 0), 640x480, against the twin's
 truth (`twin_logs/pointing_benchmark_molmo_gemma.json`,
-`twin_logs/pointing_benchmark_gemini_openrouter.json`):
+`twin_logs/pointing_benchmark_gemini_openrouter.json`,
+`twin_logs/pointing_benchmark_gemini_er2.json`,
+`twin_logs/pointing_benchmark_gemma31b.json`):
 
 | backend | found | median error | 90th percentile | s per call |
 |---|---|---|---|---|
 | Gemini 3.5 Flash (OpenRouter) | 58/58 | 0.1-0.3 cm | 0.3-1.0 cm | 1.7-2.3 |
+| Gemini Robotics-ER 2 (Gemini API) | 58/58 | 0.2-0.4 cm (wrist 1.0) | 0.7-1.9 cm | 3-16 |
+| Gemma 4 31B (OpenRouter, paid) | 58/58 | 0.3-0.5 cm | 0.7-1.6 cm | 2.4-4.4 |
 | Molmo2-ER (local, MPS) | 58/58 | 0.5-0.7 cm | 1.2-1.7 cm | 4.2-4.7 |
 | Gemma 4 12B (local Ollama) | 58/58 | 0.9-1.1 cm | 1.4-3.1 cm | 1.9-2.8 |
 | perfect pixel (segmentation) | 58/58 | 0.1-0.3 cm | 0.2-1.0 cm | - |
@@ -36,6 +38,8 @@ session log:
 | pointer | in the goal box | time |
 |---|---|---|
 | oracle (truth; control) | 1/1 | 48 s |
+| Gemini 3.5 Flash | 3/3 | 57-120 s |
+| Gemini Robotics-ER 2 | 1/1 | 124 s (5 more runs lost: the free GLM endpoint stopped answering, even a one-word ping) |
 | Gemma 4 12B | 3/3 | 72-84 s |
 | Molmo2-ER | 2/3 | 60-64 s (the third timed out after 8 misses) |
 
@@ -126,9 +130,14 @@ Keys are read from the environment, else from a `.env` file: the current
 folder's, then the project's, then `~/.env` (the first one that has the key
 wins; an empty value counts as unset). Copy `.env.example` to `.env` in the
 project and fill in what you use; git ignores `.env`. Keys are sent only in
-headers and masked in every error. Check the Gemini model id when the key is set: it is a
-guess. OpenRouter has no Robotics-ER, Molmo2-ER or Clef; it does have general
+headers and masked in every error. OpenRouter has no Robotics-ER, Molmo2-ER or Clef; it does have general
 Gemini and Gemma 4 models.
+
+Gemini's free tier allows 20 requests a day for Robotics-ER 2, less than
+one benchmark run (58 calls): enable billing on the key's project. HTTP 429
+replies are retried up to four times, waiting as long as the API asks.
+OpenRouter's free Gemma 4 31B is often rate-limited upstream; the paid one
+(`google/gemma-4-31b-it`) costs a fraction of a cent a call.
 
 Molmo2-ER takes the category literally. Shown the bean bag, it found a "blue
 bean bag" in 1 of 9 pictures and a "blue object" in 9 of 9, so the bean bag's
