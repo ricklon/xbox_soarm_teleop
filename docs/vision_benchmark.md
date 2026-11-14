@@ -349,6 +349,66 @@ thinking, 25-28% arm motion and 5-15% `locate`. opencode sends about 18,000
 tokens of instructions and tool descriptions on every step, so the agent
 model is the main cost: one failed 82-step run with GLM 5.3 Flash cost $0.12.
 
+## The agent loop, and does `check_success` help? (A/B)
+
+`twin/agent_loop.py` is a lean agent loop: any OpenRouter model, the twin's
+MCP tools as function tools, one call at a time, with limits on steps, cost
+and time. It replaces opencode in agent trials, with no 18,000-token preamble per
+step (`agent_trial.py --harness loop`).
+
+`check_success(name)` asks Clef about a front picture whether the object is
+in the box, and answers `done` (p >= 0.9), `look_again` or `retry`
+(p <= 0.1). The twin logs the truth beside every answer and never returns it.
+
+Every task now ends with a line `RESULT: in_box` or `RESULT: not_in_box`, so
+the agent's claim is scored as well as the outcome. Three variants, 4 runs
+each, on `pick_place_basic` with Gemini 3.5 Flash behind `locate`:
+`no_judge`; `judge` (the tool exists); `judge+required` (the task says to
+confirm with it). `scripts/agent_report.py` compares them and leaves out
+judged runs where a check failed or never answered
+(`twin_logs/agent_ab_glm.jsonl`, `twin_logs/agent_ab_gemma.jsonl`):
+
+| agent model | variant | runs | in box | stopped itself | claim right | checks right | median s | median $ |
+|---|---|---|---|---|---|---|---|---|
+| Gemma 4 31B | no_judge | 4 | 3/4 | 1/4 | 0/1 | - | 146 | 0.12 |
+| Gemma 4 31B | judge | 4 | 2/4 | 4/4 | 2/4 | 4/4 | 33 | 0.02 |
+| Gemma 4 31B | judge+required | 4 | 4/4 | 2/4 | 2/2 | 2/2 | 74 | 0.06 |
+| GLM 5.3 Flash | no_judge | 4 | 2/4 | 3/4 | 2/3 | - | 138 | 0.03 |
+| GLM 5.3 Flash | judge | 6 | 1/6 | 2/6 | 1/2 | 2/2 | 385 | 0.06 |
+| GLM 5.3 Flash | judge+required | 4 | 1/4 | 2/4 | 1/2 | 2/2 | 96 | 0.06 |
+
+(GLM `judge` has 6 runs: 2 valid runs from an earlier round that never called
+the check, plus the 4 from the rerun.)
+
+What it shows:
+
+- Every `done` from Clef was right when given (10 of 10, p 0.91-0.96). It
+  never called a miss a success. "Checks right" counts only `done` and
+  `retry` answers; `look_again` is neither right nor wrong.
+- With the check, Gemma stops by itself and its claim matches what Clef saw;
+  without it, Gemma kept going until the step limit 3 times in 4. The judged
+  runs were also cheaper and faster (median $0.02-0.06 against $0.12).
+- **Homing after the check knocks the cube out of the box.** In 7 of the 13
+  failed runs, across all variants, the cube was in the box until the agent
+  called `home`. Straight after the release the jaws still straddle the cube,
+  and the home path lifts it to about 20 cm and throws it 5-10 cm. The task
+  said "place it, then home"; agents checked before homing, so 4 `done`
+  answers were right when given and wrong by the end.
+- `look_again` (p 0.5-0.89) is where agents get stuck: the 2 Gemma
+  `judge+required` runs that hit the step limit had the cube in the box all
+  along, and kept re-checking and nudging it. A second view would settle these.
+- GLM's other failures are its own: 5 runs never got the cube into the box,
+  and 1 knocked it out while re-gripping.
+
+Too few runs to separate the variants' success rates; the home-move problem is
+larger than any difference between them. Fix the order first (open, lift
+straight up, then home, then check), then rerun.
+
+Early runs were invalid twice: the Cloudflare daily free allowance ran out
+(the trial now checks that Clef answers before it starts and counts failed
+checks), then `check_success` crashed on twins that write a session log
+(fixed, with a test).
+
 ## Recommendations
 
 - Put Gemini 3.5 Flash (via OpenRouter) behind `locate`. Gemma 4 31B is 20
@@ -361,7 +421,11 @@ model is the main cost: one failed 82-step run with GLM 5.3 Flash cost $0.12.
 - Check success with Clef (27B) and one front picture. Act on 0.9 and above
   or 0.1 and below; look again in between. Avoid Clef-flash with look-alikes.
 - Choose the agent model first: it decided success more than the pointer.
-  Keep `jaw_move_m` and the one-call-at-a-time rule.
+  Keep `jaw_move_m` and the one-call-at-a-time rule. Run agents in the lean
+  loop rather than opencode.
+- Keep `check_success` and ask for it: with it, agents stop when done and
+  their claims are true. Check after the last motion: lift clear of the
+  object before homing, and check after homing.
 - Hold off on Gemini Robotics-ER 2 for agent loops while it is in preview:
   its speed swung from 2 s to over 70 s in a day.
 
