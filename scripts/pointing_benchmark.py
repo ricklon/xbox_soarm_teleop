@@ -58,7 +58,10 @@ from xbox_soarm_teleop.twin.projection import camera_geometry, pixel_to_xyz  # n
 W, H = 640, 480
 VIEWS = ("overhead", "front", "side", "wrist")
 OBJECTS = ("pick_cube", "bean_bag")
-# Where objects are put: on the table, within the arm's reach, clear of the goal box.
+# Where objects are put: within the arm's reach, clear of the goal box. The
+# table ends at y = -0.10: below that the object is drawn beside it, at table
+# height. Pointing is graded the same (the plane is right), and the published
+# numbers used these ranges; twin.scenarios.random_table_spot keeps to the table.
 X_RANGE = (0.22, 0.40)
 Y_RANGE = (-0.18, 0.18)
 
