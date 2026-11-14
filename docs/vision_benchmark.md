@@ -39,9 +39,21 @@ session log:
 |---|---|---|
 | oracle (truth; control) | 1/1 | 48 s |
 | Gemini 3.5 Flash | 3/3 | 57-120 s |
-| Gemini Robotics-ER 2 | 1/1 | 124 s (5 more runs lost: the free GLM endpoint stopped answering, even a one-word ping) |
+| Gemini Robotics-ER 2 | 1/1 | 124 s (see below) |
 | Gemma 4 12B | 3/3 | 72-84 s |
 | Molmo2-ER | 2/3 | 60-64 s (the third timed out after 8 misses) |
+
+Gemini Robotics-ER 2 has one clean run. Five more were lost when the free
+GLM endpoint stopped answering (even a one-word ping); with the same model
+paid on OpenRouter (`openrouter/z-ai/glm-5.3-flash`), the next run timed out
+because Robotics-ER 2 itself had slowed to 40-70 s a call, with half the calls
+timing out (it took 3-16 s during the pointing benchmark earlier the same
+day). Too slow, at those times, for an agent that locates every few moves.
+
+`agent_trial.py` gives opencode an empty stdin and its own data folders:
+`opencode run` otherwise waits on an open stdin, and with the OpenCode
+desktop app running, a command-line opencode sharing its data stalls before
+its first step.
 
 iceman-free fails even with the oracle pointer (0/2): it computes moves itself
 and gets the height wrong, and it issues motion calls in parallel. GLM uses

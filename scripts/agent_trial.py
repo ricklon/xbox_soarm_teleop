@@ -9,6 +9,10 @@ agent says about its own success is not trusted.
     uv run python scripts/agent_trial.py --model opencode/iceman-free --pointer molmo
     uv run python scripts/agent_trial.py --model opencode/glm-5.3-flash-free \\
         --scene pick_place_easy --pointer molmo --runs 3
+    uv run python scripts/agent_trial.py --model openrouter/z-ai/glm-5.3-flash --pointer gemini
+
+An ``openrouter/...`` model gets OPENROUTER_API_KEY from the environment or
+.env (never printed).
 
 The throwaway config turns off any other ``soarm-arm`` server in your opencode
 setup (such as a workshop hub), so the agent can reach only this twin, and
@@ -28,6 +32,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+from xbox_soarm_teleop.twin.pointing import load_secret
 
 PROMPT = """\
 You are connected to a simulated robot arm through the soarm-bench MCP tools.
@@ -125,7 +131,18 @@ def run_once(args, run: int) -> dict:
             "tools": {"bash": False, "edit": False, "write": False, "patch": False, "webfetch": False},
         }
         (work / "opencode.json").write_text(json.dumps(config))
-        env = {**os.environ, "OPENCODE_CONFIG": str(work / "opencode.json")}
+        # Its own data and state folders: with the OpenCode desktop app running,
+        # a command-line opencode sharing them stalls before its first step.
+        env = {
+            **os.environ,
+            "OPENCODE_CONFIG": str(work / "opencode.json"),
+            "XDG_DATA_HOME": str(work / "opencode-data"),
+            "XDG_STATE_HOME": str(work / "opencode-state"),
+        }
+        if args.model.startswith("openrouter/") and "OPENROUTER_API_KEY" not in env:
+            key = load_secret("OPENROUTER_API_KEY")  # from .env; never printed
+            if key:
+                env["OPENROUTER_API_KEY"] = key
         started = time.monotonic()
         try:
             done = subprocess.run(
@@ -140,6 +157,7 @@ def run_once(args, run: int) -> dict:
                 ],
                 cwd=work,
                 env=env,
+                stdin=subprocess.DEVNULL,  # opencode run otherwise waits to read a message from stdin
                 capture_output=True,
                 text=True,
                 timeout=args.timeout,
