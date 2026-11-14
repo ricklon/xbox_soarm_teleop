@@ -245,3 +245,13 @@ def test_wrist_camera_sees_both_jaws_and_the_object_it_grips():
     # The jaws on either side of the picture, the cube between them.
     assert min(fixed, moving) < cube < max(fixed, moving)
     assert abs(fixed - moving) > WRIST_SIZE[0] * 0.25
+
+
+def test_cameras_see_things_close_to_the_lens():
+    """Parked objects far from the table must not push the near clipping plane
+    out: the wrist camera sees a held object a few centimetres away."""
+    from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
+
+    model = sim_cli.load_model_with_cameras(str(sim_cli.URDF_PATH), scene="pick_place_basic")
+    assert model.stat.extent * model.vis.map.znear < 0.01
+    assert model.stat.extent < 1.0

@@ -166,6 +166,12 @@ DISTRACTOR_OBJECTS = (
     ("yellow_cube", (0.015, 0.015, 0.015), (0.95, 0.78, 0.15, 1.0), 0.02),
 )
 DISTRACTOR_REST_XY = (8.0, 8.0)  # first object's spot on the floor; the rest 0.3 m apart
+# The scene's size as MuJoCo would compute it without the resting distractors.
+# Left to MuJoCo, objects 8 m away grow it to 9 m, and with it every camera's
+# near clipping plane (0.01 x extent): 9 cm, which cut away a held object in
+# the wrist camera.
+PICK_PLACE_STAT_CENTER = (0.2245, 0.04, 0.0779)
+PICK_PLACE_STAT_EXTENT = 0.6128
 
 
 class StackChallenge:
@@ -801,6 +807,8 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
     bag_geom.contype = SOFT_OBJECT_COLLISION_BIT
     bag_geom.conaffinity = SOFT_OBJECT_COLLISION_BIT
 
+    spec.stat.center = list(PICK_PLACE_STAT_CENTER)
+    spec.stat.extent = PICK_PLACE_STAT_EXTENT
     for index, (name, half, rgba, mass) in enumerate(DISTRACTOR_OBJECTS):
         body = spec.worldbody.add_body()
         body.name = name
