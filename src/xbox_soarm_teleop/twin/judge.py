@@ -35,6 +35,9 @@ from xbox_soarm_teleop.twin.pointing import PointerError, _post_json, load_secre
 
 RUN_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/cloudflare/{model}"
 MODELS = ("clef", "clef-flash")
+# List prices (USD per million input tokens) from Cloudflare's model catalog;
+# Clef writes no output tokens.
+PRICE_PER_M_INPUT = {"clef": 0.24, "clef-flash": 0.038}
 MAX_IMAGES = 4
 QUESTION_IDS = ("in_goal", "held", "tipped", "where")
 NOUL_IDS = ("in_goal", "held", "tipped")
@@ -181,7 +184,10 @@ class ClefJudge:
             raise JudgeError(
                 mask_secrets(f"unexpected Clef reply: {str(reply)[:300]}", secrets)
             ) from None
-        verdict["input_tokens"] = (reply["result"].get("usage") or {}).get("input_tokens")
+        tokens = (reply["result"].get("usage") or {}).get("input_tokens")
+        verdict["input_tokens"] = tokens
+        price = PRICE_PER_M_INPUT.get(self.model)
+        verdict["cost_usd"] = tokens * price / 1e6 if tokens is not None and price is not None else None
         return verdict
 
 

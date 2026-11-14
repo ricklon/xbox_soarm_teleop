@@ -67,6 +67,45 @@ def wait_for_port(port: int, timeout_s: float = 90.0) -> bool:
     return False
 
 
+TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED", "STOPPED"}
+
+
+def time_split(lines: list[dict]) -> dict:
+    """Where a run's wall time went, from the session log's ``wall_s`` stamps.
+
+    ``locate_s`` is time in the pointing model, ``motion_s`` time the arm was
+    moving (an action still running at the end counts to the last line), and
+    ``other_s`` the rest: mostly the agent's model thinking between calls.
+    ``first_tool_s`` is how long before the agent's first tool call.
+    """
+    if not lines:
+        return {}
+    session = float(lines[-1].get("wall_s", 0.0))
+    requests = [line for line in lines if line["kind"] == "request"]
+    first_tool = float(requests[0]["wall_s"]) if requests else None
+    locate = sum(
+        float(line["data"].get("seconds") or 0.0) for line in lines if line["kind"] == "locate_result"
+    )
+    started: dict[str, float] = {}
+    ended: dict[str, float] = {}
+    for line in lines:
+        if line["kind"] != "status" or not line.get("action_id"):
+            continue
+        action = line["action_id"]
+        started.setdefault(action, float(line["wall_s"]))
+        if line["data"].get("state") in TERMINAL_STATES:
+            ended.setdefault(action, float(line["wall_s"]))
+    motion = sum(ended.get(action, session) - start for action, start in started.items())
+    return {
+        "session_s": round(session, 1),
+        "first_tool_s": round(first_tool, 1) if first_tool is not None else None,
+        "locate_s": round(locate, 1),
+        "motion_s": round(motion, 1),
+        "other_s": round(session - locate - motion, 1),
+        "actions": len(started),
+    }
+
+
 def grade(log_path: Path, name: str) -> dict:
     """What really happened, from the session log."""
     lines = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
@@ -86,6 +125,7 @@ def grade(log_path: Path, name: str) -> dict:
             e["error_cm"] for e in estimates if e.get("source", "").startswith("locate")
         ],
         "misses": sum(1 for text in events if f"{name} missed" in text),
+        "time": time_split(lines),
     }
 
 

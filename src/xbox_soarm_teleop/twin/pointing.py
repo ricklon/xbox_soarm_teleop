@@ -101,9 +101,41 @@ class Point:
 
 class Pointer(Protocol):
     name: str
+    last_usage: dict | None
+    """Tokens and cost of the last call (``input_tokens``, ``output_tokens``,
+    ``cost_usd``; None where not known). None for pointers that are not models."""
 
     def point(self, request: PointRequest) -> Point | None:
         """The pixel showing ``request.description``, or None if it is not seen."""
+
+
+def _usage(input_tokens, output_tokens, cost_usd) -> dict:
+    def as_int(value):
+        return int(value) if isinstance(value, (int, float)) else None
+
+    return {
+        "input_tokens": as_int(input_tokens),
+        "output_tokens": as_int(output_tokens),
+        "cost_usd": float(cost_usd) if isinstance(cost_usd, (int, float)) else None,
+    }
+
+
+def add_usage(total: dict | None, usage: dict | None) -> dict | None:
+    """Add one call's usage to a running total. An unknown cost makes the total's cost unknown."""
+    if usage is None:
+        return total
+    if total is None:
+        total = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "calls": 0}
+    out = dict(total)
+    for key in ("input_tokens", "output_tokens"):
+        if usage.get(key) is not None and out[key] is not None:
+            out[key] += usage[key]
+    if usage.get("cost_usd") is None or out["cost_usd"] is None:
+        out["cost_usd"] = None
+    else:
+        out["cost_usd"] += usage["cost_usd"]
+    out["calls"] += 1
+    return out
 
 
 # ------------------------------------------------------------------ secrets
@@ -266,6 +298,7 @@ class OraclePointer:
     """Points at the true center: the best a pointer could do."""
 
     name: str = "oracle"
+    last_usage: dict | None = None
 
     def point(self, request: PointRequest) -> Point | None:
         if request.truth_uv is None:
@@ -285,6 +318,7 @@ class FixedPointer:
     answer: Callable[[PointRequest], Point | None] | None = None
     name: str = "fixed"
     calls: list[PointRequest] = field(default_factory=list)
+    last_usage: dict | None = None
 
     def point(self, request: PointRequest) -> Point | None:
         self.calls.append(request)
@@ -302,6 +336,7 @@ class GeminiPointer:
     thinking_budget: int = 0
     post: Callable[..., dict] = _post_json
     name: str = "gemini"
+    last_usage: dict | None = None
 
     def point(self, request: PointRequest) -> Point | None:
         key = load_secret(self.key_name)
@@ -327,6 +362,11 @@ class GeminiPointer:
             },
         }
         reply = self.post(GEMINI_URL.format(model=self.model), body, headers={"x-goog-api-key": key})
+        meta = (reply.get("usageMetadata") or {}) if isinstance(reply, dict) else {}
+        thinking = meta.get("thoughtsTokenCount") or 0
+        out = (meta.get("candidatesTokenCount") or 0) + thinking if meta else None
+        # The Gemini API reports tokens, not money: no price is recorded for it.
+        self.last_usage = _usage(meta.get("promptTokenCount"), out, None)
         try:
             text = "".join(part.get("text", "") for part in reply["candidates"][0]["content"]["parts"])
         except (KeyError, IndexError, TypeError):
@@ -342,6 +382,7 @@ class OllamaPointer:
     url: str = OLLAMA_URL
     post: Callable[..., dict] = _post_json
     name: str = "ollama"
+    last_usage: dict | None = None
 
     def point(self, request: PointRequest) -> Point | None:
         reply = self.post(
@@ -360,6 +401,7 @@ class OllamaPointer:
                 ],
             },
         )
+        self.last_usage = _usage(reply.get("prompt_eval_count"), reply.get("eval_count"), 0.0)
         text = (reply.get("message") or {}).get("content", "")
         return parse_yx_1000(text, request.width, request.height)
 
@@ -372,6 +414,7 @@ class OpenRouterPointer:
     key_name: str = "OPENROUTER_API_KEY"
     post: Callable[..., dict] = _post_json
     name: str = "openrouter"
+    last_usage: dict | None = None
 
     def point(self, request: PointRequest) -> Point | None:
         key = load_secret(self.key_name)
@@ -386,6 +429,7 @@ class OpenRouterPointer:
                 # Thinking models spend tokens before answering: 300 cut the JSON off.
                 "max_tokens": 2048,
                 "reasoning": {"effort": "low"},
+                "usage": {"include": True},  # the reply then says what the call cost
                 "messages": [
                     {
                         "role": "user",
@@ -404,6 +448,10 @@ class OpenRouterPointer:
             },
             headers={"Authorization": f"Bearer {key}"},
         )
+        usage = (reply.get("usage") or {}) if isinstance(reply, dict) else {}
+        self.last_usage = _usage(
+            usage.get("prompt_tokens"), usage.get("completion_tokens"), usage.get("cost")
+        )
         try:
             text = reply["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError):
@@ -421,6 +469,7 @@ class HttpPointer:
     url: str = MOLMO_DEFAULT_URL
     name: str = "molmo"
     post: Callable[..., dict] = _post_json
+    last_usage: dict | None = None
 
     def point(self, request: PointRequest) -> Point | None:
         reply = self.post(
@@ -433,6 +482,7 @@ class HttpPointer:
                 "height": request.height,
             },
         )
+        self.last_usage = _usage(None, None, 0.0)  # runs on this computer
         if reply.get("u") is None or reply.get("v") is None:
             return None
         return Point(float(reply["u"]), float(reply["v"]), raw=str(reply.get("raw", ""))[:500])

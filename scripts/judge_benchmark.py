@@ -25,6 +25,7 @@ import math
 import sys
 import time
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -169,6 +170,9 @@ def summarize(rows: list[dict]) -> list[dict]:
             [r["truth"][q] for r in group for q in NOUL_IDS],
         )
         entry["input_tokens"] = int(sum(r["verdict"].get("input_tokens") or 0 for r in group))
+        costs = [r["verdict"].get("cost_usd") for r in group]
+        entry["cost_usd"] = None if any(c is None for c in costs) else float(sum(costs))
+        entry["model_s"] = round(sum(r["seconds"] for r in group), 1)
         entry["median_s"] = float(np.median([r["seconds"] for r in group]))
         table.append(entry)
     return table
@@ -212,7 +216,9 @@ def print_tables(table: list[dict], base: dict) -> None:
     for entry in table:
         print(
             f"{entry['model']} with {entry['images']} image(s): {entry['n']} situations, "
-            f"{entry['input_tokens']} input tokens, median {entry['median_s']:.2f} s"
+            f"{entry['input_tokens']} input tokens"
+            + ("" if entry.get("cost_usd") is None else f" (${entry['cost_usd']:.4f})")
+            + f", median {entry['median_s']:.2f} s"
         )
         confusion = entry["where"]["confusion"]
         print(
@@ -259,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
     if image_dir:
         image_dir.mkdir(parents=True, exist_ok=True)
 
+    started_at = datetime.now(timezone.utc)
+    run_started = time.monotonic()
     rng = np.random.default_rng(args.seed)
     situations: list[dict] = []
     rows: list[dict] = []
@@ -322,12 +330,22 @@ def main(argv: list[str] | None = None) -> int:
     rig.close()
     table = summarize(rows)
     base = baseline(situations)
+    wall_s = time.monotonic() - run_started
+    model_s = sum(r["seconds"] for r in rows)
+    timing = {
+        "started_at": started_at.isoformat(timespec="seconds"),
+        "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "wall_s": round(wall_s, 1),
+        "model_s": round(model_s, 1),  # waiting on Clef
+        "sim_s": round(wall_s - model_s, 1),  # setting up situations and drawing them
+    }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         json.dumps(
             {
                 "seed": args.seed,
+                "timing": timing,
                 "situations": situations,
                 "baseline": base,
                 "summary": table,
@@ -338,6 +356,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     print()
     print_tables(table, base)
+    print(
+        f"\nRun: {timing['wall_s']:.0f} s ({timing['model_s']:.0f} s waiting on Clef, "
+        f"{timing['sim_s']:.0f} s setting up and drawing)"
+    )
     errors = sum(1 for r in rows if r["error"])
     if errors:
         print(f"\n{errors} judge calls failed (see --out)")

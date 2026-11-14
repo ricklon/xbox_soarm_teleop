@@ -234,3 +234,14 @@ def test_the_judge_is_told_every_object_on_the_table(monkeypatch):
     state = sent["body"]["state"] if "body" in sent else sent["state"]
     assert "large red cube" in state and "small red cube" in state and "red bar" in state
     assert "large red cube" in sent["questions"]["in_goal"]["instructions"]
+
+
+def test_judge_cost_from_the_catalog_price(monkeypatch):
+    from xbox_soarm_teleop.twin.judge import PRICE_PER_M_INPUT
+
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", FAKE_TOKEN)
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", FAKE_ACCOUNT)
+    verdict = ClefJudge(model="clef-flash", post=lambda *a, **k: _reply()).judge([b"x"], "red cube")
+    assert verdict["input_tokens"] == 600
+    assert verdict["cost_usd"] == pytest.approx(600 * PRICE_PER_M_INPUT["clef-flash"] / 1e6)
+    assert PRICE_PER_M_INPUT == {"clef": 0.24, "clef-flash": 0.038}

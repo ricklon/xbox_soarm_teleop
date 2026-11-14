@@ -34,6 +34,7 @@ import statistics
 import sys
 import time
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 
 import mujoco
@@ -55,6 +56,7 @@ from xbox_soarm_teleop.twin.pointing import (  # noqa: E402
     Point,
     PointerError,
     PointRequest,
+    add_usage,
     make_pointer,
     mask_secrets,
 )
@@ -165,6 +167,16 @@ def what_is_at(seg: np.ndarray, twin, point: Point | None) -> str | None:
     return "background"
 
 
+def usage_totals(rows: list[dict]) -> dict:
+    """Tokens and cost over rows (cost None if any call's cost is unknown)."""
+    total = None
+    for row in rows:
+        total = add_usage(total, row.get("usage"))
+    if total is None:
+        return {"input_tokens": None, "output_tokens": None, "cost_usd": None}
+    return {key: total[key] for key in ("input_tokens", "output_tokens", "cost_usd")}
+
+
 def summarize(rows: list[dict]) -> list[dict]:
     groups: dict[tuple[str, str, str], list[dict]] = {}
     for row in rows:
@@ -193,6 +205,8 @@ def summarize(rows: list[dict]) -> list[dict]:
                 else None,
                 "median_px": round(statistics.median(pixels), 1) if pixels else None,
                 "median_s": round(statistics.median(seconds), 2) if seconds else None,
+                "model_s": round(sum(seconds), 1),
+                **usage_totals(group),
                 # What the pointed pixel shows: the target, another object, or neither.
                 "on_target": round(sum(r["hit"] == r["object"] for r in found) / len(found), 2)
                 if found
@@ -276,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     if images:
         images.mkdir(parents=True, exist_ok=True)
 
+    started_at = datetime.now(timezone.utc)
+    run_started = time.monotonic()
     rng = np.random.default_rng(args.seed)
     rows: list[dict] = []
     skipped: dict[str, str] = {}
@@ -330,24 +346,29 @@ def main(argv: list[str] | None = None) -> int:
                     perfect = Point(cols_.mean() + 0.5, rows_.mean() + 0.5, raw="segmentation")
                 request = PointRequest(png, "image/png", width, height, description, truth_uv=truth_uv)
 
-                answers: list[tuple[str, Point | None, float | None, str | None]] = [
-                    ("perfect", perfect, 0.0, None)
+                answers: list[tuple[str, Point | None, float | None, str | None, dict | None]] = [
+                    ("perfect", perfect, 0.0, None, None)
                 ]
                 for pointer in pointers:
                     if pointer.name in skipped:
                         continue
                     started = time.monotonic()
+                    pointer.last_usage = None  # a failed call must not report the last one's
                     try:
                         point = pointer.point(request)
-                        answers.append((pointer.name, point, time.monotonic() - started, None))
+                        answers.append(
+                            (pointer.name, point, time.monotonic() - started, None, pointer.last_usage)
+                        )
                     except PointerError as exc:
                         reason = mask_secrets(str(exc))
                         if trial == 0 and view == views[0] and condition == conditions[0][0]:
                             skipped[pointer.name] = reason
                             print(f"skipping {pointer.name}: {reason}", file=sys.stderr)
                             continue
-                        answers.append((pointer.name, None, time.monotonic() - started, reason))
-                for backend, point, seconds, error in answers:
+                        answers.append(
+                            (pointer.name, None, time.monotonic() - started, reason, pointer.last_usage)
+                        )
+                for backend, point, seconds, error, usage in answers:
                     xyz = pixel_to_xyz(geometry, point.u, point.v, plane_z) if point else None
                     rows.append(
                         {
@@ -373,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
                             if xyz is not None
                             else None,
                             "seconds": round(seconds, 3) if seconds is not None else None,
+                            "usage": usage,
                             "error": error,
                             "raw": (point.raw if point else (error or ""))[:200],
                         }
@@ -387,6 +409,23 @@ def main(argv: list[str] | None = None) -> int:
     for renderer in segs.values():
         renderer.close()
     table = summarize(rows)
+    wall_s = time.monotonic() - run_started
+    model_s = sum(r["seconds"] or 0.0 for r in rows if r["backend"] not in ("perfect", "center"))
+    by_backend = {}
+    for backend in dict.fromkeys(r["backend"] for r in rows):
+        mine = [r for r in rows if r["backend"] == backend]
+        by_backend[backend] = {
+            "calls": len(mine),
+            "model_s": round(sum(r["seconds"] or 0.0 for r in mine), 1),
+            **usage_totals(mine),
+        }
+    timing = {
+        "started_at": started_at.isoformat(timespec="seconds"),
+        "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "wall_s": round(wall_s, 1),
+        "model_s": round(model_s, 1),  # waiting on pointing models
+        "sim_s": round(wall_s - model_s, 1),  # placing, moving the arm, drawing, scoring
+    }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
@@ -395,6 +434,8 @@ def main(argv: list[str] | None = None) -> int:
                 "trials": args.trials,
                 "seed": args.seed,
                 "size": [W, H],
+                "timing": timing,
+                "by_backend": by_backend,
                 "skipped": skipped,
                 "wrist_trials_dropped": disturbed,
                 "summary": table,
@@ -405,6 +446,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     print()
     print_table(table)
+    print(
+        f"\nRun: {timing['wall_s']:.0f} s ({timing['model_s']:.0f} s waiting on models, "
+        f"{timing['sim_s']:.0f} s simulating and drawing)"
+    )
+    for backend, use in by_backend.items():
+        if backend in ("perfect", "center"):
+            continue
+        if all(r.get("usage") is None for r in rows if r["backend"] == backend):
+            print(f"  {backend}: {use['calls']} calls, {use['model_s']:.0f} s (not a model)")
+            continue
+        cost = "unknown" if use["cost_usd"] is None else f"${use['cost_usd']:.4f}"
+        tokens = (
+            "-"
+            if use["input_tokens"] is None
+            else f"{use['input_tokens']} in / {use['output_tokens']} out"
+        )
+        print(
+            f"  {backend}: {use['calls']} calls, {use['model_s']:.0f} s, tokens {tokens}, cost {cost}"
+        )
     if disturbed:
         print(f"\nwrist view dropped for trials {disturbed}: the arm moved the object getting there")
     for name, reason in skipped.items():

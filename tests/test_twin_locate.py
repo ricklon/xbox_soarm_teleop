@@ -395,3 +395,65 @@ def test_locate_over_mcp(running):
     assert result["ok"] is True and len(result["xyz_m"]) == 3
     truth = service.grasp.position("pick_cube")
     assert np.linalg.norm(np.array(result["xyz_m"]) - truth) < 0.002
+
+
+# ------------------------------------------------------------------ usage and cost
+def test_gemini_records_its_token_use(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", FAKE_KEY)
+
+    def post(url, body, headers=None, timeout=None):
+        return {
+            "candidates": [{"content": {"parts": [{"text": '[{"point": [500, 500]}]'}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 1290,
+                "candidatesTokenCount": 21,
+                "thoughtsTokenCount": 5,
+            },
+        }
+
+    pointer = GeminiPointer(post=post)
+    pointer.point(_request())
+    assert pointer.last_usage == {"input_tokens": 1290, "output_tokens": 26, "cost_usd": None}
+
+
+def test_openrouter_asks_for_and_records_its_cost(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    sent = {}
+
+    def post(url, body, headers=None, timeout=None):
+        sent.update(body)
+        return {
+            "choices": [{"message": {"content": "[]"}}],  # nothing found still costs
+            "usage": {"prompt_tokens": 800, "completion_tokens": 40, "cost": 0.000123},
+        }
+
+    pointer = OpenRouterPointer(post=post)
+    assert pointer.point(_request()) is None
+    assert sent["usage"] == {"include": True}
+    assert pointer.last_usage == {"input_tokens": 800, "output_tokens": 40, "cost_usd": 0.000123}
+
+
+def test_local_backends_cost_nothing():
+    from xbox_soarm_teleop.twin.pointing import OllamaPointer
+
+    def post(url, body, headers=None, timeout=None):
+        return {"message": {"content": "[]"}, "prompt_eval_count": 700, "eval_count": 12}
+
+    pointer = OllamaPointer(post=post)
+    pointer.point(_request())
+    assert pointer.last_usage == {"input_tokens": 700, "output_tokens": 12, "cost_usd": 0.0}
+    molmo = HttpPointer(post=lambda *a, **k: {"u": 1.0, "v": 2.0})
+    molmo.point(_request())
+    assert molmo.last_usage == {"input_tokens": None, "output_tokens": None, "cost_usd": 0.0}
+    oracle = OraclePointer()
+    oracle.point(_request(truth_uv=(1.0, 1.0)))
+    assert oracle.last_usage is None  # not a model
+
+
+def test_usage_totals_add_up():
+    from xbox_soarm_teleop.twin.pointing import add_usage
+
+    total = add_usage(None, {"input_tokens": 10, "output_tokens": 2, "cost_usd": 0.5})
+    total = add_usage(total, {"input_tokens": 5, "output_tokens": None, "cost_usd": None})
+    # A call whose cost is unknown makes the total unknown too, but tokens still add.
+    assert total == {"input_tokens": 15, "output_tokens": 2, "cost_usd": None, "calls": 2}
