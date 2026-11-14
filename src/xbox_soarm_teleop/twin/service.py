@@ -32,6 +32,7 @@ import math
 import queue
 import re
 import threading
+import time
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
@@ -64,7 +65,9 @@ from xbox_soarm_teleop.twin.actions import (
 )
 from xbox_soarm_teleop.twin.cameras import DEFAULT_SIZE, VIEWS, CameraRig, encode
 from xbox_soarm_teleop.twin.grasp import AssistedGrasp
-from xbox_soarm_teleop.twin.layouts import GOALS, Layout, layouts_for
+from xbox_soarm_teleop.twin.layouts import GOALS, Layout, layouts_for, object_description
+from xbox_soarm_teleop.twin.pointing import Pointer, PointRequest, mask_secrets
+from xbox_soarm_teleop.twin.projection import CameraGeometry, camera_geometry, pixel_to_xyz
 from xbox_soarm_teleop.twin.session_log import SessionLog
 
 ARM_JOINT_NAMES = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
@@ -74,6 +77,8 @@ GRIPPER_PICKUP_TOLERANCE = 0.05
 RECENT_EVENTS = 8
 OFF_TABLE_MARGIN_M = 0.01
 KEPT_ACTIONS = 200
+LOCATE_SIZE = (640, 480)  # pointing models do better on the largest picture
+LOCATE_TIMEOUT_S = 5.0  # for the loop to answer; the model itself may take longer
 
 
 class TwinClosed(RuntimeError):
@@ -127,6 +132,7 @@ class TwinService:
             to find objects with the cameras, as on the real arm. The truth is
             kept: in the session log, in :meth:`observe_truth`, and as the
             grader of :meth:`report_estimate`.
+        pointer: The pointing model behind :meth:`locate` (``twin.pointing``).
     """
 
     def __init__(
@@ -147,11 +153,14 @@ class TwinService:
         cameras: CameraRig | None = None,
         layout: Layout | None = None,
         hide_positions: bool = False,
+        pointer: Pointer | None = None,
     ) -> None:
         self.log = log
         self.hide_positions = hide_positions
         self._estimates: list[dict[str, Any]] = []
         self._shown: dict[str, Any] | None = None
+        self.pointer = pointer
+        """The pointing model ``locate`` asks (``twin.pointing``); None: no ``locate``."""
         self._shared_cameras = cameras is not None
         self._status_logged: tuple | None = None
         self._control_logged: tuple = (None, False)
@@ -393,6 +402,111 @@ class TwinService:
     def estimate_scores(self) -> list[dict[str, Any]]:
         """Every scored estimate so far, oldest first (copies)."""
         return [dict(score) for score in self._estimates]
+
+    def locate(
+        self,
+        name: str,
+        *,
+        view: str = "front",
+        description: str | None = None,
+        rest_z_m: float | None = None,
+        client_id: str = "agent",
+        width: int = LOCATE_SIZE[0],
+        height: int = LOCATE_SIZE[1],
+        timeout_s: float = LOCATE_TIMEOUT_S,
+    ) -> dict[str, Any]:
+        """Find an object by looking: ask the pointer for its pixel, return xyz.
+
+        Takes a picture from ``view``, asks :attr:`pointer` where ``description``
+        (by default the object's own, e.g. "red cube") is, and follows that
+        pixel's ray down to the plane the object's center sits at when it
+        rests on ``rest_z_m`` (default: the table top). The guess is scored
+        like :meth:`report_estimate` (``source`` = ``locate:<backend>:<view>``),
+        and the answer, which is only the model's estimate, goes back to the
+        caller.
+
+        Blocks while the model answers, so call it from a client thread, not
+        the loop thread. Keep the arm still: the wrist view's pose is read
+        just before the picture is taken.
+
+        Returns ``{"ok": True, "xyz_m": [...], "pixel": [u, v], ...}`` or
+        ``{"ok": False, "reason": ..., "detail": ...}``.
+        """
+        pointer = self.pointer
+        if pointer is None:
+            return {
+                "ok": False,
+                "reason": "no_pointer",
+                "detail": "this twin has no pointing model (start it with --pointer)",
+            }
+        try:
+            self._log("request", client_id=client_id, type="locate", name=name, view=view)
+            setup = self.call(
+                lambda: self._locate_setup(name, view, description, rest_z_m, width, height)
+            ).result(timeout=timeout_s)
+            image = self.render(
+                view, width=width, height=height, fmt="png", client_id=client_id
+            ).result(timeout=timeout_s)
+        except ActionRejected as exc:
+            return {"ok": False, "reason": exc.reason.value, "detail": exc.detail}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"ok": False, "reason": "error", "detail": str(exc)}
+
+        geometry: CameraGeometry = setup["geometry"]
+        request = PointRequest(
+            image=image,
+            mime="image/png",
+            width=width,
+            height=height,
+            description=setup["description"],
+            truth_uv=setup["truth_uv"],
+        )
+        started = time.monotonic()
+        try:
+            point = pointer.point(request)
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            detail = mask_secrets(str(exc))
+            self._log(
+                "locate_result", client_id=client_id, ok=False, backend=pointer.name, detail=detail
+            )
+            return {"ok": False, "reason": "pointer_error", "detail": detail}
+        seconds = round(time.monotonic() - started, 3)
+        answer = {
+            "name": name,
+            "view": view,
+            "description": setup["description"],
+            "backend": pointer.name,
+            "seconds": seconds,
+        }
+        if point is None:
+            self._log("locate_result", client_id=client_id, ok=False, **answer)
+            return {
+                "ok": False,
+                "reason": "not_found",
+                "detail": f"the {pointer.name} model did not find the {setup['description']} "
+                f"in the {view} view; try another view",
+                **answer,
+            }
+        xyz = pixel_to_xyz(geometry, point.u, point.v, setup["plane_z_m"])
+        answer.update(pixel=[round(point.u, 1), round(point.v, 1)], image_size=[width, height])
+        if xyz is None:
+            self._log("locate_result", client_id=client_id, ok=False, **answer)
+            return {
+                "ok": False,
+                "reason": "not_found",
+                "detail": "the pixel it pointed at does not look down at the table",
+                **answer,
+            }
+        source = f"locate:{pointer.name}:{view}"
+        try:
+            self.call(lambda: self._report_estimate(name, xyz.tolist(), client_id, source)).result(
+                timeout=timeout_s
+            )
+        except Exception:  # noqa: BLE001 - the object vanished meanwhile: still answer
+            pass
+        answer.update(xyz_m=[round(float(v), 4) for v in xyz], plane_z_m=round(setup["plane_z_m"], 4))
+        self._log("locate_result", client_id=client_id, ok=True, raw=point.raw[:300], **answer)
+        return {"ok": True, **answer}
 
     def wait(self, action_id: str, timeout_s: float) -> ActionStatus:
         """Block until an action ends or ``timeout_s`` elapses; return its status."""
@@ -791,7 +905,9 @@ class TwinService:
         self._event(f"scene loaded: {name}")
         return {**self.layout.summary(), "current": True}
 
-    def _report_estimate(self, name: str, xyz_m, client_id: str) -> dict[str, Any]:
+    def _report_estimate(
+        self, name: str, xyz_m, client_id: str, source: str = "agent"
+    ) -> dict[str, Any]:
         positions = self.grasp.positions()  # parked objects are left out
         if name not in positions:
             known = ", ".join(positions) or "none"
@@ -813,6 +929,7 @@ class TwinService:
             "frame": self.frame,
             "client_id": client_id,
             "name": name,
+            "source": source,
             "estimate_xyz_m": [float(v) for v in guess],
             "truth_xyz_m": [round(float(v), 5) for v in truth],
             "error_cm": round(float(np.linalg.norm(error)) * 100.0, 3),
@@ -828,6 +945,44 @@ class TwinService:
             **{k: v for k, v in score.items() if k not in ("t", "frame", "client_id")},
         )
         return {"ok": True, "name": name, "recorded": len(self._estimates)}
+
+    def _locate_setup(
+        self,
+        name: str,
+        view: str,
+        description: str | None,
+        rest_z_m: float | None,
+        width: int,
+        height: int,
+    ) -> dict[str, Any]:
+        """On the loop thread: check the request, read the camera and the truth."""
+        positions = self.grasp.positions()
+        if name not in positions:
+            known = ", ".join(positions) or "none"
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, f"Unknown object '{name}'. On the table: {known}"
+            )
+        if view not in VIEWS:
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, f"Unknown view '{view}'. Known: {', '.join(VIEWS)}"
+            )
+        if name == self.grasp.attached:
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST,
+                f"{name} is held: it rides between the jaws, at jaw_center_xyz_m",
+            )
+        if rest_z_m is None:
+            rest_z_m = self.table_top_z if self.table_top_z is not None else 0.0
+        plane_z = float(rest_z_m) + float(self.grasp.half_extents_world(name)[2])
+        mujoco.mj_kinematics(self.sim.model, self.sim.data)
+        mujoco.mj_camlight(self.sim.model, self.sim.data)
+        geometry = camera_geometry(self.sim.model, self.sim.data, view, width, height)
+        return {
+            "description": description or object_description(name),
+            "plane_z_m": plane_z,
+            "geometry": geometry,
+            "truth_uv": geometry.project(positions[name]),
+        }
 
     def _arrange_objects(self) -> None:
         """Put the layout's objects at their starts and park the others."""

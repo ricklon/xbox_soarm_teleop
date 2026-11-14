@@ -72,13 +72,20 @@ No-coordinates mode: when `observe` says `scene.object_positions` is
 Each object's `xyz_m`, `in_goal` and `off_table` are left out, and a "missed"
 event says only that the jaws missed. You still get each object's `size_m`
 and `grip_width_m`, whether you hold it, the goal box, `ee` and
-`jaw_center_xyz_m`. Find objects with `camera`: the overhead view is a map,
-so judge an object against things whose positions you know (the jaw center,
-the goal box). Check a placement by looking. Whenever you have worked out
-where an object is, call report_estimate(name, x, y, z) with its center (m,
-base frame). It is scored against the truth for a benchmark and does not tell
-you the answer. Where the steps above say the object's x, y or z, use your
-estimate.
+`jaw_center_xyz_m`. Find an object with locate(name): a vision model looks
+at a camera view and the result's `xyz_m` is its estimate of the object's
+center, often a centimetre or so off. Where the steps above say the object's
+x, y or z, use that estimate. locate looks from the front view by default,
+which the arm does not block; if it answers not_found, try view="side" or
+view="overhead". After step 3, with the jaws above the object, locate again
+and re-center if the estimate moved. A "missed" event means your estimate was
+off: open, lift, locate again. Check a placement with
+locate(name, rest_z_m=the goal box floor z) or with `camera`. Without locate
+(reason no_pointer), use `camera`: the overhead view is a map, so judge an
+object against things whose positions you know (the jaw center, the goal
+box). locate's answers are scored against the truth for a benchmark; when you
+work a position out yourself, call report_estimate(name, x, y, z) with its
+center. Neither tells you the true answer.
 
 Scenes differ in how forgiving their objects are. `list_scenes` shows them,
 easiest first, and `load_scene` switches (it homes the arm and swaps the
@@ -311,6 +318,25 @@ def build_mcp_server(
         (`scene.object_positions` is "hidden")."""
         _, result = run_command(twin(ctx).report_estimate(name, [x, y, z], client_id=client_of(ctx)))
         return result
+
+    @server.tool()
+    def locate(
+        name: str,
+        view: str = "front",
+        description: str | None = None,
+        rest_z_m: float | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Find an object by looking: a pointing model is shown a camera view and
+        points at the object; that pixel is turned into the object's center xyz
+        (m, base frame), assuming it rests on the table (or on rest_z_m, e.g.
+        the goal box floor). The answer is the model's estimate, not the truth:
+        it may be off by a centimetre or more. Views: front (default: the arm
+        does not block it), side, overhead, wrist. description overrides how the object is described to the
+        model (by default e.g. "red cube"). Keep the arm still while it looks."""
+        return twin(ctx).locate(
+            name, view=view, description=description, rest_z_m=rest_z_m, client_id=client_of(ctx)
+        )
 
     @server.tool()
     def release_control(ctx: Context | None = None) -> dict[str, Any]:

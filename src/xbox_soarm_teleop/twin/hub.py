@@ -32,6 +32,7 @@ from typing import Any, Callable
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 from xbox_soarm_teleop.twin import TwinService, build_parts, build_twin
 from xbox_soarm_teleop.twin.cameras import CameraRig, encode
+from xbox_soarm_teleop.twin.pointing import make_pointer
 from xbox_soarm_teleop.twin.service import RenderRequest, TwinClosed
 
 # One-shot buttons a page may press, and the controller button each stands for.
@@ -172,6 +173,8 @@ class Hub:
             it exists, so the links handed to students survive a restart.
         hide_positions: No-coordinates mode for every arm: agents are not told
             where objects are and must find them with the cameras.
+        pointer: Pointing model spec for every arm's ``locate`` tool
+            (``twin.pointing.make_pointer``); None for no ``locate``.
     """
 
     def __init__(
@@ -185,6 +188,7 @@ class Hub:
         shadows: bool = False,
         mesh_cell_mm: float = DEFAULT_MESH_CELL_MM,
         hide_positions: bool = False,
+        pointer: str | None = None,
     ) -> None:
         if seats < 1:
             raise ValueError("seats must be at least 1")
@@ -220,6 +224,7 @@ class Hub:
                 cameras=self.cameras,
                 log_path=log_path,
                 hide_positions=hide_positions,
+                pointer=make_pointer(pointer),
             )
             controller.gripper_feedback = lambda service=service: float(service.state.gripper_pos)
             service.stop_release_hint = "press Release stop on the arm's web page"

@@ -112,6 +112,18 @@ GOALS: dict[str, GoalBox] = {
 }
 
 
+# What each object looks like, in words a pointing model understands.
+OBJECT_DESCRIPTIONS: dict[str, str] = {
+    "pick_cube": "red cube",
+    sim_cli.BEAN_BAG_NAME: "blue bean bag",
+}
+
+
+def object_description(name: str) -> str:
+    """An object's description for a pointing model ("red cube")."""
+    return OBJECT_DESCRIPTIONS.get(name, name.replace("_", " "))
+
+
 def model_scene(name: str) -> str:
     """The compiled scene a scene or layout name runs on."""
     layout = LAYOUTS.get(name)

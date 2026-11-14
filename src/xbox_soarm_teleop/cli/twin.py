@@ -73,6 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
         "keeps the true positions, and report_estimate scores agents' guesses",
     )
     parser.add_argument(
+        "--pointer",
+        default=None,
+        help="Pointing model behind the locate tool: oracle (the truth; for tests), "
+        "gemini[:model] (GEMINI_API_KEY), molmo[:url] (run scripts/molmo_server.py), "
+        "ollama[:model]. Default: none (no locate)",
+    )
+    parser.add_argument(
         "--max-seconds", type=float, default=None, help="Exit after this long (automation)"
     )
     return parser
@@ -90,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from xbox_soarm_teleop.twin import build_twin
     from xbox_soarm_teleop.twin.mcp_server import McpThread, build_mcp_server
+    from xbox_soarm_teleop.twin.pointing import make_pointer
     from xbox_soarm_teleop.twin.status import MENU_BUTTON
 
     host = "127.0.0.1"
@@ -108,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         deadzone=args.deadzone,
         with_controller=not args.no_controller,
         hide_positions=args.no_coordinates,
+        pointer=make_pointer(args.pointer),
     )
     if service.log is not None:
         print(f"Session log: {service.log.path}", flush=True)
@@ -147,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Scene: {args.scene}. Close the window or press Ctrl+C to quit.", flush=True)
     if args.no_coordinates:
         print("No-coordinates mode: agents are not told where objects are.", flush=True)
+    if service.pointer is not None:
+        print(f"locate: pointing model {service.pointer.name}", flush=True)
 
     shown_events: list[str] = []
     shown_status: tuple[str, str, str] | None = None

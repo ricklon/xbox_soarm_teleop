@@ -54,6 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
         "keeps the true positions, and report_estimate scores agents' guesses",
     )
     parser.add_argument(
+        "--pointer",
+        default=None,
+        help="Pointing model behind the locate tool: oracle (the truth; for tests), "
+        "gemini[:model] (GEMINI_API_KEY), molmo[:url] (run scripts/molmo_server.py), "
+        "ollama[:model]. Default: none (no locate)",
+    )
+    parser.add_argument(
         "--roster",
         default="twin_logs/hub_roster.json",
         help="File that keeps the links, so they stay the same after a restart",
@@ -242,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
         roster_path=args.roster,
         mesh_cell_mm=max(args.mesh_detail_mm, 0.0),
         hide_positions=args.no_coordinates,
+        pointer=args.pointer,
     )
     app = build_hub_app(
         hub,

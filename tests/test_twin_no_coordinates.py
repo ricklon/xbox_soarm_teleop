@@ -281,6 +281,7 @@ def test_mcp_instructions_describe_the_mode(hidden_url):
 
     for text in (mcp_server.INSTRUCTIONS, hub_server.INSTRUCTIONS):
         assert "object_positions" in text and "report_estimate" in text
+        assert "locate(name)" in text
 
 
 # ---------------------------------------------------------------- command line
