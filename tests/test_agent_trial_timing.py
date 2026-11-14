@@ -41,19 +41,35 @@ def test_opencode_json_events_give_cost_tokens_and_the_transcript():
 
     events = [
         {"type": "step_start", "part": {"type": "step-start"}},
-        {"type": "tool_use", "part": {"type": "tool", "tool": "soarm-bench_locate", "state": {"input": {"name": "pick_cube"}}}},
+        {
+            "type": "tool_use",
+            "part": {
+                "type": "tool",
+                "tool": "soarm-bench_locate",
+                "state": {"input": {"name": "pick_cube"}},
+            },
+        },
         {
             "type": "step_finish",
             "part": {
                 "type": "step-finish",
-                "tokens": {"input": 18000, "output": 40, "reasoning": 10, "cache": {"read": 500, "write": 0}},
+                "tokens": {
+                    "input": 18000,
+                    "output": 40,
+                    "reasoning": 10,
+                    "cache": {"read": 500, "write": 0},
+                },
                 "cost": 0.0007,
             },
         },
         {"type": "text", "part": {"type": "text", "text": "It is in the goal box."}},
         {
             "type": "step_finish",
-            "part": {"type": "step-finish", "tokens": {"input": 19000, "output": 20, "reasoning": 0}, "cost": 0.0008},
+            "part": {
+                "type": "step-finish",
+                "tokens": {"input": 19000, "output": 20, "reasoning": 0},
+                "cost": 0.0008,
+            },
         },
     ]
     raw = "\n".join(json.dumps(e) for e in events) + "\nnot json\n"
@@ -67,4 +83,95 @@ def test_opencode_json_events_give_cost_tokens_and_the_transcript():
         "cost_usd": pytest.approx(0.0015),
     }
     assert parsed["last_text"] == "It is in the goal box."
-    assert "soarm-bench_locate" in parsed["transcript"] and "It is in the goal box." in parsed["transcript"]
+    assert (
+        "soarm-bench_locate" in parsed["transcript"]
+        and "It is in the goal box." in parsed["transcript"]
+    )
+
+
+# ------------------------------------------------------------------ A/B scoring
+def test_the_agents_claim_is_read_from_its_last_result_line():
+    assert agent_trial.parse_claim("Done.\nRESULT: in_box") == "in_box"
+    assert (
+        agent_trial.parse_claim("RESULT: in_box ... then it fell. RESULT: not_in_box") == "not_in_box"
+    )
+    assert agent_trial.parse_claim("result: In_Box") == "in_box"
+    assert agent_trial.parse_claim("It is in the box.") is None
+
+
+def test_grading_adds_up_pointer_and_judge_cost_and_scores_the_claim(tmp_path):
+    import json
+
+    lines = [
+        _line("header", 0.0),
+        _line("locate_result", 2.0, ok=True, seconds=2.0, usage={"cost_usd": 0.004, "input_tokens": 1}),
+        _line("locate_result", 5.0, ok=True, seconds=2.0, usage={"cost_usd": 0.005, "input_tokens": 1}),
+        _line(
+            "success_check", 9.0, ok=True, verdict="done", p_in_goal=0.95, correct=True, cost_usd=0.0002
+        ),
+        _line(
+            "observation",
+            9.5,
+            scene={"objects": {"pick_cube": {"in_goal": True, "xyz_m": [0.3, 0.1, 0.14]}}},
+        ),
+        _line("shutdown", 10.0),
+    ]
+    log = tmp_path / "s.jsonl"
+    log.write_text("\n".join(json.dumps(line) for line in lines))
+    graded = agent_trial.grade(log, "pick_cube")
+    assert graded["pointer_cost_usd"] == pytest.approx(0.009)
+    assert graded["judge_cost_usd"] == pytest.approx(0.0002)
+    assert graded["success_checks"] == [{"verdict": "done", "p_in_goal": 0.95, "correct": True}]
+    scored = agent_trial.score_run(
+        graded | {"in_goal": True}, final_text="RESULT: in_box", agent_cost=0.01, stopped=True
+    )
+    assert scored["claim"] == "in_box" and scored["claim_correct"] is True
+    assert scored["total_cost_usd"] == pytest.approx(0.0192)
+    assert scored["stopped_cleanly"] is True
+
+
+def test_the_report_compares_conditions():
+    _report_path = Path(__file__).parent.parent / "scripts" / "agent_report.py"
+    spec = importlib.util.spec_from_file_location("agent_report", _report_path)
+    report = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(report)
+    rows = [
+        {
+            "model": "m",
+            "harness": "loop",
+            "variant": "no_judge",
+            "in_goal": True,
+            "stopped_cleanly": False,
+            "claim_correct": True,
+            "seconds": 100.0,
+            "total_cost_usd": 0.05,
+            "success_checks": [],
+        },
+        {
+            "model": "m",
+            "harness": "loop",
+            "variant": "no_judge",
+            "in_goal": False,
+            "stopped_cleanly": True,
+            "claim_correct": False,
+            "seconds": 60.0,
+            "total_cost_usd": 0.03,
+            "success_checks": [],
+        },
+        {
+            "model": "m",
+            "harness": "loop",
+            "variant": "judge",
+            "in_goal": True,
+            "stopped_cleanly": True,
+            "claim_correct": True,
+            "seconds": 50.0,
+            "total_cost_usd": 0.02,
+            "success_checks": [{"verdict": "done", "correct": True}],
+        },
+    ]
+    table = {(r["model"], r["variant"]): r for r in report.summarize(rows)}
+    base, judged = table[("m", "no_judge")], table[("m", "judge")]
+    assert base["runs"] == 2 and base["in_box"] == 0.5 and base["stopped_cleanly"] == 0.5
+    assert base["median_s"] == pytest.approx(80.0) and base["total_cost_usd"] == pytest.approx(0.08)
+    assert judged["checks_per_run"] == 1.0 and judged["checks_right"] == 1.0

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -42,7 +43,12 @@ observe will not tell you where objects are. Use locate to find them.
 
 Task: put the {description} ({name}) into the green goal box, then home the
 arm. Work step by step with the tools; check the result of every call. When
-you are done, say in one line whether it is in the box and how you know.
+you are finished, end your reply with exactly one line, RESULT: in_box or
+RESULT: not_in_box, saying whether it is in the box.
+"""
+# --require-check: the task also asks for the judge's confirmation.
+REQUIRE_CHECK = """Before you finish, confirm the placement with check_success. If it says
+retry, pick the {description} up again; if it says look_again, ask again.
 """
 
 DESCRIPTIONS = {
@@ -172,6 +178,38 @@ def grade(log_path: Path, name: str) -> dict:
             if line["kind"] == "success_check" and line["data"].get("ok", True)
         ],
         "time": time_split(lines),
+        # What the pointer and the judge cost, from the twin's log.
+        "pointer_cost_usd": sum(
+            float((line["data"].get("usage") or {}).get("cost_usd") or 0.0)
+            for line in lines
+            if line["kind"] == "locate_result"
+        ),
+        "judge_cost_usd": sum(
+            float(line["data"].get("cost_usd") or 0.0)
+            for line in lines
+            if line["kind"] == "success_check"
+        ),
+    }
+
+
+_CLAIM = re.compile(r"RESULT:\s*(in_box|not_in_box)", re.IGNORECASE)
+
+
+def parse_claim(text: str) -> str | None:
+    """The agent's last ``RESULT: in_box`` / ``RESULT: not_in_box``, or None."""
+    found = _CLAIM.findall(text or "")
+    return found[-1].lower() if found else None
+
+
+def score_run(graded: dict, *, final_text: str, agent_cost: float | None, stopped: bool) -> dict:
+    """Score the agent's own claim against the truth, and add up the run's cost."""
+    claim = parse_claim(final_text)
+    costs = [agent_cost, graded.get("pointer_cost_usd"), graded.get("judge_cost_usd")]
+    return {
+        "claim": claim,
+        "claim_correct": None if claim is None else (claim == "in_box") == bool(graded.get("in_goal")),
+        "stopped_cleanly": bool(stopped),
+        "total_cost_usd": round(sum(float(c or 0.0) for c in costs), 6),
     }
 
 
@@ -240,6 +278,8 @@ def run_opencode(args, work: Path, port: int, prompt: str) -> dict:
         "timed_out": timed_out,
         "agent_usage": parsed["usage"],  # the agent's own model: tokens and cost
         "agent_said": parsed["last_text"][-200:],
+        "agent_final": parsed["last_text"][-2000:],
+        "stopped": not timed_out,
     }
 
 
@@ -264,6 +304,8 @@ def run_loop(args, work: Path, port: int, prompt: str) -> dict:
         "agent_usage": agent.usage,
         "agent_time": agent.time,
         "agent_said": agent.final_text[-200:],
+        "agent_final": agent.final_text[-2000:],
+        "stopped": agent.stop_reason == "answered",
     }
 
 
@@ -298,6 +340,8 @@ def run_once(args, run: int) -> dict:
         if not wait_for_port(port):
             return {"run": run, "error": "twin did not start"}
         prompt = PROMPT.format(description=description, name=name)
+        if args.require_check:
+            prompt += "\n" + REQUIRE_CHECK.format(description=description)
         harness = run_loop if args.harness == "loop" else run_opencode
         outcome = harness(args, work, port, prompt)
     finally:
@@ -315,9 +359,16 @@ def run_once(args, run: int) -> dict:
         "pointer": args.pointer,
         "judge": args.judge,
     }
-    result.update(harness=args.harness, work_dir=str(work), **outcome)
+    variant = ("judge" if args.judge else "no_judge") + ("+required" if args.require_check else "")
+    final_text = outcome.pop("agent_final", "")
+    stopped = outcome.pop("stopped", False)
+    result.update(harness=args.harness, variant=variant, work_dir=str(work), **outcome)
     if log_files:
         result.update(grade(log_files[-1], name))
+        usage = result.get("agent_usage") or {}
+        result.update(
+            score_run(result, final_text=final_text, agent_cost=usage.get("cost_usd"), stopped=stopped)
+        )
     return result
 
 
@@ -338,6 +389,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--judge", default=None, choices=("clef", "clef-flash"), help="Success judge for check_success"
+    )
+    parser.add_argument(
+        "--require-check",
+        action="store_true",
+        help="The task also asks the agent to confirm with check_success (use with --judge)",
     )
     parser.add_argument("--max-steps", type=int, default=60, help="Model replies at most (loop)")
     parser.add_argument(

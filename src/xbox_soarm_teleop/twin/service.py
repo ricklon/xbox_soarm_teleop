@@ -618,7 +618,14 @@ class TwinService:
         answer.update(xyz_m=[round(float(v), 4) for v in xyz], plane_z_m=round(setup["plane_z_m"], 4))
         if setup["jaw_center"] is not None:
             answer["jaw_move_m"] = self._jaw_move(np.asarray(setup["jaw_center"], dtype=float), xyz)
-        self._log("locate_result", client_id=client_id, ok=True, raw=point.raw[:300], **answer)
+        self._log(
+            "locate_result",
+            client_id=client_id,
+            ok=True,
+            raw=point.raw[:300],
+            usage=getattr(pointer, "last_usage", None),
+            **answer,
+        )
         return {"ok": True, **answer}
 
     def wait(self, action_id: str, timeout_s: float) -> ActionStatus:
