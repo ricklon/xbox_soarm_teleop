@@ -105,6 +105,37 @@ the student. Use `camera` to look at the scene.
 """
 
 
+# Things a student can paste into their agent, easiest first. Each builds on
+# the one before; the last asks the agent to explain itself, which is where
+# the learning is.
+STARTER_PROMPTS: list[dict[str, str]] = [
+    {
+        "title": "Look around",
+        "text": "Observe the arm and tell me what is on the table, where the goal box is, "
+        "and where the middle of the gripper's jaws is right now.",
+    },
+    {
+        "title": "Easy pick and place",
+        "text": "Pick up the bean bag and put it in the goal box. Check in_goal at the end.",
+    },
+    {
+        "title": "The hard object",
+        "text": "Load the pick_place_basic scene and put the cube in the goal box. "
+        "If a grasp is refused, do what the event says and try again.",
+    },
+    {
+        "title": "Put it back",
+        "text": "Take the cube out of the goal box and put it back where it started, "
+        "at (0.34, -0.03). Report each attempt.",
+    },
+    {
+        "title": "Explain it",
+        "text": "Tell me every grasp that was refused today, what the event said, and what "
+        "you did about it. What would you do differently on a real arm?",
+    },
+]
+
+
 def _bearer(value: str | None) -> str | None:
     if not value:
         return None
@@ -277,6 +308,12 @@ def build_hub_app(
             return Response("camera busy", status_code=503, headers=PAGE_HEADERS)
         return Response(image, media_type="image/jpeg", headers=PAGE_HEADERS)
 
+    @server.custom_route("/r/{token}/prompts", methods=["GET"])
+    async def prompts(request: Request) -> Response:
+        if room_of(request) is None:
+            return not_found
+        return JSONResponse({"prompts": STARTER_PROMPTS}, headers=PAGE_HEADERS)
+
     @server.custom_route("/r/{token}/tools", methods=["GET"])
     async def page_tools(request: Request) -> Response:
         if room_of(request) is None:
@@ -320,6 +357,12 @@ def build_hub_app(
         if not is_admin(request):
             return not_found
         return HTMLResponse(_page("admin.html"), headers=PAGE_HEADERS)
+
+    @server.custom_route("/admin/{token}/checks", methods=["GET"])
+    async def agent_checks(request: Request) -> Response:
+        if not is_admin(request):
+            return not_found
+        return JSONResponse({"checks": _page("agent_checks.txt")}, headers=PAGE_HEADERS)
 
     @server.custom_route("/admin/{token}/rooms", methods=["GET"])
     async def admin_rooms(request: Request) -> Response:

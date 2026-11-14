@@ -38,7 +38,14 @@ and loads the starting scene again. `--scene NAME` (repeatable) picks scenes;
 
 Paste the block below into the agent, connected to one arm (MCP server
 "soarm-arm" in the student setup; rename it to match yours). Save the agent's
-session log with the results, so runs can be compared.
+session log with the results, so runs can be compared. On a hub, the
+instructor page's **Agent checks** button shows the same block with a Copy
+button. (It is kept in `src/xbox_soarm_teleop/twin/web/agent_checks.txt`; a
+test keeps this copy identical.)
+
+Students get easier **starter prompts** on their own page ("Try asking your
+agent"), set in `STARTER_PROMPTS` in `twin/hub_server.py`, and a **Scene**
+picker that switches scenes the way an agent's `load_scene` does.
 
 ```text
 You are connected to a simulated robot arm over MCP (server "soarm-arm").
