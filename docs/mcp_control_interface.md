@@ -342,6 +342,17 @@ takes `opening_m` as well as `position`, and its result names what is
 `holding`. Jaws a person drives shut (trigger, or the page's Close button)
 stop on a rigid object instead.
 
+The jaws collide as shapes that follow the visible fingers: a capsule for
+the fixed finger (rounded like its end), a box for the wrist, and thin slices
+along the curved moving jaw (`_add_gripper_collision_boxes` and
+`_add_moving_jaw_collision_boxes` in `cli/simulate_mujoco.py`). MuJoCo
+collides a mesh as its convex hull, which filled the open space between the
+finger and the wrist: a held cube sat 12 mm inside it and was thrown 13 mm
+or more when let go. A held object is let go only once neither jaw still
+presses into it (the moving jaw tapers in toward the wrist); until then a
+partly opened gripper says it is still held. Between the jaws first meeting
+an object and closing on it, the object is held where it was squared.
+
 A grasp is judged where the jaws first meet the object (its extent across
 them, wider than its width when it sits turned), not when they reach its
 width: by then a corner caught by the moving jaw would have spun it. A rigid

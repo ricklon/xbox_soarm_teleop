@@ -67,6 +67,10 @@ JAW_CLEARANCE_M = 0.05
 # The moving jaw curves in toward the fixed one, up to this much (m) nearer
 # above the tips than at them (measured from the mesh): it meets an object early.
 JAW_CURVE_M = 0.006
+# A held object is let go only once neither jaw presses into it by more than
+# this (m): opened past its width at the tips, the jaws can still touch it
+# higher up, where they taper in, and would throw it aside.
+JAW_RELEASE_CLEARANCE_M = 0.0005
 # How much wider than an object to open the jaws before coming down on it (m).
 JAW_APPROACH_MARGIN_M = 0.05
 
@@ -167,6 +171,8 @@ class AssistedGrasp:
         self._offset = np.zeros(3)  # held object's center, gripper frame
         self._rel_rotation = np.eye(3)  # held object's turn, gripper frame
         self._engaged: str | None = None  # met by the closing jaws, held at its width
+        self._engaged_pose = np.zeros(7)
+        self._told_still_held = False
         self._held_width = 0.0
 
     def position(self, name: str) -> np.ndarray:
@@ -357,6 +363,15 @@ class AssistedGrasp:
             obj = self.objects[self.attached]
             width = self._held_width
             if opening > width + cfg.release_margin_m:
+                if self._jaws_touch(self.attached) and opening < cfg.jaw_opening_m(0.0) - 1e-3:
+                    # Let go once the jaws are clear, or it is thrown aside.
+                    if not self._told_still_held:
+                        self._told_still_held = True
+                        events.append(
+                            f"{self.attached} still held: the jaws taper in and still touch it"
+                            " higher up; open wider to let go"
+                        )
+                    return events
                 events.append(f"{self.attached} released")
             elif not obj.soft and opening < width - cfg.rigid_squeeze_m:
                 events.append(f"{self.attached} squeezed out: the gripper closed too far")
@@ -394,7 +409,8 @@ class AssistedGrasp:
             return events
         self._armed = False
         near = distances[nearest] <= self.radius_m
-        if near and not obj.soft and off_square > cfg.rigid_align_tol_deg:
+        # Off square, the roll comes first: centering jaws turned the wrong way helps nothing.
+        if not obj.soft and off_square > cfg.rigid_align_tol_deg:
             hint = ""
             roll = self.squaring_roll(nearest)
             if roll is not None:
@@ -432,7 +448,11 @@ class AssistedGrasp:
             self._attach(nearest, width)
             events.append(f"{nearest} attached")
         else:
-            self._engaged = nearest  # held once the jaws close to its width
+            # Held once the jaws close to its width; until then it stays as
+            # squared, as the closing jaws would keep it.
+            self._engaged = nearest
+            obj = self.objects[nearest]
+            self._engaged_pose = self.data.qpos[obj.qpos_adr : obj.qpos_adr + 7].copy()
         return events
 
     def extent_across(self, name: str) -> float:
@@ -477,17 +497,40 @@ class AssistedGrasp:
         self._held_width = width
         origin, rotation = self._gripper_frame()
         local = rotation.T @ (self.position(name) - origin)
-        local[0] = JAW_FIXED_FACE_X + width / 2.0  # the jaws center it as they close
+        relative = rotation.T @ self._rotation(name)
+        # Seated against the fixed jaw by its extent across the jaws as it is
+        # turned in the grip, so no corner sinks into the fixed finger.
+        across = float(np.abs(relative[0, :]) @ (self.objects[name].size_m / 2.0))
+        local[0] = JAW_FIXED_FACE_X + across + JAW_RELEASE_CLEARANCE_M
         self._offset = local
-        self._rel_rotation = rotation.T @ self._rotation(name)
+        self._rel_rotation = relative
+        self._told_still_held = False
         self.carry()
+
+    def _jaws_touch(self, name: str) -> bool:
+        """Whether either jaw still presses into the object (from the last physics step)."""
+        body = self.objects[name].body_id
+        jaws = {self._gripper_body, self._jaw_body}
+        for contact in self.data.contact[: self.data.ncon]:
+            first = self.model.geom_bodyid[contact.geom1]
+            second = self.model.geom_bodyid[contact.geom2]
+            touching = (first == body and second in jaws) or (second == body and first in jaws)
+            if touching and contact.dist < -JAW_RELEASE_CLEARANCE_M:
+                return True
+        return False
 
     def carry(self, tool_pos: np.ndarray | None = None) -> None:
         """Move an attached object with the gripper (call before each physics step).
 
         It keeps its place and turn relative to the gripper, so it turns with
-        the wrist. ``tool_pos`` is unused, kept for callers.
+        the wrist. ``tool_pos`` is unused, kept for callers. An object the
+        closing jaws have met but not yet closed on is held where it is.
         """
+        if self.attached is None and self._engaged is not None:
+            engaged = self.objects[self._engaged]
+            self.data.qpos[engaged.qpos_adr : engaged.qpos_adr + 7] = self._engaged_pose
+            self.data.qvel[engaged.qvel_adr : engaged.qvel_adr + 6] = 0.0
+            return
         if self.attached is None:
             return
         obj = self.objects[self.attached]

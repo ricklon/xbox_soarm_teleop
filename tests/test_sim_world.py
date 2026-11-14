@@ -40,7 +40,14 @@ def test_every_world_loads_and_steps_with_every_scene(world, scene):
 def test_plain_default_matches_bare_robot_model():
     bare = mujoco.MjModel.from_xml_path(URDF)
     plain = sim_cli.load_model_with_cameras(URDF, scene="default", world="plain")
-    assert plain.ngeom == bare.ngeom
+    # The robot itself, plus the invisible boxes the jaws collide as (not their hulls).
+    added = sum(
+        1
+        for g in range(plain.ngeom)
+        if (mujoco.mj_id2name(plain, mujoco.mjtObj.mjOBJ_GEOM, g) or "").endswith("_collision")
+    )
+    assert added > 0
+    assert plain.ngeom - added == bare.ngeom
     assert plain.nlight == bare.nlight
     assert plain.nbody == bare.nbody
 

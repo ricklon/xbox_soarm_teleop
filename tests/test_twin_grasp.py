@@ -182,6 +182,15 @@ def test_top_and_bottom_do_not_count_on_a_rigid_object(twin):
     assert slipped and "set_wrist_roll(angle_rad=" in slipped[-1]
 
 
+def test_off_square_and_off_target_gives_the_roll_first(twin):
+    """Jaws turned the wrong way cannot be centered usefully: the roll comes first."""
+    xyz = twin.grasp.position("pick_cube")
+    move(twin, xyz + [-0.05, 0.03, 0.08])  # wrist roll 0: jaws top to bottom
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    refused = [event for event in events(twin) if "pick_cube" in event]
+    assert refused and "slipped" in refused[-1] and "set_wrist_roll(angle_rad=" in refused[-1]
+
+
 @pytest.mark.parametrize("dz", [0.0, 0.025])
 def test_the_suggested_roll_makes_the_grasp_work(twin, dz):
     """What an agent does with a refusal: open, turn the wrist as told, close again."""
@@ -296,6 +305,7 @@ def test_a_cube_past_the_fingertips_is_not_held(twin):
 def test_closing_near_nothing_says_where_the_object_is(twin):
     xyz = twin.grasp.position("pick_cube")
     move(twin, xyz + [-0.06, 0.04, 0.06])
+    roll(twin, SIDEWAYS)  # square to it, so the event is about where, not the roll
     grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
     missed = [event for event in events(twin) if "missed (" in event]
     assert missed and "cm away" in missed[-1] and "move_by(dx=" in missed[-1]
@@ -323,7 +333,9 @@ def test_a_held_cube_sits_between_the_jaws_and_turns_with_them(twin, wrist):
         return rotation.T @ (twin.grasp.position("pick_cube") - data.xpos[body])
 
     held = in_gripper()
-    assert held[0] == pytest.approx(-0.008 + CUBE_WIDTH / 2, abs=1e-3)  # centered between pads
+    # Seated against the fixed jaw: half its width from the jaw face, or a little
+    # more when it sits turned in the grip, so no corner sinks into the finger.
+    assert -0.008 + CUBE_WIDTH / 2 - 1e-3 < held[0] < -0.008 + CUBE_WIDTH / 2 + 0.005
     move_by(twin, [0.0, 0.0, 0.10])
     move(twin, [0.333, -0.008, 0.30])  # where a live run saw it float beside the jaws
     roll(twin, 0.0)
@@ -413,3 +425,74 @@ def test_resting_on_a_wall_is_not_in_the_goal():
     bag_half = (0.03, 0.025, 0.012)
     assert goal.holds((0.259, 0.12, 0.155), bag_half) is False
     assert goal.holds((0.29, 0.13, 0.137), bag_half) is True
+
+
+def _carry_and_set_down(twin, xy, release_opening):
+    """Grasp the cube, carry it over xy, lower it to just above the surface, open.
+
+    Returns where it was before opening, where it settled, and its pose when let go.
+    """
+    over(twin)
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    assert twin.grasp.attached == "pick_cube"
+    move_by(twin, [0.0, 0.0, 0.08])
+    move(twin, [xy[0], xy[1], 0.22])
+    for _ in range(2):
+        jaw = jaw_center(twin)
+        move_by(twin, [xy[0] - jaw[0], xy[1] - jaw[1], 0.0])
+    in_box = np.hypot(xy[0] - 0.29, xy[1] - 0.13) < 0.06
+    floor = twin.observe()["scene"]["goal"]["center_xyz_m"][2] if in_box else 0.12
+    # Lower by the cube's own height (it rides a few mm off the jaw center), as
+    # far as the workspace lets the tool point go.
+    lowest = twin.observe()["workspace"]["z"][0] + 0.001
+    drop = floor + CUBE_WIDTH / 2 + 0.003 - twin.grasp.position("pick_cube")[2]
+    move_by(twin, [0.0, 0.0, max(drop, lowest - twin.observe()["ee"]["xyz_m"][2])])
+    obj = twin.grasp.objects["pick_cube"]
+    pose = twin.sim.data.qpos[obj.qpos_adr : obj.qpos_adr + 7].copy()
+    before = twin.grasp.position("pick_cube")
+    grip(twin, release_opening)
+    for _ in range(150):
+        twin.tick()
+    return before, twin.grasp.position("pick_cube"), pose
+
+
+def _dropped_alone(parts, pose):
+    """Where the same cube pose settles with the arm well out of the way."""
+    alone = build_twin(parts=parts, with_controller=False)
+    alone.tick()
+    move(alone, [0.20, 0.15, 0.30])
+    obj = alone.grasp.objects["pick_cube"]
+    alone.sim.data.qpos[obj.qpos_adr : obj.qpos_adr + 7] = pose
+    alone.sim.data.qvel[obj.qvel_adr : obj.qvel_adr + 6] = 0.0
+    mujoco.mj_forward(alone.sim.model, alone.sim.data)
+    start = alone.grasp.position("pick_cube")
+    for _ in range(150):
+        alone.tick()
+    return alone.grasp.position("pick_cube") - start
+
+
+@pytest.mark.parametrize("release_opening", [0.0, SETTINGS.gripper_for_opening(CUBE_WIDTH + 0.03)])
+@pytest.mark.parametrize("xy", [(0.34, -0.03), (0.29, 0.13)])  # on the table, in the goal box
+def test_a_released_cube_is_not_thrown_sideways(parts, twin, xy, release_opening):
+    """Found by an agent placing to the millimetre: every release kicked the cube
+    13 mm or more, because it sat inside the gripper's convex collision hull.
+    Now it lands as the same cube dropped with no arm near it would; a cube
+    held tilted still rocks onto its face as it lands, as on the real arm."""
+    before, after, pose = _carry_and_set_down(twin, xy, release_opening)
+    assert twin.grasp.attached is None
+    landed = (after - before)[:2]
+    alone = _dropped_alone(parts, pose)[:2]
+    assert np.linalg.norm(landed - alone) < 0.002, (landed, alone)
+
+
+def test_opening_a_little_says_the_tapered_jaws_still_hold_it(twin):
+    """The moving jaw tapers in toward the palm: opened just past the width at
+    the tips, it still touches the object higher up, so it is not let go yet."""
+    over(twin)
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
+    move_by(twin, [0.0, 0.0, 0.05])
+    grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH + SETTINGS.release_margin_m + 0.001))
+    assert twin.grasp.attached == "pick_cube"
+    assert any("still held" in event for event in events(twin))
+    grip(twin, 0.0)
+    assert twin.grasp.attached is None

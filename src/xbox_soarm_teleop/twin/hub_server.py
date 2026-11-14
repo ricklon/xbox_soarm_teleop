@@ -83,10 +83,14 @@ Every motion result gives `jaw_center_xyz_m` and the last few events.
 Closed a little past the width it still holds; much further, a rigid object is
 squeezed out and falls. A refused grasp's event says exactly what to do: the
 wrist roll that squares the jaws ("slipped"), or the opening and moves that
-center the jaws on it ("missed"). Do those, in order, then close again. A soft
-object takes any closure at any roll. set_gripper(position=0) releases. A held
-object rides at the jaw center, so to drop it somewhere put
-`jaw_center_xyz_m` over that spot.
+center the jaws on it ("missed"). If both are wrong, the roll comes first. Do
+those, in order, then close again. A soft object takes any closure at any roll.
+A held object rides near the jaw center, so to put it somewhere, move
+`jaw_center_xyz_m` over that spot, lower until the object's own z is a few mm
+above where it will rest (as low as the workspace allows), then
+set_gripper(position=0). Opening only a little does not let go: the jaws taper
+in toward the wrist and still touch it ("still held"). A held object turns
+with the gripper, so it may land on an edge and rock flat.
 
 `observe` also gives the goal box (`scene.goal`: the center of its floor and
 its inside size) and, for each object, `in_goal`. Release an object with the
