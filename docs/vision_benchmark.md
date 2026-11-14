@@ -114,7 +114,7 @@ loses the object once the jaws are centered over it.
 | `oracle` | the truth, projected | nothing (tests and controls) |
 | `molmo[:url]` | Molmo2-ER (allenai, 4B) | `uv run scripts/molmo_server.py` (own env, ~19 GB weights) |
 | `ollama[:model]` | default `gemma4:12b` | a local Ollama |
-| `gemini[:model]` | default `gemini-robotics-er-1.6-preview` | `GEMINI_API_KEY` |
+| `gemini[:model]` | default `gemini-robotics-er-2-preview` | `GEMINI_API_KEY` |
 | `openrouter[:model]` | default `google/gemma-4-31b-it:free` | `OPENROUTER_API_KEY` |
 
 Keys are read from the environment, else from a `.env` file: the current

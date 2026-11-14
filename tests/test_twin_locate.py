@@ -185,6 +185,77 @@ def test_openrouter_errors_say_why_without_the_key(monkeypatch, tmp_path):
     assert FAKE_KEY not in str(info.value)
 
 
+class _FakeResponse:
+    def __init__(self, body: dict):
+        self.body = json.dumps(body).encode()
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _http_error(code: int, body: dict, headers: dict | None = None):
+    import email.message
+    import io
+    import urllib.error
+
+    message = email.message.Message()
+    for name, value in (headers or {}).items():
+        message[name] = value
+    return urllib.error.HTTPError(
+        "http://x", code, "err", message, io.BytesIO(json.dumps(body).encode())
+    )
+
+
+def test_rate_limits_are_waited_out(monkeypatch):
+    replies = [
+        _http_error(429, {"error": {"details": [{"retryDelay": "7s"}]}}),
+        _http_error(429, {"error": {}}, {"Retry-After": "3"}),
+        _FakeResponse({"ok": 1}),
+    ]
+    waits = []
+    monkeypatch.setattr(pointing.time, "sleep", waits.append)
+
+    def urlopen(request, timeout=None):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(pointing.urllib.request, "urlopen", urlopen)
+    assert pointing._post_json("http://x", {}) == {"ok": 1}
+    assert waits == [7.0, 3.0]
+
+
+def test_rate_limits_give_up_in_the_end(monkeypatch):
+    monkeypatch.setattr(pointing.time, "sleep", lambda s: None)
+
+    def urlopen(request, timeout=None):
+        raise _http_error(429, {"error": {"message": "quota"}})
+
+    monkeypatch.setattr(pointing.urllib.request, "urlopen", urlopen)
+    with pytest.raises(PointerError, match="HTTP 429"):
+        pointing._post_json("http://x", {})
+
+
+def test_openrouter_leaves_room_for_reasoning(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    sent = {}
+
+    def post(url, body, headers=None, timeout=None):
+        sent.update(body)
+        return {"choices": [{"message": {"content": '[{"point": [1, 2]}]'}}]}
+
+    OpenRouterPointer(post=post).point(_request())
+    assert sent["max_tokens"] >= 2000
+    assert sent["reasoning"] == {"effort": "low"}
+
+
 def test_gemini_without_a_key_says_so(monkeypatch, tmp_path):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     _isolate_env_files(monkeypatch, tmp_path)

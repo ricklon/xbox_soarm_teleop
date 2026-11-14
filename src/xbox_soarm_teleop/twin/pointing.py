@@ -27,6 +27,7 @@ import base64
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -36,8 +37,10 @@ from typing import Any, Callable, Protocol
 import numpy as np
 
 HTTP_TIMEOUT_S = 120.0
+RATE_LIMIT_RETRIES = 4  # HTTP 429: wait as the API asks, then try again
+RATE_LIMIT_MAX_WAIT_S = 60.0
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-GEMINI_DEFAULT_MODEL = "gemini-robotics-er-1.6-preview"
+GEMINI_DEFAULT_MODEL = "gemini-robotics-er-2-preview"
 OLLAMA_URL = "http://127.0.0.1:11434"
 OLLAMA_DEFAULT_MODEL = "gemma4:12b"
 MOLMO_DEFAULT_URL = "http://127.0.0.1:8890"
@@ -221,19 +224,39 @@ def parse_molmo(text: str, width: int, height: int) -> Point | None:
 
 
 # ------------------------------------------------------------------ HTTP
+def _retry_delay(exc: urllib.error.HTTPError, body: str, attempt: int) -> float:
+    """How long a rate-limited API asks us to wait (s): its own hint, else backoff."""
+    header = exc.headers.get("Retry-After") if exc.headers is not None else None
+    if header:
+        try:
+            return min(float(header), RATE_LIMIT_MAX_WAIT_S)
+        except ValueError:
+            pass
+    match = re.search(r'"retryDelay"\s*:\s*"([0-9.]+)s"', body)
+    if match:
+        return min(float(match.group(1)), RATE_LIMIT_MAX_WAIT_S)
+    return min(5.0 * 2**attempt, RATE_LIMIT_MAX_WAIT_S)
+
+
 def _post_json(url: str, body: dict, headers: dict[str, str] | None = None, timeout=HTTP_TIMEOUT_S):
+    """POST JSON, return the JSON reply. Rate limits (HTTP 429) are waited out a few times."""
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json", **(headers or {})}
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:500]
-        raise PointerError(mask_secrets(f"HTTP {exc.code} from {url}: {detail}")) from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise PointerError(mask_secrets(f"cannot reach {url}: {exc}")) from None
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            if exc.code == 429 and attempt < RATE_LIMIT_RETRIES:
+                time.sleep(_retry_delay(exc, detail, attempt))
+                continue
+            raise PointerError(mask_secrets(f"HTTP {exc.code} from {url}: {detail[:500]}")) from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise PointerError(mask_secrets(f"cannot reach {url}: {exc}")) from None
+    raise AssertionError("unreachable")
 
 
 # ------------------------------------------------------------------ backends
@@ -359,7 +382,9 @@ class OpenRouterPointer:
             {
                 "model": self.model,
                 "temperature": 0,
-                "max_tokens": 300,
+                # Thinking models spend tokens before answering: 300 cut the JSON off.
+                "max_tokens": 2048,
+                "reasoning": {"effort": "low"},
                 "messages": [
                     {
                         "role": "user",

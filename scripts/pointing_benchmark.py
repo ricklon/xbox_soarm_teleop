@@ -139,6 +139,7 @@ def summarize(rows: list[dict]) -> list[dict]:
                 "trials": len(group),
                 "visible": len(visible),
                 "found": len(found),
+                "errors": sum(1 for r in group if r.get("error")),
                 "median_cm": round(statistics.median(errors), 2) if errors else None,
                 "mean_cm": round(statistics.fmean(errors), 2) if errors else None,
                 "p90_cm": round(float(np.percentile(errors, 90)), 2) if errors else None,
@@ -153,15 +154,19 @@ def summarize(rows: list[dict]) -> list[dict]:
 
 
 def print_table(table: list[dict]) -> None:
-    header = "| backend | view | visible | found | median cm | mean cm | p90 cm | <=2 cm | median px | s/call |"
+    header = (
+        "| backend | view | visible | found | API errors | median cm | mean cm | p90 cm "
+        "| <=2 cm | median px | s/call |"
+    )
     print(header)
-    print("|" + "---|" * 10)
+    print("|" + "---|" * 11)
     for row in table:
         cells = [
             row["backend"],
             row["view"],
             f"{row['visible']}/{row['trials']}",
             row["found"],
+            row["errors"],
             row["median_cm"],
             row["mean_cm"],
             row["p90_cm"],
@@ -185,7 +190,9 @@ def main(argv: list[str] | None = None) -> int:
 
     pointers = [FixedPointer(u=W / 2, v=H / 2, name="center")]
     for spec in args.pointer:
-        pointers.append(make_pointer(spec))
+        pointer = make_pointer(spec)
+        pointer.name = spec  # two models of one backend stay apart in the results
+        pointers.append(pointer)
     twin = build_twin(scene="pick_place_basic", with_controller=False)
     twin.tick()
     rig = CameraRig(twin.sim.model, twin.sim.data)
@@ -268,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
                         if xyz is not None
                         else None,
                         "seconds": round(seconds, 3) if seconds is not None else None,
+                        "error": error,
                         "raw": (point.raw if point else (error or ""))[:200],
                     }
                 )
