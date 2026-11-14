@@ -129,7 +129,7 @@ def test_hidden_mode_missed_event_gives_no_offsets(tmp_path):
     missed = [e for e in events if "missed" in e]
     assert missed, events
     assert "move_by(" not in missed[-1] and "cm away" not in missed[-1]
-    assert "camera" in missed[-1]  # tells the agent to look again
+    assert "locate" in missed[-1] and "camera" in missed[-1]  # tells the agent to look again
     twin.close()
     # The session log still has the full hint.
     logged = [

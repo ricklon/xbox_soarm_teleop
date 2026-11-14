@@ -78,7 +78,8 @@ RECENT_EVENTS = 8
 OFF_TABLE_MARGIN_M = 0.01
 KEPT_ACTIONS = 200
 LOCATE_SIZE = (640, 480)  # pointing models do better on the largest picture
-LOCATE_TIMEOUT_S = 5.0  # for the loop to answer; the model itself may take longer
+LOCATE_TIMEOUT_S = 5.0
+JAW_FLOOR_CLEARANCE_M = 0.015  # the jaw center no lower than this over the workspace floor  # for the loop to answer; the model itself may take longer
 
 
 class TwinClosed(RuntimeError):
@@ -505,6 +506,8 @@ class TwinService:
         except Exception:  # noqa: BLE001 - the object vanished meanwhile: still answer
             pass
         answer.update(xyz_m=[round(float(v), 4) for v in xyz], plane_z_m=round(setup["plane_z_m"], 4))
+        if setup["jaw_center"] is not None:
+            answer["jaw_move_m"] = self._jaw_move(np.asarray(setup["jaw_center"], dtype=float), xyz)
         self._log("locate_result", client_id=client_id, ok=True, raw=point.raw[:300], **answer)
         return {"ok": True, **answer}
 
@@ -946,6 +949,17 @@ class TwinService:
         )
         return {"ok": True, "name": name, "recorded": len(self._estimates)}
 
+    def _jaw_move(self, jaw: np.ndarray, xyz: np.ndarray) -> dict[str, float]:
+        """The move_by that puts the jaw center on an estimate (from the estimate, not the truth).
+
+        Down only as far as ``JAW_FLOOR_CLEARANCE_M`` above the workspace floor,
+        where the jaw tips would touch the table.
+        """
+        floor = float(self.workspace_bounds["z"][0]) + JAW_FLOOR_CLEARANCE_M
+        dx, dy = (float(v) for v in (xyz[:2] - jaw[:2]))
+        dz = max(float(xyz[2]), floor) - float(jaw[2])
+        return {"dx": round(dx, 4) + 0.0, "dy": round(dy, 4) + 0.0, "dz": round(dz, 4) + 0.0}
+
     def _locate_setup(
         self,
         name: str,
@@ -982,6 +996,7 @@ class TwinService:
             "plane_z_m": plane_z,
             "geometry": geometry,
             "truth_uv": geometry.project(positions[name]),
+            "jaw_center": self._snapshot.get("jaw_center_xyz_m"),
         }
 
     def _arrange_objects(self) -> None:
@@ -1203,5 +1218,6 @@ def hide_event_position(text: str) -> str:
         return text
     return (
         f"{match['name']} missed: it is not between the jaw pads. Open wider, lift the jaws "
-        "clear, look again with camera, center the jaws over it and come straight down"
+        "clear (move_by dz=0.05), locate it again (or look with camera), move the jaws by the "
+        "result's jaw_move_m across, then straight down"
     )

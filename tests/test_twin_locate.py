@@ -178,6 +178,14 @@ def test_locate_with_a_perfect_pointer_finds_the_object(running, view):
     assert np.linalg.norm(np.array(result["xyz_m"]) - truth) < 0.002
     assert result["description"] == "red cube" and result["backend"] == "oracle"
     assert result["image_size"] == [640, 480]
+    # The move that puts the jaw center on the estimate, from the arm's own pose.
+    jaw = np.array(service.observe()["jaw_center_xyz_m"])
+    move = result["jaw_move_m"]
+    floor = service.workspace_bounds["z"][0] + 0.015
+    assert [move["dx"], move["dy"]] == pytest.approx(
+        list(np.array(result["xyz_m"][:2]) - jaw[:2]), abs=1e-3
+    )
+    assert move["dz"] == pytest.approx(max(result["xyz_m"][2], floor) - jaw[2], abs=1e-3)
     scores = service.estimate_scores()
     assert len(scores) == before + 1
     assert scores[-1]["source"] == f"locate:oracle:{view}"

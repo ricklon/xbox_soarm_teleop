@@ -112,10 +112,12 @@ GOALS: dict[str, GoalBox] = {
 }
 
 
-# What each object looks like, in words a pointing model understands.
+# What each object looks like, in words a pointing model understands. Molmo2-ER
+# takes the category literally: shown the bean bag, it found a "blue bean bag"
+# in 1 of 9 pictures and a "blue object" in 9 of 9 (it is the only blue thing).
 OBJECT_DESCRIPTIONS: dict[str, str] = {
     "pick_cube": "red cube",
-    sim_cli.BEAN_BAG_NAME: "blue bean bag",
+    sim_cli.BEAN_BAG_NAME: "blue object",
 }
 
 

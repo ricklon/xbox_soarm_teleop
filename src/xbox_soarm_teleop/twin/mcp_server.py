@@ -74,12 +74,17 @@ event says only that the jaws missed. You still get each object's `size_m`
 and `grip_width_m`, whether you hold it, the goal box, `ee` and
 `jaw_center_xyz_m`. Find an object with locate(name): a vision model looks
 at a camera view and the result's `xyz_m` is its estimate of the object's
-center, often a centimetre or so off. Where the steps above say the object's
-x, y or z, use that estimate. locate looks from the front view by default,
+center, often a centimetre or so off; `jaw_move_m` is the move_by that puts
+the jaw center on that estimate. locate looks from the front view by default,
 which the arm does not block; if it answers not_found, try view="side" or
-view="overhead". After step 3, with the jaws above the object, locate again
-and re-center if the estimate moved. A "missed" event means your estimate was
-off: open, lift, locate again. Check a placement with
+view="overhead". To pick an object up: locate it; move_to 6 cm above its
+`xyz_m`; set_wrist_roll(angle_rad=-1.5); set_gripper(opening_m=grip_width_m
++ 0.05); locate again and move_by(dx, dy, dz=0) from `jaw_move_m`, twice
+(locate before each); locate once more and move_by(dx=0, dy=0, dz) with its
+`jaw_move_m.dz`; then set_gripper(opening_m=grip_width_m). Make one tool call
+at a time and wait for its result: two motion calls at once are refused as
+busy. A "missed" event means the estimate was off: open, lift 5 cm, locate
+again and repeat. Check a placement with
 locate(name, rest_z_m=the goal box floor z) or with `camera`. Without locate
 (reason no_pointer), use `camera`: the overhead view is a map, so judge an
 object against things whose positions you know (the jaw center, the goal
