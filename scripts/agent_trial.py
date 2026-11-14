@@ -177,10 +177,19 @@ def grade(log_path: Path, name: str) -> dict:
             for line in lines
             if line["kind"] == "success_check" and line["data"].get("ok", True)
         ],
-        # check_success calls the judge could not answer (quota, network): a judged
-        # run with any is not a fair test of the judge.
-        "check_errors": sum(
-            1 for line in lines if line["kind"] == "success_check" and line["data"].get("ok") is False
+        # check_success calls the judge could not answer (quota, network), or that
+        # crashed before logging an answer: a judged run with any is not a fair
+        # test of the judge.
+        "check_errors": max(
+            sum(
+                1
+                for line in lines
+                if line["kind"] == "success_check" and line["data"].get("ok") is False
+            ),
+            sum(1 for r in requests if r["data"].get("type") == "check_success")
+            - sum(
+                1 for line in lines if line["kind"] == "success_check" and line["data"].get("ok", True)
+            ),
         ),
         "time": time_split(lines),
         # What the pointer and the judge cost, from the twin's log.

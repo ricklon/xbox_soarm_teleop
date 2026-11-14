@@ -205,3 +205,21 @@ def test_failed_checks_are_counted_and_make_a_judged_run_invalid(tmp_path):
     ]
     (row,) = report.summarize(rows)
     assert row["runs"] == 1 and row["invalid_runs"] == 1 and row["in_box"] == 0.0
+
+
+def test_a_check_that_never_answered_counts_as_an_error(tmp_path):
+    """A check_success request with no success_check line crashed before logging."""
+    import json
+
+    lines = [
+        _line("header", 0.0),
+        _line("request", 1.0, type="check_success", name="pick_cube"),
+        _line("request", 2.0, type="check_success", name="pick_cube"),
+        _line(
+            "success_check", 2.5, ok=True, verdict="done", p_in_goal=0.95, correct=True, cost_usd=0.0002
+        ),
+        _line("observation", 3.0, scene={"objects": {"pick_cube": {"in_goal": True}}}),
+    ]
+    log = tmp_path / "s.jsonl"
+    log.write_text("\n".join(json.dumps(line) for line in lines))
+    assert agent_trial.grade(log, "pick_cube")["check_errors"] == 1
