@@ -96,6 +96,8 @@ def test_tools_listed(twin_url):
         "camera",
         "wait_for_action",
         "cancel_action",
+        "list_scenes",
+        "load_scene",
     } <= tools
     assert "Assisted" in (init.instructions or "") or "assisted" in (init.instructions or "")
 
@@ -147,3 +149,51 @@ def test_stop_is_not_blocked_by_a_waiting_move(twin_url):
     assert payload(call(url, "reset_stop", {"confirm": True}))["released"] is True
     assert payload(call(url, "home"))["action"]["state"] == "SUCCEEDED"
     assert service.observe()["stop_latched"] is False
+
+
+def test_agent_lists_and_loads_scenes(twin_url):
+    url, service = twin_url
+    scenes = payload(call(url, "list_scenes"))["scenes"]
+    assert [(scene["name"], scene["current"]) for scene in scenes] == [
+        ("pick_place_easy", False),
+        ("pick_place_basic", True),
+    ]
+    loaded = payload(call(url, "load_scene", {"name": "pick_place_easy"}))
+    assert loaded["ok"] is True and loaded["scene"]["objects"] == ["bean_bag"]
+    assert list(payload(call(url, "observe"))["scene"]["objects"]) == ["bean_bag"]
+
+    unknown = payload(call(url, "load_scene", {"name": "moon_base"}))
+    assert unknown["ok"] is False and unknown["reason"] == "invalid_request"
+    assert "pick_place_easy" in unknown["detail"]
+
+    assert payload(call(url, "load_scene", {"name": "pick_place_basic"}))["ok"] is True
+    assert list(service.observe()["scene"]["objects"]) == ["pick_cube"]
+
+
+def test_agent_grips_by_opening_and_sees_what_it_holds(twin_url):
+    url, service = twin_url
+    call(url, "reset_scene")
+    cube = payload(call(url, "observe"))["scene"]["objects"]["pick_cube"]
+    x, y, z = cube["xyz_m"]
+    call(url, "set_gripper", {"opening_m": cube["size_m"][0] + 0.05})
+    call(url, "move_to", {"x": x, "y": y, "z": z + 0.06})
+    call(url, "set_wrist_roll", {"angle_rad": -1.5})
+    for _ in range(2):  # the tool point is a jaw face: center the jaws, not the tool
+        jaw = payload(call(url, "observe"))["jaw_center_xyz_m"]
+        call(url, "move_by", {"dx": x - jaw[0], "dy": y - jaw[1], "dz": 0.0})
+    jaw = payload(call(url, "observe"))["jaw_center_xyz_m"]
+    moved = payload(call(url, "move_by", {"dx": 0.0, "dy": 0.0, "dz": z - jaw[2]}))
+    assert moved["jaw_center_xyz_m"] == pytest.approx([x, y, z], abs=0.006)
+
+    both = payload(call(url, "set_gripper", {"position": 1.0, "opening_m": 0.04}))
+    assert both["ok"] is False and both["reason"] == "invalid_request"
+    assert payload(call(url, "set_gripper"))["reason"] == "invalid_request"
+
+    held = payload(call(url, "set_gripper", {"opening_m": cube["size_m"][0]}))
+    assert held["ok"] is True and held["holding"] == "pick_cube"
+    assert held["gripper_opening_m"] == pytest.approx(0.04, abs=0.006)
+
+    crushed = payload(call(url, "set_gripper", {"position": 1.0}))
+    assert crushed["holding"] is None
+    assert any("squeezed out" in event for event in service.observe()["control"]["events"])
+    call(url, "reset_scene")

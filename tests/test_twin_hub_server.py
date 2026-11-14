@@ -171,7 +171,7 @@ def test_instructor_page_lists_arms_and_can_stop_them_all(served):
 
 
 # ------------------------------------------------- the page's own agent tools (WebMCP)
-def _page_tool(base: str, token: str, name: str, **args):
+def _page_tool(base: str, token: str, name: str, /, **args):
     reply = httpx.post(f"{base}/r/{token}/tools/{name}", json=args, timeout=40)
     assert reply.status_code == 200, reply.text
     return reply.json()
@@ -410,3 +410,63 @@ def test_hub_can_tell_whether_an_address_reaches_it(served):
     assert hub_answers_at(base, instance, attempts=1) is True
     assert hub_answers_at(base, "another-hub", attempts=1) is False  # some other hub answers there
     assert hub_answers_at(f"http://127.0.0.1:{_free_port()}", instance, attempts=1) is False
+
+
+# --------------------------------------------- scenes and prompts on the student page
+def test_page_switches_scenes_through_the_arms_own_tools(served):
+    """The scene picker calls list_scenes and load_scene, as an agent would."""
+    hub, base = served
+    first, second = rooms(hub)
+    page = httpx.get(f"{base}/r/{second.token}").text
+    assert 'id="scenePick"' in page
+    other = first.service.observe()["scene"]["name"]
+    target = (
+        "pick_place_easy"
+        if second.service.observe()["scene"]["name"] != "pick_place_easy"
+        else "pick_place_basic"
+    )
+    start = second.service.observe()["scene"]["name"]
+    listed = _text(_page_tool(base, second.token, "list_scenes"))
+    names = [scene["name"] for scene in listed["scenes"]]
+    assert names == ["pick_place_easy", "pick_place_basic"]
+    loaded = _text(_page_tool(base, second.token, "load_scene", name=target))
+    assert loaded["ok"] is True
+    time.sleep(0.15)
+    summary = httpx.post(f"{base}/r/{second.token}/pad", json={}).json()
+    assert summary["scene"] == target
+    assert first.service.observe()["scene"]["name"] == other  # only its own arm
+    assert _text(_page_tool(base, second.token, "load_scene", name=start))["ok"]
+
+
+def test_page_serves_starter_prompts(served):
+    from xbox_soarm_teleop.twin.hub_server import STARTER_PROMPTS
+
+    hub, base = served
+    reply = httpx.get(f"{base}/r/{rooms(hub)[0].token}/prompts")
+    assert reply.status_code == 200 and reply.headers["cache-control"] == "no-store"
+    prompts = reply.json()["prompts"]
+    assert prompts == STARTER_PROMPTS and len(prompts) >= 4
+    assert all(p["title"] and p["text"] for p in prompts)
+    assert any("pick_place_basic" in p["text"] for p in prompts)  # a scene that exists
+    assert httpx.get(f"{base}/r/nope/prompts").status_code == 404
+
+
+def test_instructor_page_serves_the_agent_checks(served):
+    hub, base = served
+    assert 'id="showChecks"' in httpx.get(f"{base}/admin/{hub.admin_token}").text
+    checks = httpx.get(f"{base}/admin/{hub.admin_token}/checks").json()["checks"]
+    assert checks.startswith("You are connected to a simulated robot arm")
+    assert "14. set_gripper with no arguments" in checks
+    assert httpx.get(f"{base}/admin/wrong/checks").status_code == 404
+    assert httpx.get(f"{base}/r/{rooms(hub)[0].token}/checks").status_code == 404
+
+
+def test_docs_carry_the_same_agent_checks_the_hub_serves():
+    import re
+    from importlib import resources
+    from pathlib import Path
+
+    served_text = resources.files("xbox_soarm_teleop.twin").joinpath("web", "agent_checks.txt")
+    doc = (Path(__file__).parent.parent / "docs" / "agent_checks.md").read_text()
+    block = re.search(r"```text\n(You are connected.*?)```", doc, re.S).group(1)
+    assert block == served_text.read_text("utf-8")

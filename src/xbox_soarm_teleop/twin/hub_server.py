@@ -55,22 +55,89 @@ You control a simulated SO-ARM101 robot arm (a digital twin) on a table. It
 belongs to one workshop student, who is watching it in a web page.
 
 Frame: robot base frame in meters. +x is forward (away from the base), +y is
-the robot's left, +z is up. The table top is at z = 0.12 m. The tool point is
-between the gripper jaws.
+the robot's left, +z is up. The table top is at z = 0.12 m. The tool point
+(what move_to steers, `ee`) is the inner face of the fixed jaw near its tip,
+not the middle of the jaws: `observe` gives that as `jaw_center_xyz_m`.
 
 Start with `observe` to see the arm, the objects and the workspace bounds.
 Motion tools wait until the move finishes (pass wait=false to return early)
 and report SUCCEEDED, or FAILED with a reason such as workspace_bound,
 out_of_reach or joint_limit. Moves outside the workspace are rejected.
 
-Grasping is assisted: move the tool point to within about 4 cm of an object's
-center, then set_gripper(1.0) to grab it; set_gripper(0.0) releases it.
+Grasping is assisted: an object is held when the jaws close to its width
+with it between their pads. To pick one up:
+1. move_to 6 cm above it, then set_wrist_roll(angle_rad=-1.5) (or 1.5): at
+   roll 0 the jaws close top to bottom, and a rigid object must be gripped by
+   its sides.
+2. observe: the object's `grip_width_m` is its size across the jaws as they
+   are turned now (not always size_m[0]). set_gripper(opening_m=grip_width_m
+   + 0.05): room for an object that sits a little turned.
+3. Center the jaws over it: move_by(dx, dy, dz=0) by the object's x, y minus
+   `jaw_center_xyz_m`; do it twice (the gripper tilts a little as it moves).
+4. Go straight down: move_by(dz = object z - jaw center z), but keep the jaw
+   center 1.5 cm or more above the workspace's lowest z (0.14 on the table;
+   lower, the jaw tips hit it). Moving the
+   jaws sideways or at an angle near a rigid object knocks it away.
+5. set_gripper(opening_m=grip_width_m). The result's `holding` names it.
+Every motion result gives `jaw_center_xyz_m` and the last few events.
+Closed a little past the width it still holds; much further, a rigid object is
+squeezed out and falls. A refused grasp's event says exactly what to do: the
+wrist roll that squares the jaws ("slipped"), or the opening and moves that
+center the jaws on it ("missed"). If both are wrong, the roll comes first. Do
+those, in order, then close again. A soft object takes any closure at any roll.
+A held object rides near the jaw center, so to put it somewhere, move
+`jaw_center_xyz_m` over that spot, lower until the object's own z is a few mm
+above where it will rest (as low as the workspace allows), then
+set_gripper(position=0). Opening only a little does not let go: the jaws taper
+in toward the wrist and still touch it ("still held"). A held object turns
+with the gripper, so it may land on an edge and rock flat.
+
+`observe` also gives the goal box (`scene.goal`: the center of its floor and
+its inside size) and, for each object, `in_goal`. Release an object with the
+jaw center a few centimeters above the box floor, inside its walls, and check
+`in_goal`.
+
+Scenes differ in how forgiving their objects are. `list_scenes` shows them,
+easiest first, and `load_scene` switches (it homes the arm and swaps the
+objects). A soft object gives way to the gripper and takes any closure; a
+rigid one is pushed away if the gripper touches it before it closes.
 
 The student can take over from their page at any time (reason
 `preempted`/`human`); wait until they are done. If the stop is latched, motion
 is refused until it is reset; a stop the student latched must be released by
 the student. Use `camera` to look at the scene.
 """
+
+
+# Things a student can paste into their agent, easiest first. Each builds on
+# the one before; the last asks the agent to explain itself, which is where
+# the learning is.
+STARTER_PROMPTS: list[dict[str, str]] = [
+    {
+        "title": "Look around",
+        "text": "Observe the arm and tell me what is on the table, where the goal box is, "
+        "and where the middle of the gripper's jaws is right now.",
+    },
+    {
+        "title": "Easy pick and place",
+        "text": "Pick up the bean bag and put it in the goal box. Check in_goal at the end.",
+    },
+    {
+        "title": "The hard object",
+        "text": "Load the pick_place_basic scene and put the cube in the goal box. "
+        "If a grasp is refused, do what the event says and try again.",
+    },
+    {
+        "title": "Put it back",
+        "text": "Take the cube out of the goal box and put it back where it started, "
+        "at (0.34, -0.03). Report each attempt.",
+    },
+    {
+        "title": "Explain it",
+        "text": "Tell me every grasp that was refused today, what the event said, and what "
+        "you did about it. What would you do differently on a real arm?",
+    },
+]
 
 
 def _bearer(value: str | None) -> str | None:
@@ -245,6 +312,12 @@ def build_hub_app(
             return Response("camera busy", status_code=503, headers=PAGE_HEADERS)
         return Response(image, media_type="image/jpeg", headers=PAGE_HEADERS)
 
+    @server.custom_route("/r/{token}/prompts", methods=["GET"])
+    async def prompts(request: Request) -> Response:
+        if room_of(request) is None:
+            return not_found
+        return JSONResponse({"prompts": STARTER_PROMPTS}, headers=PAGE_HEADERS)
+
     @server.custom_route("/r/{token}/tools", methods=["GET"])
     async def page_tools(request: Request) -> Response:
         if room_of(request) is None:
@@ -288,6 +361,12 @@ def build_hub_app(
         if not is_admin(request):
             return not_found
         return HTMLResponse(_page("admin.html"), headers=PAGE_HEADERS)
+
+    @server.custom_route("/admin/{token}/checks", methods=["GET"])
+    async def agent_checks(request: Request) -> Response:
+        if not is_admin(request):
+            return not_found
+        return JSONResponse({"checks": _page("agent_checks.txt")}, headers=PAGE_HEADERS)
 
     @server.custom_route("/admin/{token}/rooms", methods=["GET"])
     async def admin_rooms(request: Request) -> Response:

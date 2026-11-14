@@ -292,6 +292,82 @@ Thin mapping of the interface; names indicative only.
 | `stop` | `stop()` | **no** |
 | `reset_stop` | `reset_stop(confirm=True)` | yes |
 | `reset_scene` | `reset_scene()` | yes |
+| `list_scenes` | `list_scenes()` | no |
+| `load_scene` | `load_scene(name)` | yes |
+
+Scenes of one compiled model are *layouts* (`twin/layouts.py`): the model holds
+every object, and a layout says which are on the table. `pick_place_easy` has a
+bean bag the arm passes through instead of pushing (a rigid box to the physics,
+but it does not collide with the robot); `pick_place_basic` has the rigid cube,
+which the gripper knocks away if it touches it before closing. Switching never
+recompiles, so each hub room switches on its own.
+
+Grasping goes by jaw width (`twin/grasp.py`). An object attaches when the
+jaws close to its width **with it between their pads**, stays held a little
+past that, and a rigid one is squeezed out if they close further or slips if
+they are not square to its sides. A rigid object's top and bottom do not count
+(one rests on a surface), and at wrist roll 0 the twin's jaws close nearly top
+to bottom, so a rigid object needs the wrist turned about 90 degrees.
+
+The tool point every move steers (`ee`) is the URDF's `gripper_frame_link`:
+the fixed jaw's inner face, 6 mm from its tip, as on the real arm. It is not
+the middle of the jaws. `observe` (and each motion tool's result) gives
+`jaw_center_xyz_m`, the point between the pads, 1.2 cm short of the tips,
+where an object's center should be. The pad geometry it is built from
+(`JAW_*` in `grasp.py`) is measured from the SO-ARM101 meshes, not guessed.
+The approach the agent instructions give: open to the width plus 5 cm, come
+over the object, roll the wrist, center the jaw point over it with `move_by`,
+then go straight down to its center height (not below 1.5 cm over the
+workspace floor, z 0.14 on the table). Coming in at an
+angle knocks a rigid object away. A held object rides with the gripper,
+keeping its place and turn between the jaws as the wrist moves.
+
+"Between the pads" means the object's center is within 1 cm of the line
+between them across the finger (1.3 cm for a soft object, which squashes into
+the jaws) and no further out than the fingertips. Each object's `grip_width_m`
+is its size across the jaws as the gripper is turned now, the gap to close to.
+
+A refused grasp's event says what to do: the `set_wrist_roll` angle that
+squares the jaws (and when the object is turned too far for any roll to
+help), or `missed` with the opening and the moves (up 5 cm, across, straight
+down) that center the jaws on it. The roll is found by trying every roll in
+the joint's range: the closing axis is not square to the roll axis (the
+gripper is tilted), so a roll tilts the jaws as well as turning them. The
+arm has no wrist yaw, so an object turned away from the arm's heading can
+only be squared so far; the event says so when even the best roll is off. A close within 15 cm of an object that
+catches nothing also says `missed`, with how far away it is.
+`observe` also reports the goal box (`scene.goal`) and each object's
+`in_goal`, each object's `size_m` and the `gripper_opening_m`; `set_gripper`
+takes `opening_m` as well as `position`, and its result names what is
+`holding`. Jaws a person drives shut (trigger, or the page's Close button)
+stop on a rigid object instead.
+
+The jaws collide as shapes that follow the visible fingers: a capsule for
+the fixed finger (rounded like its end), a box for the wrist, and thin slices
+along the curved moving jaw (`_add_gripper_collision_boxes` and
+`_add_moving_jaw_collision_boxes` in `cli/simulate_mujoco.py`). MuJoCo
+collides a mesh as its convex hull, which filled the open space between the
+finger and the wrist: a held cube sat 12 mm inside it and was thrown 13 mm
+or more when let go. A held object is let go only once neither jaw still
+presses into it (the moving jaw tapers in toward the wrist); until then a
+partly opened gripper says it is still held. Between the jaws first meeting
+an object and closing on it, the object is held where it was squared.
+
+A grasp is judged where the jaws first meet the object (its extent across
+them, wider than its width when it sits turned), not when they reach its
+width: by then a corner caught by the moving jaw would have spun it. A rigid
+object within the skew tolerance is then turned square in the jaws. That is
+an **assumption**, from parallel jaws with the TPU pad squaring a slightly
+turned object; check it on the real arm. A cube resting against the goal box
+walls can still shift as the jaws close, so lifting one out of the box takes
+more tries than off the open table.
+
+The numbers behind this are in `GraspSettings` and are **placeholders until
+measured on the real arm**: reading at first touch, at firm hold and at slip
+for each object, and how far off square the jaws can be. The jaw opening comes
+from the twin's model, whose gripper travel (-10 to 100 degrees) differs from
+the real arm's (-2 to 127 degrees measured), so a gripper value does not yet
+mean the same opening on both.
 
 Resources: the current observation, the workspace/limits in force, and the
 session log path. Tool descriptions must state units, frames and bounds, so an
