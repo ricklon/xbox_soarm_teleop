@@ -70,6 +70,47 @@ def wait_for_port(port: int, timeout_s: float = 90.0) -> bool:
 TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED", "STOPPED"}
 
 
+def parse_opencode_events(raw: str) -> dict:
+    """Read ``opencode run --format json`` output: tokens, cost and a readable transcript.
+
+    Each model step ends with a ``step_finish`` event that carries its tokens
+    and cost (USD, as opencode prices the model). Lines that are not JSON are
+    skipped.
+    """
+    usage = {
+        "steps": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.0,
+    }
+    transcript: list[str] = []
+    last_text = ""
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        part = event.get("part") or {} if isinstance(event, dict) else {}
+        kind = part.get("type")
+        if kind == "step-finish":
+            tokens = part.get("tokens") or {}
+            usage["steps"] += 1
+            usage["input_tokens"] += int(tokens.get("input") or 0)
+            usage["output_tokens"] += int(tokens.get("output") or 0)
+            usage["reasoning_tokens"] += int(tokens.get("reasoning") or 0)
+            usage["cache_read_tokens"] += int((tokens.get("cache") or {}).get("read") or 0)
+            usage["cost_usd"] += float(part.get("cost") or 0.0)
+        elif kind == "text" and part.get("text"):
+            last_text = part["text"].strip()
+            transcript.append(last_text)
+        elif kind == "tool":
+            state = part.get("state") or {}
+            transcript.append(f"> {part.get('tool')} {json.dumps(state.get('input', {}))}")
+    return {"usage": usage, "last_text": last_text, "transcript": "\n".join(transcript)}
+
+
 def time_split(lines: list[dict]) -> dict:
     """Where a run's wall time went, from the session log's ``wall_s`` stamps.
 
@@ -191,6 +232,8 @@ def run_once(args, run: int) -> dict:
                     "run",
                     "-m",
                     args.model,
+                    "--format",
+                    "json",  # one event per line, with each step's tokens and cost
                     "--dir",
                     str(work),
                     PROMPT.format(description=description, name=name),
@@ -202,16 +245,18 @@ def run_once(args, run: int) -> dict:
                 text=True,
                 timeout=args.timeout,
             )
-            transcript, timed_out = done.stdout + done.stderr, False
+            raw, stderr, timed_out = done.stdout, done.stderr, False
         except subprocess.TimeoutExpired as exc:
-            transcript = (
+            raw = (
                 (exc.stdout or b"").decode("utf-8", "replace")
                 if isinstance(exc.stdout, bytes)
                 else (exc.stdout or "")
             )
-            timed_out = True
+            stderr, timed_out = "", True
         seconds = round(time.monotonic() - started, 1)
-        (work / "transcript.txt").write_text(transcript)
+        (work / "events.jsonl").write_text(raw)
+        parsed = parse_opencode_events(raw)
+        (work / "transcript.txt").write_text(parsed["transcript"] + ("\n" + stderr if stderr else ""))
     finally:
         time.sleep(2.0)  # let a released object settle before the twin stops
         twin.send_signal(signal.SIGINT)  # the twin closes its log on Ctrl+C
@@ -224,8 +269,8 @@ def run_once(args, run: int) -> dict:
     result.update(seconds=seconds, timed_out=timed_out, work_dir=str(work))
     if log_files:
         result.update(grade(log_files[-1], name))
-    claim = transcript.strip().splitlines()[-1][:200] if transcript.strip() else ""
-    result["agent_said"] = claim
+    result["agent_usage"] = parsed["usage"]  # the agent's own model: tokens and cost
+    result["agent_said"] = parsed["last_text"][-200:]
     return result
 
 
