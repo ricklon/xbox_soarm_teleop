@@ -51,10 +51,9 @@ def reset(twin) -> None:
     future.result(timeout=0)
 
 
-def _pose(twin, name: str, xy, rest_z: float, yaw: float, tilt: float = 0.0) -> np.ndarray:
-    """Park the other objects; rest this one on ``rest_z`` at ``xy``, turned as asked."""
+def _set_pose(twin, name: str, xy, rest_z: float, yaw: float, tilt: float = 0.0) -> np.ndarray:
+    """Rest one object on ``rest_z`` at ``xy``, turned as asked; touch nothing else."""
     grasp = twin.grasp
-    grasp.park([other for other in grasp.objects if other != name])
     obj = grasp.objects[name]
     data = twin.sim.data
     data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7] = _quat_yaw_tilt(yaw, tilt)
@@ -64,6 +63,17 @@ def _pose(twin, name: str, xy, rest_z: float, yaw: float, tilt: float = 0.0) -> 
     data.qvel[obj.qvel_adr : obj.qvel_adr + 6] = 0.0
     mujoco.mj_forward(twin.sim.model, data)
     return grasp.position(name)
+
+
+def _pose(
+    twin, name: str, xy, rest_z: float, yaw: float, tilt: float = 0.0, park_others: bool = True
+) -> np.ndarray:
+    """Like :func:`_set_pose`; by default the other objects are parked first."""
+    if park_others:
+        twin.grasp.park([other for other in twin.grasp.objects if other != name])
+    elif name in twin.grasp.parked:
+        twin.grasp.park([other for other in twin.grasp.parked if other != name])
+    return _set_pose(twin, name, xy, rest_z, yaw, tilt)
 
 
 def _goal():
@@ -85,10 +95,75 @@ def place_on_table(twin, name: str, x: float, y: float, yaw: float = 0.0) -> np.
     return _pose(twin, name, (x, y), twin.table_top_z, yaw)
 
 
-def place_in_goal(twin, name: str, dx: float = 0.0, dy: float = 0.0, yaw: float = 0.0) -> np.ndarray:
-    """Lay the object flat on the goal box floor, (dx, dy) from its center."""
+def place_in_goal(
+    twin,
+    name: str,
+    dx: float = 0.0,
+    dy: float = 0.0,
+    yaw: float = 0.0,
+    park_others: bool = True,
+) -> np.ndarray:
+    """Lay the object flat on the goal box floor, (dx, dy) from its center.
+
+    ``park_others=False`` leaves the rest of the scene as it is.
+    """
     cx, cy, floor = _goal().center_xyz_m
-    return _pose(twin, name, (cx + dx, cy + dy), floor, yaw)
+    return _pose(twin, name, (cx + dx, cy + dy), floor, yaw, park_others=park_others)
+
+
+def _footprints_clear(twin, a: str, b: str, gap: float) -> bool:
+    pa, pb = twin.grasp.position(a), twin.grasp.position(b)
+    ea, eb = twin.grasp.half_extents_world(a), twin.grasp.half_extents_world(b)
+    gap_x = abs(pa[0] - pb[0]) - ea[0] - eb[0]
+    gap_y = abs(pa[1] - pb[1]) - ea[1] - eb[1]
+    return max(gap_x, gap_y) >= gap
+
+
+def place_with_distractors(
+    twin,
+    target: str,
+    distractors,
+    rng: np.random.Generator,
+    *,
+    gap: float = 0.02,
+    target_xy=None,
+    target_yaw: float | None = None,
+    max_tries: int = 100,
+    max_layouts: int = 200,
+) -> dict[str, np.ndarray]:
+    """Put the target and its distractors flat on the table at random, apart.
+
+    Every other object is parked. Footprints (as turned) keep ``gap`` between
+    them, all on the table and clear of the goal box. ``target_xy`` fixes the
+    target's spot, and ``target_yaw`` its turn (for paired trials with and
+    without distractors).
+
+    Raises:
+        RuntimeError: no arrangement fits after ``max_layouts`` tries (each
+            object gets ``max_tries`` spots before the arrangement starts over).
+    """
+    names = [target, *distractors]
+    twin.grasp.park([other for other in twin.grasp.objects if other not in names])
+    for _ in range(max_layouts):
+        placed: list[str] = []
+        for name in names:
+            for _ in range(max_tries):
+                if name == target and target_xy is not None:
+                    xy = target_xy
+                else:
+                    xy = random_table_spot(rng)
+                yaw = float(rng.uniform(-math.pi / 2, math.pi / 2))
+                if name == target and target_yaw is not None:
+                    yaw = target_yaw
+                _set_pose(twin, name, xy, twin.table_top_z, yaw)
+                if all(_footprints_clear(twin, name, other, gap) for other in placed):
+                    placed.append(name)
+                    break
+            else:
+                break  # early ones took the room: start the arrangement over
+        if len(placed) == len(names):
+            return {name: twin.grasp.position(name) for name in names}
+    raise RuntimeError(f"no room for {', '.join(names)} after {max_layouts} arrangements")
 
 
 def place_near_goal(twin, name: str, rng: np.random.Generator, yaw: float | None = None) -> np.ndarray:

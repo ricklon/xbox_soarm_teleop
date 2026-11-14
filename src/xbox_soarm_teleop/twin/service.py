@@ -898,7 +898,7 @@ class TwinService:
     def _load_scene(self, name: str, client_id: str) -> dict[str, Any]:
         if self.stop_latched_by is not None:
             raise ActionRejected(ReasonCode.STOPPED, f"latched by {self.stop_latched_by}")
-        layouts = {layout.name: layout for layout in layouts_for(self.sim.scene)}
+        layouts = {layout.name: layout for layout in layouts_for(self.sim.scene, include_hidden=True)}
         if name not in layouts:
             known = ", ".join(scene["name"] for scene in self.list_scenes())
             raise ActionRejected(ReasonCode.INVALID_REQUEST, f"Unknown scene '{name}'. Known: {known}")
@@ -992,7 +992,7 @@ class TwinService:
         mujoco.mj_camlight(self.sim.model, self.sim.data)
         geometry = camera_geometry(self.sim.model, self.sim.data, view, width, height)
         return {
-            "description": description or object_description(name),
+            "description": description or object_description(name, self.layout),
             "plane_z_m": plane_z,
             "geometry": geometry,
             "truth_uv": geometry.project(positions[name]),

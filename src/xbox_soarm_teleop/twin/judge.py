@@ -99,10 +99,12 @@ def questions_for(description: str) -> dict[str, dict]:
     }
 
 
-def state_text(description: str, views: list[str]) -> str:
-    """What Clef is told the pictures show."""
+def state_text(description: str, views: list[str], others: list[str] | None = None) -> str:
+    """What Clef is told the pictures show; ``others`` are the other objects on the table."""
+    things = [f"a {description}", *(f"a {other}" for other in others or [])]
+    listed = things[0] if len(things) == 1 else ", ".join(things[:-1]) + " and " + things[-1]
     lines = [
-        f"Camera pictures of a robot arm's work table. On it are a {description} and an open "
+        f"Camera pictures of a robot arm's work table. On it are {listed}, and an open "
         "green box (the goal box). The robot has a two-jaw gripper.",
         "The pictures, in order:",
     ]
@@ -119,14 +121,19 @@ class ClefJudge:
     post: Callable[..., dict] = _post_json
 
     def judge(
-        self, images: list[bytes], description: str, views: list[str] | None = None
+        self,
+        images: list[bytes],
+        description: str,
+        views: list[str] | None = None,
+        others: list[str] | None = None,
     ) -> dict[str, Any]:
         """P(yes) for each yes/no question, a probability per ``where`` option, token use.
 
         Args:
             images: PNG pictures, 1 to 4.
-            description: The object in words ("red cube").
+            description: The object asked about, in words ("red cube").
             views: Each picture's view name, in order (for the state text).
+            others: The other objects on the table, in words ("small red cube").
         """
         if not 1 <= len(images) <= MAX_IMAGES:
             raise ValueError(f"give 1 to {MAX_IMAGES} images")
@@ -142,7 +149,7 @@ class ClefJudge:
             raise JudgeError(f"{' and '.join(missing)} not set (environment or a .env file)")
         body = {
             "model": self.model,
-            "state": state_text(description, views),
+            "state": state_text(description, views, others),
             "images": [
                 "data:image/png;base64," + base64.b64encode(image).decode("ascii") for image in images
             ],

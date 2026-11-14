@@ -217,3 +217,20 @@ def test_random_spots_and_near_box_placements_are_on_the_table(twin):
         for _ in range(30):
             place_near_goal(twin, name, rng)
             assert truth_labels(twin, name)["in_goal"] is False
+
+
+def test_the_judge_is_told_every_object_on_the_table(monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", FAKE_TOKEN)
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", FAKE_ACCOUNT)
+    sent = {}
+
+    def post(url, body, headers=None, timeout=None):
+        sent.update(body)
+        return _reply()
+
+    ClefJudge(post=post).judge(
+        [b"x"], "large red cube", views=["front"], others=["small red cube", "red bar"]
+    )
+    state = sent["body"]["state"] if "body" in sent else sent["state"]
+    assert "large red cube" in state and "small red cube" in state and "red bar" in state
+    assert "large red cube" in sent["questions"]["in_goal"]["instructions"]

@@ -49,7 +49,7 @@ from xbox_soarm_teleop.twin.cameras import (  # noqa: E402
     encode,
     point_camera,
 )
-from xbox_soarm_teleop.twin.layouts import GOALS, object_description  # noqa: E402
+from xbox_soarm_teleop.twin.layouts import GOALS, LAYOUTS, object_description  # noqa: E402
 from xbox_soarm_teleop.twin.pointing import (  # noqa: E402
     FixedPointer,
     Point,
@@ -59,6 +59,7 @@ from xbox_soarm_teleop.twin.pointing import (  # noqa: E402
     mask_secrets,
 )
 from xbox_soarm_teleop.twin.projection import camera_geometry, pixel_to_xyz  # noqa: E402
+from xbox_soarm_teleop.twin.scenarios import place_with_distractors, random_table_spot  # noqa: E402
 
 W, H = 640, 480
 
@@ -70,6 +71,13 @@ def size(view: str) -> tuple[int, int]:
 
 VIEWS = ("overhead", "front", "side", "wrist")
 OBJECTS = ("pick_cube", "bean_bag")
+# --distractors KIND: the red cube among these (twin.layouts' distractor scenes).
+DISTRACTOR_SETS = {
+    "color": ["blue_cube", "green_cube"],
+    "shape": ["red_bar"],
+    "size": ["red_cube_small"],
+    "clutter": ["red_cube_small", "red_bar", "blue_cube", "yellow_cube"],
+}
 # Where objects are put: within the arm's reach, clear of the goal box. The
 # table ends at y = -0.10: below that the object is drawn beside it, at table
 # height. Pointing is graded the same (the plane is right), and the published
@@ -126,22 +134,43 @@ def aim_wrist(twin, xyz: np.ndarray) -> bool:
     )
 
 
-def object_mask(seg_renderer, twin, view: str, name: str) -> np.ndarray:
+def segment(seg_renderer, twin, view: str) -> np.ndarray:
+    """Which geom each pixel shows (MuJoCo segmentation: object id, object type)."""
     camera = mujoco.MjvCamera()
     point_camera(camera, twin.sim.model, view)
     seg_renderer.update_scene(twin.sim.data, camera=camera)
-    seg = seg_renderer.render()
+    return seg_renderer.render()
+
+
+def object_mask(seg: np.ndarray, twin, name: str) -> np.ndarray:
     body = twin.grasp.objects[name].body_id
     geoms = np.where(twin.sim.model.geom_bodyid == body)[0]
     return (seg[..., 1] == mujoco.mjtObj.mjOBJ_GEOM) & np.isin(seg[..., 0], geoms)
 
 
+def what_is_at(seg: np.ndarray, twin, point: Point | None) -> str | None:
+    """The object the pointed pixel shows ("background" for anything else)."""
+    if point is None:
+        return None
+    row, col = int(point.v), int(point.u)
+    if not (0 <= row < seg.shape[0] and 0 <= col < seg.shape[1]):
+        return "background"
+    geom_id, kind = int(seg[row, col, 0]), int(seg[row, col, 1])
+    if kind != mujoco.mjtObj.mjOBJ_GEOM or geom_id < 0:
+        return "background"
+    body = int(twin.sim.model.geom_bodyid[geom_id])
+    for name, obj in twin.grasp.objects.items():
+        if obj.body_id == body:
+            return name
+    return "background"
+
+
 def summarize(rows: list[dict]) -> list[dict]:
-    groups: dict[tuple[str, str], list[dict]] = {}
+    groups: dict[tuple[str, str, str], list[dict]] = {}
     for row in rows:
-        groups.setdefault((row["backend"], row["view"]), []).append(row)
+        groups.setdefault((row["backend"], row["view"], row.get("condition", "alone")), []).append(row)
     table = []
-    for (backend, view), group in sorted(groups.items()):
+    for (backend, view, condition), group in sorted(groups.items()):
         visible = [r for r in group if r["visible"]]
         found = [r for r in visible if r["error_cm"] is not None]
         errors = sorted(r["error_cm"] for r in found)
@@ -151,6 +180,7 @@ def summarize(rows: list[dict]) -> list[dict]:
             {
                 "backend": backend,
                 "view": view,
+                "condition": condition,
                 "trials": len(group),
                 "visible": len(visible),
                 "found": len(found),
@@ -163,6 +193,16 @@ def summarize(rows: list[dict]) -> list[dict]:
                 else None,
                 "median_px": round(statistics.median(pixels), 1) if pixels else None,
                 "median_s": round(statistics.median(seconds), 2) if seconds else None,
+                # What the pointed pixel shows: the target, another object, or neither.
+                "on_target": round(sum(r["hit"] == r["object"] for r in found) / len(found), 2)
+                if found
+                else None,
+                "wrong_object": round(
+                    sum(r["hit"] not in (r["object"], "background", None) for r in found) / len(found),
+                    2,
+                )
+                if found
+                else None,
             }
         )
     return table
@@ -170,18 +210,21 @@ def summarize(rows: list[dict]) -> list[dict]:
 
 def print_table(table: list[dict]) -> None:
     header = (
-        "| backend | view | visible | found | API errors | median cm | mean cm | p90 cm "
-        "| <=2 cm | median px | s/call |"
+        "| backend | view | condition | visible | found | API errors | on target | wrong object "
+        "| median cm | mean cm | p90 cm | <=2 cm | median px | s/call |"
     )
     print(header)
-    print("|" + "---|" * 11)
+    print("|" + "---|" * 14)
     for row in table:
         cells = [
             row["backend"],
             row["view"],
+            row["condition"],
             f"{row['visible']}/{row['trials']}",
             row["found"],
             row["errors"],
+            row["on_target"],
+            row["wrong_object"],
             row["median_cm"],
             row["mean_cm"],
             row["p90_cm"],
@@ -200,6 +243,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--view", action="append", choices=VIEWS, help="Views (default: all)")
     parser.add_argument("--out", default="twin_logs/pointing_benchmark.json")
     parser.add_argument("--images", default=None, help="Save each picture here (PNG)")
+    parser.add_argument(
+        "--distractors",
+        choices=sorted(DISTRACTOR_SETS),
+        default=None,
+        help="Point at the red cube alone and then among these distractors, at the same spot",
+    )
     args = parser.parse_args(argv)
     # Wrist last: aiming it moves the arm, which may nudge the object.
     views = tuple(sorted(set(args.view or VIEWS), key=VIEWS.index))
@@ -232,82 +281,105 @@ def main(argv: list[str] | None = None) -> int:
     skipped: dict[str, str] = {}
     disturbed: list[int] = []
     for trial in range(args.trials):
-        name = OBJECTS[trial % len(OBJECTS)]
-        x, y, yaw = random_spot(rng)
-        run_action(twin, {"type": "home"})
-        truth = place(twin, name, x, y, yaw)
-        description = object_description(name)
-        plane_z = twin.table_top_z + float(twin.grasp.half_extents_world(name)[2])
-        for view in views:
-            if view == "wrist":
-                before = truth.copy()
-                aimed = aim_wrist(twin, truth)
-                truth = twin.grasp.position(name)
-                if not aimed or np.linalg.norm(truth - before) > 0.003:
-                    disturbed.append(trial)  # the arm nudged it, or could not get there
-                    continue
-            mujoco.mj_forward(twin.sim.model, twin.sim.data)
-            width, height = size(view)
-            geometry = camera_geometry(twin.sim.model, twin.sim.data, view, width, height)
-            pixels = rig.render(view, width, height, twin.sim.data)
-            png = encode(pixels, "png")
-            if images:
-                (images / f"{trial:02d}-{name}-{view}.png").write_bytes(png)
-            mask = object_mask(seg_for(view), twin, view, name)
-            visible = bool(mask.sum() >= 20)
-            truth_uv = geometry.project(truth)
-            perfect = None
-            if visible:
-                rows_, cols_ = np.nonzero(mask)
-                perfect = Point(cols_.mean() + 0.5, rows_.mean() + 0.5, raw="segmentation")
-            request = PointRequest(png, "image/png", width, height, description, truth_uv=truth_uv)
-
-            answers: list[tuple[str, Point | None, float | None, str | None]] = [
-                ("perfect", perfect, 0.0, None)
-            ]
-            for pointer in pointers:
-                if pointer.name in skipped:
-                    continue
-                started = time.monotonic()
-                try:
-                    point = pointer.point(request)
-                    answers.append((pointer.name, point, time.monotonic() - started, None))
-                except PointerError as exc:
-                    reason = mask_secrets(str(exc))
-                    if trial == 0 and view == views[0]:
-                        skipped[pointer.name] = reason
-                        print(f"skipping {pointer.name}: {reason}", file=sys.stderr)
+        if args.distractors:
+            name = "pick_cube"
+            layout = LAYOUTS[f"distractors_{args.distractors}"]
+            x, y = random_table_spot(rng)  # on the table, unlike random_spot's older range
+            yaw = float(rng.uniform(-math.pi / 2, math.pi / 2))
+            conditions = [("alone", []), ("distractors", DISTRACTOR_SETS[args.distractors])]
+        else:
+            name = OBJECTS[trial % len(OBJECTS)]
+            layout = None
+            x, y, yaw = random_spot(rng)
+            conditions = [("alone", None)]
+        for condition, others in conditions:
+            run_action(twin, {"type": "home"})
+            if others is None:
+                truth = place(twin, name, x, y, yaw)
+            else:
+                truth = place_with_distractors(
+                    twin, name, others, rng, target_xy=(x, y), target_yaw=yaw
+                )[name]
+            description = object_description(name, layout)  # the same words alone and among others
+            plane_z = twin.table_top_z + float(twin.grasp.half_extents_world(name)[2])
+            for view in views:
+                if view == "wrist":
+                    before = {n: twin.grasp.position(n).copy() for n in twin.grasp.positions()}
+                    aimed = aim_wrist(twin, truth)
+                    truth = twin.grasp.position(name)
+                    moved = max(
+                        float(np.linalg.norm(twin.grasp.position(n) - xyz)) for n, xyz in before.items()
+                    )
+                    if not aimed or moved > 0.003:
+                        disturbed.append(trial)  # the arm nudged something, or could not get there
                         continue
-                    answers.append((pointer.name, None, time.monotonic() - started, reason))
-            for backend, point, seconds, error in answers:
-                xyz = pixel_to_xyz(geometry, point.u, point.v, plane_z) if point else None
-                rows.append(
-                    {
-                        "trial": trial,
-                        "object": name,
-                        "view": view,
-                        "backend": backend,
-                        "visible": visible,
-                        "truth_xyz_m": [round(float(v), 4) for v in truth],
-                        "truth_uv": [round(c, 1) for c in truth_uv] if truth_uv else None,
-                        "pixel": [round(point.u, 1), round(point.v, 1)] if point else None,
-                        "pixel_error": round(
-                            float(np.hypot(point.u - perfect.u, point.v - perfect.v)), 1
-                        )
-                        if point and perfect
-                        else None,
-                        "xyz_m": [round(float(v), 4) for v in xyz] if xyz is not None else None,
-                        "error_cm": round(float(np.linalg.norm(xyz - truth)) * 100, 2)
-                        if xyz is not None
-                        else None,
-                        "seconds": round(seconds, 3) if seconds is not None else None,
-                        "error": error,
-                        "raw": (point.raw if point else (error or ""))[:200],
-                    }
-                )
-        done = [r for r in rows if r["trial"] == trial and r["backend"] != "perfect"]
+                mujoco.mj_forward(twin.sim.model, twin.sim.data)
+                width, height = size(view)
+                geometry = camera_geometry(twin.sim.model, twin.sim.data, view, width, height)
+                pixels = rig.render(view, width, height, twin.sim.data)
+                png = encode(pixels, "png")
+                if images:
+                    (images / f"{trial:02d}-{condition}-{name}-{view}.png").write_bytes(png)
+                seg = segment(seg_for(view), twin, view)
+                mask = object_mask(seg, twin, name)
+                visible = bool(mask.sum() >= 20)
+                truth_uv = geometry.project(truth)
+                perfect = None
+                if visible:
+                    rows_, cols_ = np.nonzero(mask)
+                    perfect = Point(cols_.mean() + 0.5, rows_.mean() + 0.5, raw="segmentation")
+                request = PointRequest(png, "image/png", width, height, description, truth_uv=truth_uv)
+
+                answers: list[tuple[str, Point | None, float | None, str | None]] = [
+                    ("perfect", perfect, 0.0, None)
+                ]
+                for pointer in pointers:
+                    if pointer.name in skipped:
+                        continue
+                    started = time.monotonic()
+                    try:
+                        point = pointer.point(request)
+                        answers.append((pointer.name, point, time.monotonic() - started, None))
+                    except PointerError as exc:
+                        reason = mask_secrets(str(exc))
+                        if trial == 0 and view == views[0] and condition == conditions[0][0]:
+                            skipped[pointer.name] = reason
+                            print(f"skipping {pointer.name}: {reason}", file=sys.stderr)
+                            continue
+                        answers.append((pointer.name, None, time.monotonic() - started, reason))
+                for backend, point, seconds, error in answers:
+                    xyz = pixel_to_xyz(geometry, point.u, point.v, plane_z) if point else None
+                    rows.append(
+                        {
+                            "trial": trial,
+                            "object": name,
+                            "condition": condition,
+                            "description": description,
+                            "view": view,
+                            "backend": backend,
+                            "visible": visible,
+                            "target_px": int(mask.sum()),
+                            "hit": what_is_at(seg, twin, point),
+                            "truth_xyz_m": [round(float(v), 4) for v in truth],
+                            "truth_uv": [round(c, 1) for c in truth_uv] if truth_uv else None,
+                            "pixel": [round(point.u, 1), round(point.v, 1)] if point else None,
+                            "pixel_error": round(
+                                float(np.hypot(point.u - perfect.u, point.v - perfect.v)), 1
+                            )
+                            if point and perfect
+                            else None,
+                            "xyz_m": [round(float(v), 4) for v in xyz] if xyz is not None else None,
+                            "error_cm": round(float(np.linalg.norm(xyz - truth)) * 100, 2)
+                            if xyz is not None
+                            else None,
+                            "seconds": round(seconds, 3) if seconds is not None else None,
+                            "error": error,
+                            "raw": (point.raw if point else (error or ""))[:200],
+                        }
+                    )
+        done = [r for r in rows if r["trial"] == trial and r["backend"] not in ("perfect", "center")]
         brief = ", ".join(
-            f"{r['backend']}/{r['view']}={r['error_cm']}" for r in done if r["backend"] != "center"
+            f"{r['backend']}/{r['view']}/{r['condition']}={r['error_cm']}({r['hit']})" for r in done
         )
         print(f"trial {trial:2d} {name:9s} at ({x:.3f}, {y:.3f}): {brief}", flush=True)
 

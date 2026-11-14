@@ -44,13 +44,14 @@ from xbox_soarm_teleop.twin.judge import (  # noqa: E402
     truth_labels,
     where_metrics,
 )
-from xbox_soarm_teleop.twin.layouts import GOALS, object_description  # noqa: E402
+from xbox_soarm_teleop.twin.layouts import GOALS, LAYOUTS, object_description  # noqa: E402
 from xbox_soarm_teleop.twin.scenarios import (  # noqa: E402
     grasp_and_lift,
     place_in_goal,
     place_near_goal,
     place_on_table,
     place_tipped,
+    place_with_distractors,
     random_table_spot,
     reset,
 )
@@ -75,6 +76,44 @@ KINDS = (
     "tipped_in_goal",
 )
 OBJECTS = ("pick_cube", "bean_bag")
+# --distractors KIND: the red cube among these; the first is the one moved about.
+DISTRACTOR_SETS = {
+    "color": ["blue_cube", "green_cube"],
+    "shape": ["red_bar"],
+    "size": ["red_cube_small"],
+    "clutter": ["red_cube_small", "red_bar", "blue_cube", "yellow_cube"],
+}
+# Situations where the words must pick out the right object.
+DISTRACTOR_KINDS = (
+    "target_on_table",
+    "target_in_goal",
+    "distractor_in_goal",
+    "both_in_goal",
+    "held_target",
+    "held_distractor",
+)
+
+
+def make_distractor_situation(twin, kind: str, others: list[str], rng: np.random.Generator) -> bool:
+    """The red cube among ``others`` as ``kind``; False if it could not be done."""
+    reset(twin)
+    target, first = "pick_cube", others[0]
+    place_with_distractors(twin, target, others, rng)
+    if kind == "target_in_goal":
+        place_in_goal(twin, target, *rng.uniform(-0.01, 0.01, size=2), park_others=False)
+    elif kind == "distractor_in_goal":
+        place_in_goal(twin, first, *rng.uniform(-0.005, 0.005, size=2), park_others=False)
+    elif kind == "both_in_goal":
+        # Side by side across the box; a long object lies along it.
+        place_in_goal(twin, target, dy=-0.02, park_others=False)
+        place_in_goal(twin, first, dy=0.024, yaw=math.pi / 2, park_others=False)
+    elif kind in ("held_target", "held_distractor"):
+        name = target if kind == "held_target" else first
+        lift = [rng.uniform(0.26, 0.34), rng.uniform(-0.06, 0.04), rng.uniform(0.21, 0.25)]
+        return grasp_and_lift(twin, name, lift)
+    elif kind != "target_on_table":
+        raise ValueError(kind)
+    return True
 
 
 def make_situation(twin, kind: str, name: str, rng: np.random.Generator) -> bool:
@@ -202,6 +241,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--image-sets", default="1,2,4", help="Numbers of pictures to try (1, 2, 4)")
     parser.add_argument("--out", default="twin_logs/judge_benchmark.json")
     parser.add_argument("--images", default=None, help="Save each picture here (PNG)")
+    parser.add_argument(
+        "--distractors",
+        choices=sorted(DISTRACTOR_SETS),
+        default=None,
+        help="Ask about the red cube among these objects, in situations where the words matter",
+    )
     args = parser.parse_args(argv)
     models = args.model or ["clef", "clef-flash"]
     sets = [s.strip() for s in args.image_sets.split(",") if s.strip()]
@@ -218,9 +263,18 @@ def main(argv: list[str] | None = None) -> int:
     situations: list[dict] = []
     rows: list[dict] = []
     for index in range(args.situations):
-        kind = KINDS[index % len(KINDS)]
-        name = OBJECTS[(index // len(KINDS)) % len(OBJECTS)]
-        if not make_situation(twin, kind, name, rng):
+        others: list[str] = []
+        layout = None
+        if args.distractors:
+            kind = DISTRACTOR_KINDS[index % len(DISTRACTOR_KINDS)]
+            name, others = "pick_cube", DISTRACTOR_SETS[args.distractors]
+            layout = LAYOUTS[f"distractors_{args.distractors}"]
+            ready = make_distractor_situation(twin, kind, others, rng)
+        else:
+            kind = KINDS[index % len(KINDS)]
+            name = OBJECTS[(index // len(KINDS)) % len(OBJECTS)]
+            ready = make_situation(twin, kind, name, rng)
+        if not ready:
             print(f"situation {index}: could not set up {kind} with {name}; skipped", flush=True)
             continue
         labels = truth_labels(twin, name)
@@ -228,16 +282,25 @@ def main(argv: list[str] | None = None) -> int:
         if image_dir:
             for view, png in pictures.items():
                 (image_dir / f"{index:03d}-{kind}-{name}-{view}.png").write_bytes(png)
-        situation = {"index": index, "kind": kind, "object": name, "truth": labels}
+        situation = {
+            "index": index,
+            "kind": kind,
+            "object": name,
+            "distractors": others,
+            "truth": labels,
+        }
         situations.append(situation)
-        description = object_description(name)
+        description = object_description(name, layout)
+        other_words = [object_description(other, layout) for other in others]
         brief = []
         for model, judge in judges.items():
             for key in sets:
                 views = VIEW_SETS[key]
                 started = time.monotonic()
                 try:
-                    verdict = judge.judge([pictures[v] for v in views], description, views=list(views))
+                    verdict = judge.judge(
+                        [pictures[v] for v in views], description, views=list(views), others=other_words
+                    )
                     error = None
                 except JudgeError as exc:
                     verdict, error = None, str(exc)

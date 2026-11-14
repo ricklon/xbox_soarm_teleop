@@ -23,6 +23,11 @@ class Layout:
         difficulty: ``"easy"`` or ``"hard"``.
         description: One sentence for an agent choosing a scene.
         objects: Start position (m, base frame) of each object on the table.
+        target: The object a task in this scene is about, if there is one.
+        listed: Offered by ``list_scenes`` (the workshop's scene picker). Hidden
+            scenes still load by name.
+        descriptions: How objects are described in this scene, where the
+            usual words (``OBJECT_DESCRIPTIONS``) would be ambiguous.
     """
 
     name: str
@@ -30,6 +35,9 @@ class Layout:
     difficulty: str
     description: str
     objects: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+    target: str | None = None
+    listed: bool = True
+    descriptions: dict[str, str] = field(default_factory=dict)
 
     def summary(self) -> dict:
         return {
@@ -37,11 +45,33 @@ class Layout:
             "difficulty": self.difficulty,
             "description": self.description,
             "objects": list(self.objects),
+            "target": self.target,
         }
 
 
 _START_XY = tuple(float(v) for v in sim_cli.PICK_PLACE_CUBE_START[:2])
 _TABLE = float(sim_cli.PICK_PLACE_TABLE_HEIGHT)
+_HALF = {name: half for name, half, _, _ in sim_cli.DISTRACTOR_OBJECTS}
+_CUBE = tuple(float(v) for v in sim_cli.PICK_PLACE_CUBE_START)
+
+
+def _on_table(name: str, x: float, y: float) -> tuple[float, float, float]:
+    return (x, y, _TABLE + _HALF[name][2])
+
+
+def _distractors(name: str, description: str, others: dict, descriptions=None) -> "Layout":
+    """A hidden scene: the red cube at its usual start, among ``others``."""
+    return Layout(
+        name=name,
+        model_scene="pick_place_basic",
+        difficulty="hard",
+        description=description,
+        objects={"pick_cube": _CUBE, **{n: _on_table(n, *xy) for n, xy in others.items()}},
+        target="pick_cube",
+        listed=False,
+        descriptions=descriptions or {},
+    )
+
 
 LAYOUTS: dict[str, Layout] = {
     layout.name: layout
@@ -67,9 +97,39 @@ LAYOUTS: dict[str, Layout] = {
                 "if it touches it, so the approach has to keep clear until it closes."
             ),
             objects={"pick_cube": tuple(float(v) for v in sim_cli.PICK_PLACE_CUBE_START)},
+            target="pick_cube",
+        ),
+        _distractors(
+            "distractors_color",
+            "The red cube beside a blue cube and a green cube: find it by colour.",
+            # Clear of the arm's path from home, which brushes a 4 cm cube at (0.25, 0.04).
+            {"blue_cube": (0.42, 0.04), "green_cube": (0.25, -0.07)},
+        ),
+        _distractors(
+            "distractors_shape",
+            "The red cube beside a red bar: find it by shape.",
+            {"red_bar": (0.25, 0.04)},
+        ),
+        _distractors(
+            "distractors_size",
+            "The large red cube beside a small red cube: find it by size.",
+            {"red_cube_small": (0.25, -0.06)},
+            {"pick_cube": "large red cube"},
+        ),
+        _distractors(
+            "distractors_clutter",
+            "The large red cube among a small red cube, a red bar, a blue cube and a yellow cube.",
+            {
+                "red_cube_small": (0.25, -0.06),
+                "red_bar": (0.23, 0.05),
+                "blue_cube": (0.42, 0.04),
+                "yellow_cube": (0.43, -0.07),
+            },
+            {"pick_cube": "large red cube"},
         ),
     )
 }
+DISTRACTOR_LAYOUTS = tuple(name for name in LAYOUTS if name.startswith("distractors_"))
 
 
 @dataclass(frozen=True)
@@ -118,11 +178,18 @@ GOALS: dict[str, GoalBox] = {
 OBJECT_DESCRIPTIONS: dict[str, str] = {
     "pick_cube": "red cube",
     sim_cli.BEAN_BAG_NAME: "blue object",
+    "red_cube_small": "small red cube",
+    "blue_cube": "blue cube",
+    "red_bar": "red bar",
+    "green_cube": "green cube",
+    "yellow_cube": "yellow cube",
 }
 
 
-def object_description(name: str) -> str:
-    """An object's description for a pointing model ("red cube")."""
+def object_description(name: str, layout: "Layout | None" = None) -> str:
+    """An object's description for a pointing model ("red cube"), as ``layout`` words it."""
+    if layout is not None and name in layout.descriptions:
+        return layout.descriptions[name]
     return OBJECT_DESCRIPTIONS.get(name, name.replace("_", " "))
 
 
@@ -132,6 +199,13 @@ def model_scene(name: str) -> str:
     return layout.model_scene if layout is not None else name
 
 
-def layouts_for(scene: str) -> list[Layout]:
-    """Layouts of a compiled scene, easiest first (empty if it has only one arrangement)."""
-    return [layout for layout in LAYOUTS.values() if layout.model_scene == scene]
+def layouts_for(scene: str, *, include_hidden: bool = False) -> list[Layout]:
+    """Layouts of a compiled scene, easiest first (empty if it has only one arrangement).
+
+    Hidden layouts (the distractor scenes) are left out unless asked for.
+    """
+    return [
+        layout
+        for layout in LAYOUTS.values()
+        if layout.model_scene == scene and (layout.listed or include_hidden)
+    ]

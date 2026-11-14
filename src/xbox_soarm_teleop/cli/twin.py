@@ -25,7 +25,15 @@ import sys
 import time
 from pathlib import Path
 
-SCENES = ("pick_place_easy", "pick_place_basic", "stack", "default")
+# The distractor scenes are twin.layouts.DISTRACTOR_LAYOUTS, named here so
+# that --help does not load MuJoCo (tests keep the two in step).
+DISTRACTOR_SCENES = (
+    "distractors_color",
+    "distractors_shape",
+    "distractors_size",
+    "distractors_clutter",
+)
+SCENES = ("pick_place_easy", "pick_place_basic", *DISTRACTOR_SCENES, "stack", "default")
 
 
 def _wait_for_port(host: str, port: int, timeout_s: float = 10.0) -> bool:

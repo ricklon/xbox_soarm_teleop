@@ -152,6 +152,20 @@ BEAN_BAG_START = np.array(
 # Soft objects collide only with geoms that carry this bit: the table, the goal
 # box and the floor, but not the robot (whose geoms keep MuJoCo's default bit 1).
 SOFT_OBJECT_COLLISION_BIT = 2
+# Objects for the twin's distractor scenes (twin.layouts): rigid boxes that
+# look like the red cube in one way or another. Name, half extents (m), colour,
+# mass (kg). They rest on the floor far from the table, out of every view,
+# until a scene puts them on it.
+DISTRACTOR_OBJECTS = (
+    # 3 cm tall at least: the jaw center stops 1.5 cm over the table (lower, the
+    # jaw tips hit it), so a 2.4 cm object's center is below the pads.
+    ("red_cube_small", (0.015, 0.015, 0.015), (0.85, 0.25, 0.20, 1.0), 0.02),
+    ("blue_cube", (0.02, 0.02, 0.02), (0.20, 0.40, 0.85, 1.0), PICK_PLACE_CUBE_MASS),
+    ("red_bar", (0.015, 0.035, 0.015), (0.85, 0.25, 0.20, 1.0), 0.035),
+    ("green_cube", (0.015, 0.015, 0.015), (0.20, 0.70, 0.30, 1.0), 0.02),
+    ("yellow_cube", (0.015, 0.015, 0.015), (0.95, 0.78, 0.15, 1.0), 0.02),
+)
+DISTRACTOR_REST_XY = (8.0, 8.0)  # first object's spot on the floor; the rest 0.3 m apart
 
 
 class StackChallenge:
@@ -786,6 +800,19 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
     bag_geom.friction = [1.5, 0.05, 0.002]
     bag_geom.contype = SOFT_OBJECT_COLLISION_BIT
     bag_geom.conaffinity = SOFT_OBJECT_COLLISION_BIT
+
+    for index, (name, half, rgba, mass) in enumerate(DISTRACTOR_OBJECTS):
+        body = spec.worldbody.add_body()
+        body.name = name
+        body.pos = [DISTRACTOR_REST_XY[0] + 0.3 * index, DISTRACTOR_REST_XY[1], half[2]]
+        body.add_freejoint()
+        geom = body.add_geom()
+        geom.name = f"{name}_geom"
+        geom.type = mujoco.mjtGeom.mjGEOM_BOX
+        geom.size = list(half)
+        geom.mass = mass
+        geom.rgba = list(rgba)
+        geom.friction = [1.1, 0.02, 0.001]
 
     goal_parts = [
         ("goal_base", [0.0, 0.0, 0.0], [*PICK_PLACE_GOAL_INNER_HALF_EXTENTS[:2], 0.004]),
