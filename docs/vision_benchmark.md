@@ -5,9 +5,9 @@ looking. The MuJoCo twin knows exactly where everything is, which makes it a
 grader for perception. This page covers how to run the twin as a benchmark and
 the results so far.
 
-Status: step 1 (no-coordinates mode and scoring) and step 2 (a `locate` tool
-backed by pointing models) are done. Step 3 (a Workers AI success judge) is
-not built yet.
+Status: all three steps are done: no-coordinates mode and scoring, a
+`locate` tool backed by pointing models, and a success judge (Cloudflare's
+Clef) graded against the twin's own state.
 
 ## Results so far
 
@@ -172,3 +172,76 @@ object.
 throwaway config. That config turns off any other `soarm-arm` server (such as
 a workshop hub on 8800) and opencode's shell and file tools. It then grades
 the run from the session log, not from what the agent says.
+
+## Step 3: a success judge from pictures (Clef)
+
+On the real arm nothing reports `in_goal` or `attached`. `twin/judge.py` asks
+Cloudflare's Clef (`@cf/cloudflare/clef`, 27B, and `clef-flash`, 9B, on
+Workers AI) about one object in 1-4 camera pictures. Clef takes a state (text
+and images) and typed questions, and returns a probability for every option:
+
+- `in_goal`: resting in the goal box? (yes/no)
+- `held`: held in the gripper? (yes/no)
+- `tipped`: resting tilted on an edge or corner? (yes/no)
+- `where`: goal box, table, gripper or floor? (one of four)
+
+The right answers come from the simulator (`truth_labels`), with the same
+`in_goal` test `observe` uses. `twin/scenarios.py` sets up the situations, all
+on the table top: flat on the table; in the box; just outside a wall (5-30 mm
+gap); held over the table and held over the box (a real grasp); and tipped
+onto an edge on the table and inside the box. The cube and the bean bag take
+turns.
+
+### Results
+
+41 situations (6 of each kind; one grasp failed to set up), 640x480
+pictures: 1 = front, 2 = front + overhead, 4 = front, overhead, side, wrist
+(`twin_logs/judge_benchmark.json`). Each cell is accuracy at 0.5 / Brier
+score / expected calibration error; lower Brier and ECE are better. The base
+rate answers every question with how often it is yes.
+
+| judge | images | in_goal | held | tipped | where (acc / p on truth) |
+|---|---|---|---|---|---|
+| base rate | - | 0.73 / 0.196 / 0 | 0.73 / 0.196 / 0 | 0.71 / 0.207 / 0 | 0.46 / 0.36 |
+| clef | 1 | 0.98 / 0.031 / 0.056 | 0.95 / 0.043 / 0.123 | 0.90 / 0.071 / 0.130 | 0.93 / 0.88 |
+| clef | 2 | 0.88 / 0.063 / 0.102 | 0.93 / 0.045 / 0.119 | 0.90 / 0.090 / 0.153 | 0.98 / 0.88 |
+| clef | 4 | 0.93 / 0.055 / 0.110 | 0.93 / 0.049 / 0.151 | 0.76 / 0.137 / 0.164 | 0.98 / 0.86 |
+| clef-flash | 1 | 0.93 / 0.053 / 0.078 | 0.90 / 0.064 / 0.128 | 0.85 / 0.124 / 0.127 | 0.90 / 0.86 |
+| clef-flash | 2 | 0.88 / 0.068 / 0.092 | 0.93 / 0.063 / 0.119 | 0.83 / 0.118 / 0.115 | 0.90 / 0.85 |
+| clef-flash | 4 | 0.88 / 0.080 / 0.138 | 0.88 / 0.081 / 0.116 | 0.78 / 0.146 / 0.120 | 0.88 / 0.80 |
+
+What it shows:
+
+- Clef works as a success judge here, although its model card claims no
+  robotics or spatial use. With one front picture it answers "in the goal
+  box?" right 40 times in 41 (Brier 0.031 against 0.196 for the base rate),
+  and never takes an object just outside the wall for one inside.
+- More pictures do not help. With all four, "tipped" gets worse (0.90 to
+  0.76): it calls flat objects next to the box tipped. One front picture is
+  the best setting, and the cheapest.
+- Hardest cases: a tipped object inside the box (the walls hide the tilt;
+  clef got 3 of 6, clef-flash 1 of 6), and an object held over the box
+  (clef-flash says "in the goal box" for half of them).
+- Calibration: confident answers can be trusted. Answers at 0.9 or more were
+  right 93% of the time, and at 0.1 or less, 100%. In between it is
+  underconfident: answers around 0.7-0.85 were nearly always yes. ECE is
+  0.06-0.16.
+- clef-flash is about twice as fast (0.2 s against 0.4 s per call with one
+  picture) and a little worse throughout.
+- Cost: 320,784 input tokens for all 246 calls, about $0.04 for clef and
+  $0.01 for clef-flash at list prices.
+
+### Running it
+
+```bash
+uv run python scripts/judge_benchmark.py --situations 42
+```
+
+`--model clef` (or `clef-flash`) picks one model; `--image-sets 1` picks the
+picture counts; `--images DIR` saves every picture. It needs
+`CLOUDFLARE_API_TOKEN` (a token with Workers AI permission) and
+`CLOUDFLARE_ACCOUNT_ID`.
+
+Note: the pointing benchmark placed some objects at y < -0.10 m, beyond the
+table's edge (drawn at table height). Pointing is graded the same there, but
+`twin/scenarios.py` keeps every judge situation on the table.
