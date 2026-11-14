@@ -62,10 +62,11 @@ def _mask(twin, renderer, view, width=W, height=H):
 
 
 def _views(twin):
-    """Every view, the wrist one aimed at the cube from behind and above."""
+    """Every view, the wrist one from where a grasp starts: 6 cm above, jaws side to side."""
     yield from ("overhead", "front", "side")
-    x, y, _ = twin.grasp.position("pick_cube")
-    _run(twin, {"type": "move_ee_to", "params": {"xyz_m": [float(x) - 0.10, float(y), 0.22]}})
+    x, y, z = twin.grasp.position("pick_cube")
+    _run(twin, {"type": "move_ee_to", "params": {"xyz_m": [float(x), float(y), float(z) + 0.06]}})
+    _run(twin, {"type": "set_wrist_roll", "params": {"angle_rad": -1.5}})
     yield "wrist"
 
 

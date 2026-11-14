@@ -33,7 +33,7 @@ warnings.filterwarnings("ignore")
 logging.getLogger("xbox_soarm_teleop").setLevel(logging.ERROR)
 
 from xbox_soarm_teleop.twin import build_twin  # noqa: E402
-from xbox_soarm_teleop.twin.cameras import CameraRig, encode  # noqa: E402
+from xbox_soarm_teleop.twin.cameras import WRIST_SIZE_LARGE, CameraRig, encode  # noqa: E402
 from xbox_soarm_teleop.twin.judge import (  # noqa: E402
     NOUL_IDS,
     WHERE_OPTIONS,
@@ -56,6 +56,13 @@ from xbox_soarm_teleop.twin.scenarios import (  # noqa: E402
 )
 
 W, H = 640, 480
+
+
+def size(view: str) -> tuple[int, int]:
+    """640x480, but the wrist camera is 16:9 like the real one (640x360)."""
+    return WRIST_SIZE_LARGE if view == "wrist" else (W, H)
+
+
 VIEWS = ("front", "overhead", "side", "wrist")
 VIEW_SETS = {"1": ("front",), "2": ("front", "overhead"), "4": VIEWS}
 KINDS = (
@@ -217,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"situation {index}: could not set up {kind} with {name}; skipped", flush=True)
             continue
         labels = truth_labels(twin, name)
-        pictures = {view: encode(rig.render(view, W, H, twin.sim.data), "png") for view in VIEWS}
+        pictures = {view: encode(rig.render(view, *size(view), twin.sim.data), "png") for view in VIEWS}
         if image_dir:
             for view, png in pictures.items():
                 (image_dir / f"{index:03d}-{kind}-{name}-{view}.png").write_bytes(png)

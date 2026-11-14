@@ -688,25 +688,32 @@ def _add_gripper_collision_boxes(spec: mujoco.MjSpec) -> None:
     finger.mass = 0.0
 
 
-# Wrist camera on gripper_link (local frame: -z points along the gripper toward
-# the tool, +x is "up" when the gripper is level). Mounted beside and above the
-# fixed jaw and tilted down so the jaws, tool point and object are in view.
-WRIST_CAMERA_POS = (0.05, 0.035, -0.06)
-WRIST_CAMERA_TILT_DEG = 55.0
-WRIST_CAMERA_FOVY_DEG = 80.0
+# Wrist camera on gripper_link, where the real arm's Seeed Studio camera sits
+# (RGB USB camera, OV9732, 1280x720, 100 degrees): on a post 50 mm out from the
+# gripper's side (+y in this frame; the body reaches 24 mm), 7 mm from the jaw
+# line toward the moving jaw (about a held object's center) and 20 mm along
+# the fingers, tilted 40 degrees in toward them. The jaws close along +x, so
+# both jaw tips come in from the picture's left and right with the object
+# between them. gripper_link frame: -z runs along the fingers toward the tips,
+# +x is the way the moving jaw opens. FOVY assumes the 100 degrees is the
+# diagonal of a 16:9 picture (92 across, 61 high); render it at 16:9
+# (twin.cameras.WRIST_SIZE).
+WRIST_CAMERA_POS = (0.007, 0.074, -0.02)
+WRIST_CAMERA_TILT_DEG = 40.0
+WRIST_CAMERA_FOVY_DEG = 61.0
 
 
 def _add_wrist_camera(spec: mujoco.MjSpec) -> None:
     """Add the ``wrist`` camera that moves with the gripper."""
     tilt = np.deg2rad(WRIST_CAMERA_TILT_DEG)
-    forward = np.array([0.0, 0.0, -1.0])
-    up = np.array([1.0, 0.0, 0.0])
-    right = np.array([0.0, -1.0, 0.0])
+    right = np.array([1.0, 0.0, 0.0])  # toward the moving jaw
+    # Picture up: away from the gripper, tipped back from the fingers by the tilt.
+    up = np.array([0.0, np.cos(tilt), -np.sin(tilt)])
     camera = spec.body("gripper_link").add_camera()
     camera.name = "wrist"
     camera.pos = WRIST_CAMERA_POS
     camera.alt.type = mujoco.mjtOrientation.mjORIENTATION_XYAXES
-    camera.alt.xyaxes = np.concatenate([right, up * np.cos(tilt) + forward * np.sin(tilt)])
+    camera.alt.xyaxes = np.concatenate([right, up])
     camera.fovy = WRIST_CAMERA_FOVY_DEG
 
 

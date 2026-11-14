@@ -43,7 +43,12 @@ warnings.filterwarnings("ignore")
 logging.getLogger("xbox_soarm_teleop").setLevel(logging.ERROR)
 
 from xbox_soarm_teleop.twin import build_twin  # noqa: E402
-from xbox_soarm_teleop.twin.cameras import CameraRig, encode, point_camera  # noqa: E402
+from xbox_soarm_teleop.twin.cameras import (  # noqa: E402
+    WRIST_SIZE_LARGE,
+    CameraRig,
+    encode,
+    point_camera,
+)
 from xbox_soarm_teleop.twin.layouts import GOALS, object_description  # noqa: E402
 from xbox_soarm_teleop.twin.pointing import (  # noqa: E402
     FixedPointer,
@@ -56,6 +61,13 @@ from xbox_soarm_teleop.twin.pointing import (  # noqa: E402
 from xbox_soarm_teleop.twin.projection import camera_geometry, pixel_to_xyz  # noqa: E402
 
 W, H = 640, 480
+
+
+def size(view: str) -> tuple[int, int]:
+    """640x480, but the wrist camera is 16:9 like the real one (640x360)."""
+    return WRIST_SIZE_LARGE if view == "wrist" else (W, H)
+
+
 VIEWS = ("overhead", "front", "side", "wrist")
 OBJECTS = ("pick_cube", "bean_bag")
 # Where objects are put: within the arm's reach, clear of the goal box. The
@@ -106,11 +118,11 @@ def run_action(twin, request: dict) -> bool:
 
 
 def aim_wrist(twin, xyz: np.ndarray) -> bool:
-    """Put the wrist camera behind and above the object, looking at it."""
-    up = [float(xyz[0]) - 0.10, float(xyz[1]), 0.26]  # over it first, clear of the object
-    target = [float(xyz[0]) - 0.10, float(xyz[1]), 0.22]
-    return run_action(twin, {"type": "move_ee_to", "params": {"xyz_m": up}}) and run_action(
-        twin, {"type": "move_ee_to", "params": {"xyz_m": target}}
+    """Bring the wrist camera where a grasp starts: 6 cm above the object,
+    jaws turned side to side, so the object is between the jaw tips."""
+    above = [float(xyz[0]), float(xyz[1]), float(xyz[2]) + 0.06]
+    return run_action(twin, {"type": "move_ee_to", "params": {"xyz_m": above}}) and run_action(
+        twin, {"type": "set_wrist_roll", "params": {"angle_rad": -1.5}}
     )
 
 
@@ -189,9 +201,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="twin_logs/pointing_benchmark.json")
     parser.add_argument("--images", default=None, help="Save each picture here (PNG)")
     args = parser.parse_args(argv)
-    views = tuple(args.view or VIEWS)
+    # Wrist last: aiming it moves the arm, which may nudge the object.
+    views = tuple(sorted(set(args.view or VIEWS), key=VIEWS.index))
 
-    pointers = [FixedPointer(u=W / 2, v=H / 2, name="center")]
+    pointers = [
+        FixedPointer(answer=lambda r: Point(r.width / 2, r.height / 2, raw="center"), name="center")
+    ]
     for spec in args.pointer:
         pointer = make_pointer(spec)
         pointer.name = spec  # two models of one backend stay apart in the results
@@ -199,8 +214,15 @@ def main(argv: list[str] | None = None) -> int:
     twin = build_twin(scene="pick_place_basic", with_controller=False)
     twin.tick()
     rig = CameraRig(twin.sim.model, twin.sim.data)
-    seg = mujoco.Renderer(twin.sim.model, H, W)
-    seg.enable_segmentation_rendering()
+    segs: dict[tuple[int, int], mujoco.Renderer] = {}
+
+    def seg_for(view: str) -> mujoco.Renderer:
+        w, h = size(view)
+        if (w, h) not in segs:
+            segs[(w, h)] = mujoco.Renderer(twin.sim.model, h, w)
+            segs[(w, h)].enable_segmentation_rendering()
+        return segs[(w, h)]
+
     images = Path(args.images) if args.images else None
     if images:
         images.mkdir(parents=True, exist_ok=True)
@@ -225,19 +247,20 @@ def main(argv: list[str] | None = None) -> int:
                     disturbed.append(trial)  # the arm nudged it, or could not get there
                     continue
             mujoco.mj_forward(twin.sim.model, twin.sim.data)
-            geometry = camera_geometry(twin.sim.model, twin.sim.data, view, W, H)
-            pixels = rig.render(view, W, H, twin.sim.data)
+            width, height = size(view)
+            geometry = camera_geometry(twin.sim.model, twin.sim.data, view, width, height)
+            pixels = rig.render(view, width, height, twin.sim.data)
             png = encode(pixels, "png")
             if images:
                 (images / f"{trial:02d}-{name}-{view}.png").write_bytes(png)
-            mask = object_mask(seg, twin, view, name)
+            mask = object_mask(seg_for(view), twin, view, name)
             visible = bool(mask.sum() >= 20)
             truth_uv = geometry.project(truth)
             perfect = None
             if visible:
                 rows_, cols_ = np.nonzero(mask)
                 perfect = Point(cols_.mean() + 0.5, rows_.mean() + 0.5, raw="segmentation")
-            request = PointRequest(png, "image/png", W, H, description, truth_uv=truth_uv)
+            request = PointRequest(png, "image/png", width, height, description, truth_uv=truth_uv)
 
             answers: list[tuple[str, Point | None, float | None, str | None]] = [
                 ("perfect", perfect, 0.0, None)
@@ -289,7 +312,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"trial {trial:2d} {name:9s} at ({x:.3f}, {y:.3f}): {brief}", flush=True)
 
     rig.close()
-    seg.close()
+    for renderer in segs.values():
+        renderer.close()
     table = summarize(rows)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

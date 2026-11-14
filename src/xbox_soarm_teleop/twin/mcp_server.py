@@ -16,6 +16,7 @@ from typing import Any, Callable
 from mcp.server.mcpserver import Context, Image, MCPServer
 
 from xbox_soarm_teleop.twin.actions import ActionRejected
+from xbox_soarm_teleop.twin.cameras import VIEWS, default_size
 from xbox_soarm_teleop.twin.service import TwinClosed, TwinService
 
 COMMAND_TIMEOUT_S = 2.0  # the loop resolves commands within one tick
@@ -351,12 +352,19 @@ def build_mcp_server(
 
     @server.tool()
     def camera(
-        view: str = "wrist", width: int = 320, height: int = 240, ctx: Context | None = None
+        view: str = "wrist",
+        width: int | None = None,
+        height: int | None = None,
+        ctx: Context | None = None,
     ) -> Image | dict[str, Any]:
-        """Look at the scene. Views: "wrist" (on the gripper, looking past the
-        jaw), "overhead" (map view: robot base at the bottom, forward up, robot's
-        left on the left), "front" (facing the robot, so its left is on your
-        right), "side" (from the robot's left). Max 640x480."""
+        """Look at the scene. Views: "wrist" (on a post beside the gripper: the
+        two jaw tips come in from the left and right with what they grip
+        between them; 432x243 by default), "overhead" (map view: robot base at
+        the bottom, forward up, robot's left on the left), "front" (facing the
+        robot, so its left is on your right), "side" (from the robot's left).
+        320x240 by default; max 640x480."""
+        if width is None or height is None:
+            width, height = default_size(view) if view in VIEWS else (320, 240)
         try:
             data = (
                 twin(ctx)
