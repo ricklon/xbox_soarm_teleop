@@ -117,8 +117,11 @@ loses the object once the jaws are centered over it.
 | `gemini[:model]` | default `gemini-robotics-er-1.6-preview` | `GEMINI_API_KEY` |
 | `openrouter[:model]` | default `google/gemma-4-31b-it:free` | `OPENROUTER_API_KEY` |
 
-Keys are read from the environment or `~/.env`, sent only in headers, and
-masked in every error. Check the Gemini model id when the key is set: it is a
+Keys are read from the environment, else from a `.env` file: the current
+folder's, then the project's, then `~/.env` (the first one that has the key
+wins; an empty value counts as unset). Copy `.env.example` to `.env` in the
+project and fill in what you use; git ignores `.env`. Keys are sent only in
+headers and masked in every error. Check the Gemini model id when the key is set: it is a
 guess. OpenRouter has no Robotics-ER, Molmo2-ER or Clef; it does have general
 Gemini and Gemma 4 models.
 

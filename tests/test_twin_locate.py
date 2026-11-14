@@ -7,13 +7,14 @@ import socket
 import threading
 import time
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from xbox_soarm_teleop.twin import build_twin
+from xbox_soarm_teleop.twin import build_twin, pointing
 from xbox_soarm_teleop.twin.mcp_server import McpThread, build_mcp_server
 from xbox_soarm_teleop.twin.pointing import (
     FixedPointer,
@@ -72,6 +73,55 @@ def test_keys_come_from_the_environment_or_dot_env(tmp_path, monkeypatch):
     assert load_secret("GEMINI_API_KEY", env) == "from-env-123456"
 
 
+def _isolate_env_files(monkeypatch, tmp_path):
+    """No real .env file is read: work, project and home folders are all temporary."""
+    work, project, home = tmp_path / "work", tmp_path / "project", tmp_path / "home"
+    for folder in (work, project, home):
+        folder.mkdir()
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(pointing, "PROJECT_ROOT", project)
+    monkeypatch.setenv("HOME", str(home))
+    return work, project, home
+
+
+def test_project_dot_env_comes_before_the_home_one(tmp_path, monkeypatch):
+    work, project, home = _isolate_env_files(monkeypatch, tmp_path)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    (home / ".env").write_text("OPENROUTER_API_KEY=from-home-123456\n")
+    assert load_secret("OPENROUTER_API_KEY") == "from-home-123456"
+    (project / ".env").write_text("OPENROUTER_API_KEY=from-project-123456\n")
+    assert load_secret("OPENROUTER_API_KEY") == "from-project-123456"
+    (work / ".env").write_text("OPENROUTER_API_KEY=from-work-123456\n")
+    assert load_secret("OPENROUTER_API_KEY") == "from-work-123456"
+    monkeypatch.setenv("OPENROUTER_API_KEY", "from-env-123456")
+    assert load_secret("OPENROUTER_API_KEY") == "from-env-123456"
+
+
+def test_an_empty_value_in_a_dot_env_does_not_hide_a_later_one(tmp_path, monkeypatch):
+    work, project, home = _isolate_env_files(monkeypatch, tmp_path)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    (project / ".env").write_text("GEMINI_API_KEY=\n")  # copied from .env.example, not filled in
+    (home / ".env").write_text("GEMINI_API_KEY=from-home-123456\n")
+    assert load_secret("GEMINI_API_KEY") == "from-home-123456"
+
+
+def test_the_template_lists_every_key_with_no_values():
+    template = Path(__file__).parent.parent / ".env.example"
+    entries = {}
+    for line in template.read_text().splitlines():
+        if line.strip() and not line.lstrip().startswith("#"):
+            key, _, value = line.partition("=")
+            entries[key.strip()] = value.strip()
+    for name in (
+        "GEMINI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "CLOUDFLARE_API_TOKEN",
+        "CLOUDFLARE_ACCOUNT_ID",
+    ):
+        assert name in entries, name
+    assert all(value == "" for value in entries.values())  # never a real key in git
+
+
 def test_secrets_are_masked():
     text = f"HTTP 400 for https://x/y?key={FAKE_KEY}: bad key {FAKE_KEY}"
     masked = mask_secrets(text, (FAKE_KEY,))
@@ -123,7 +173,7 @@ def test_openrouter_sends_a_bearer_key_and_the_image(monkeypatch):
 
 
 def test_openrouter_errors_say_why_without_the_key(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _isolate_env_files(monkeypatch, tmp_path)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(PointerError, match="OPENROUTER_API_KEY"):
         OpenRouterPointer(post=lambda *a, **k: {}).point(_request())
@@ -137,7 +187,7 @@ def test_openrouter_errors_say_why_without_the_key(monkeypatch, tmp_path):
 
 def test_gemini_without_a_key_says_so(monkeypatch, tmp_path):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _isolate_env_files(monkeypatch, tmp_path)
     with pytest.raises(PointerError, match="GEMINI_API_KEY"):
         GeminiPointer(post=lambda *a, **k: {}).point(_request())
 

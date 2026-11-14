@@ -16,7 +16,8 @@ and turns it into xyz (``twin.projection``). Backends:
   "height"}`` and returns ``{"u", "v"}`` in pixels (``scripts/molmo_server.py``
   serves Molmo2-ER this way).
 
-Keys are read from the environment, or from ``~/.env`` when not set there.
+Keys are read from the environment, else from a ``.env`` file: the current
+folder's, the project's (see ``.env.example``), then ``~/.env``.
 They are never logged or returned: errors pass through :func:`mask_secrets`.
 """
 
@@ -102,12 +103,24 @@ class Pointer(Protocol):
 
 
 # ------------------------------------------------------------------ secrets
-def load_secret(name: str, env_file: str | Path | None = None) -> str | None:
-    """A key from the environment, or from ``~/.env`` (``NAME=value`` lines)."""
-    value = os.environ.get(name)
-    if value:
-        return value.strip()
-    path = Path(env_file) if env_file is not None else Path.home() / ".env"
+# The checkout this package runs from (an editable install), whose .env is read.
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def env_files() -> list[Path]:
+    """The ``.env`` files keys are read from, first match wins.
+
+    The current folder's, then the project's (copy ``.env.example`` there),
+    then the one in your home folder.
+    """
+    files: list[Path] = []
+    for path in (Path.cwd() / ".env", PROJECT_ROOT / ".env", Path.home() / ".env"):
+        if path not in files:
+            files.append(path)
+    return files
+
+
+def _read_env_value(path: Path, name: str) -> str | None:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -116,10 +129,24 @@ def load_secret(name: str, env_file: str | Path | None = None) -> str | None:
         line = line.strip()
         if line.startswith("export "):
             line = line[len("export ") :].strip()
-        if not line.startswith(f"{name}="):
-            continue
-        value = line.split("=", 1)[1].strip().strip('"').strip("'")
-        return value or None
+        if line.startswith(f"{name}="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'") or None
+    return None
+
+
+def load_secret(name: str, env_file: str | Path | None = None) -> str | None:
+    """A key from the environment, else from a ``.env`` file (``NAME=value`` lines).
+
+    ``env_file`` reads that one file instead of :func:`env_files`. An empty
+    value (a template copied but not filled in) counts as not set.
+    """
+    value = os.environ.get(name)
+    if value and value.strip():
+        return value.strip()
+    for path in [Path(env_file)] if env_file is not None else env_files():
+        value = _read_env_value(path, name)
+        if value:
+            return value
     return None
 
 
@@ -255,7 +282,7 @@ class GeminiPointer:
     def point(self, request: PointRequest) -> Point | None:
         key = load_secret(self.key_name)
         if not key:
-            raise PointerError(f"{self.key_name} is not set (environment or ~/.env)")
+            raise PointerError(f"{self.key_name} is not set (environment or a .env file)")
         body = {
             "contents": [
                 {
@@ -325,7 +352,7 @@ class OpenRouterPointer:
     def point(self, request: PointRequest) -> Point | None:
         key = load_secret(self.key_name)
         if not key:
-            raise PointerError(f"{self.key_name} is not set (environment or ~/.env)")
+            raise PointerError(f"{self.key_name} is not set (environment or a .env file)")
         image = base64.b64encode(request.image).decode("ascii")
         reply = self.post(
             OPENROUTER_URL,
