@@ -7,6 +7,9 @@ and turns it into xyz (``twin.projection``). Backends:
   any pointer could do, for testing the rest of the pipeline.
 - ``fixed``: always the same pixel (tests).
 - ``gemini``: Gemini Robotics-ER through the Gemini API (``GEMINI_API_KEY``).
+- ``openrouter``: any vision model on OpenRouter (``OPENROUTER_API_KEY``),
+  asked for the same JSON as Gemini: general Gemini and Gemma 4 models
+  (OpenRouter has no Robotics-ER or Molmo2-ER).
 - ``ollama``: a vision model served by a local Ollama (a baseline: general
   vision models are not trained to point).
 - ``http``: any server that takes ``{"image_b64", "description", "width",
@@ -37,6 +40,8 @@ GEMINI_DEFAULT_MODEL = "gemini-robotics-er-1.6-preview"
 OLLAMA_URL = "http://127.0.0.1:11434"
 OLLAMA_DEFAULT_MODEL = "gemma4:12b"
 MOLMO_DEFAULT_URL = "http://127.0.0.1:8890"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_DEFAULT_MODEL = "google/gemma-4-31b-it:free"
 
 POINT_PROMPT = (
     "Point to the {description}. Give exactly one point, on the middle of it. "
@@ -44,7 +49,13 @@ POINT_PROMPT = (
     "where the point is in [y, x] order, normalized to 0-1000."
 )
 
-_SECRET_NAMES = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "HF_TOKEN", "CLOUDFLARE_API_TOKEN")
+_SECRET_NAMES = (
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "HF_TOKEN",
+    "CLOUDFLARE_API_TOKEN",
+)
 
 
 class PointerError(RuntimeError):
@@ -303,6 +314,54 @@ class OllamaPointer:
 
 
 @dataclass
+class OpenRouterPointer:
+    """A vision model on OpenRouter (OpenAI-style chat). Needs ``OPENROUTER_API_KEY``."""
+
+    model: str = OPENROUTER_DEFAULT_MODEL
+    key_name: str = "OPENROUTER_API_KEY"
+    post: Callable[..., dict] = _post_json
+    name: str = "openrouter"
+
+    def point(self, request: PointRequest) -> Point | None:
+        key = load_secret(self.key_name)
+        if not key:
+            raise PointerError(f"{self.key_name} is not set (environment or ~/.env)")
+        image = base64.b64encode(request.image).decode("ascii")
+        reply = self.post(
+            OPENROUTER_URL,
+            {
+                "model": self.model,
+                "temperature": 0,
+                "max_tokens": 300,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": POINT_PROMPT.format(description=request.description),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{request.mime};base64,{image}"},
+                            },
+                        ],
+                    }
+                ],
+            },
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        try:
+            text = reply["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError):
+            detail = (reply.get("error") or {}).get("message") if isinstance(reply, dict) else None
+            raise PointerError(
+                mask_secrets(f"unexpected OpenRouter reply: {detail or str(reply)[:300]}", (key,))
+            ) from None
+        return parse_yx_1000(text, request.width, request.height)
+
+
+@dataclass
 class HttpPointer:
     """A pointing server of our own (``scripts/molmo_server.py``)."""
 
@@ -326,13 +385,13 @@ class HttpPointer:
         return Point(float(reply["u"]), float(reply["v"]), raw=str(reply.get("raw", ""))[:500])
 
 
-BACKENDS = ("oracle", "gemini", "molmo", "ollama")
+BACKENDS = ("oracle", "gemini", "molmo", "ollama", "openrouter")
 
 
 def make_pointer(spec: str | None) -> Pointer | None:
     """A pointer from a command-line spec: ``NAME`` or ``NAME:OPTION``.
 
-    ``oracle``; ``gemini[:model]``; ``ollama[:model]``; ``molmo[:url]``;
+    ``oracle``; ``gemini[:model]``; ``ollama[:model]``; ``openrouter[:model]``; ``molmo[:url]``;
     ``http:URL``; ``none`` (or empty) for no pointer.
     """
     if not spec or spec == "none":
@@ -344,6 +403,8 @@ def make_pointer(spec: str | None) -> Pointer | None:
         return GeminiPointer(model=option or GEMINI_DEFAULT_MODEL)
     if name == "ollama":
         return OllamaPointer(model=option or OLLAMA_DEFAULT_MODEL)
+    if name == "openrouter":
+        return OpenRouterPointer(model=option or OPENROUTER_DEFAULT_MODEL)
     if name == "molmo":
         return HttpPointer(url=option or MOLMO_DEFAULT_URL, name="molmo")
     if name == "http":

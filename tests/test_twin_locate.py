@@ -19,6 +19,7 @@ from xbox_soarm_teleop.twin.pointing import (
     FixedPointer,
     GeminiPointer,
     HttpPointer,
+    OpenRouterPointer,
     OraclePointer,
     Point,
     PointerError,
@@ -102,6 +103,38 @@ def test_gemini_sends_the_key_in_a_header_and_reads_the_point(monkeypatch):
     assert "red cube" in parts[1]["text"]
 
 
+def test_openrouter_sends_a_bearer_key_and_the_image(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    sent = {}
+
+    def post(url, body, headers=None, timeout=None):
+        sent.update(url=url, body=body, headers=headers)
+        return {"choices": [{"message": {"content": '[{"point": [250, 750], "label": "red cube"}]'}}]}
+
+    point = OpenRouterPointer(model="google/gemma-4-31b-it:free", post=post).point(_request())
+    assert (point.u, point.v) == (480.0, 120.0)
+    assert sent["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert sent["headers"]["Authorization"] == f"Bearer {FAKE_KEY}"
+    assert FAKE_KEY not in sent["url"]
+    assert sent["body"]["model"] == "google/gemma-4-31b-it:free"
+    content = sent["body"]["messages"][0]["content"]
+    assert content[0]["type"] == "text" and "red cube" in content[0]["text"]
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_openrouter_errors_say_why_without_the_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with pytest.raises(PointerError, match="OPENROUTER_API_KEY"):
+        OpenRouterPointer(post=lambda *a, **k: {}).point(_request())
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    with pytest.raises(PointerError) as info:
+        OpenRouterPointer(post=lambda *a, **k: {"error": {"message": f"bad key {FAKE_KEY}"}}).point(
+            _request()
+        )
+    assert FAKE_KEY not in str(info.value)
+
+
 def test_gemini_without_a_key_says_so(monkeypatch, tmp_path):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -127,6 +160,8 @@ def test_make_pointer_specs():
     assert make_pointer("gemini:gemini-x").model == "gemini-x"
     assert make_pointer("molmo").url.startswith("http://127.0.0.1")
     assert make_pointer("ollama:gemma4:12b").model == "gemma4:12b"
+    assert make_pointer("openrouter:google/gemini-3.5-flash").model == "google/gemini-3.5-flash"
+    assert make_pointer("openrouter").name == "openrouter"
     with pytest.raises(ValueError):
         make_pointer("crystal_ball")
 

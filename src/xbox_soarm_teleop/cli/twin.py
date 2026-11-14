@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Pointing model behind the locate tool: oracle (the truth; for tests), "
         "gemini[:model] (GEMINI_API_KEY), molmo[:url] (run scripts/molmo_server.py), "
-        "ollama[:model]. Default: none (no locate)",
+        "ollama[:model], openrouter[:model] (OPENROUTER_API_KEY). Default: none (no locate)",
     )
     parser.add_argument(
         "--max-seconds", type=float, default=None, help="Exit after this long (automation)"

@@ -17,7 +17,8 @@ Two references come with every run:
     uv run python scripts/pointing_benchmark.py --pointer ollama:gemma4:12b --trials 10
 
 Backends (``twin.pointing``): ``oracle``, ``gemini[:model]`` (GEMINI_API_KEY),
-``molmo[:url]`` (start ``scripts/molmo_server.py`` first), ``ollama[:model]``.
+``molmo[:url]`` (start ``scripts/molmo_server.py`` first), ``ollama[:model]``,
+``openrouter[:model]`` (OPENROUTER_API_KEY; e.g. google/gemma-4-31b-it:free).
 A backend that cannot be reached is reported as skipped. Keys are never printed.
 Results go to ``--out`` as JSON (one row per trial, view and backend) and a
 summary table is printed.
