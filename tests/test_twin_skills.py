@@ -247,4 +247,6 @@ def test_locate_by_description(running):
     assert service.estimate_scores()[-1]["name"] == "green_cube"  # scored against what matches
     nothing = service.locate(None, description="purple cube", client_id="test")
     assert nothing["ok"] is False and nothing["reason"] == "not_found"
-    assert service.pick(client_id="test")["reason"] == "invalid_request"
+    nothing_said = service.pick(client_id="test")
+    assert nothing_said["reason"] == "invalid_request"
+    assert "green_cube" in nothing_said["detail"]  # says what there is to pick

@@ -222,7 +222,14 @@ def pick(
     try:
         objects = _objects(service)
         if name is None and not description:
-            raise SkillFailed("invalid_request", 'say what to pick: a name, or description="red cube"')
+            # Say what there is, so the next call can get it right.
+            loose = [n for n, entry in objects.items() if not entry["attached"]] or list(objects)
+            example = loose[0] if loose else "red_cube"
+            raise SkillFailed(
+                "invalid_request",
+                f'say what to pick: pick(name="{example}"), or pick(description="red cube") in '
+                f"the request's words. Objects here: {', '.join(loose) or 'none'}",
+            )
         if name is not None and name not in objects:
             known = ", ".join(objects) or "none"
             raise SkillFailed("invalid_request", f"Unknown object '{name}'. On the table: {known}")

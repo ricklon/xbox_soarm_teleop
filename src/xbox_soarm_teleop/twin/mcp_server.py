@@ -414,8 +414,9 @@ def build_mcp_server(
         """Pick an object up, by itself: the arm looks (overhead and from the front,
         then close up through the wrist camera), centres its jaws, grasps, checks
         it holds it, and retries after a miss, then lifts it to carrying height.
-        Uses only what the arm can see and feel. Give its name, or instead a
-        description in the request's words (description="red cube"): the arm
+        Uses only what the arm can see and feel. Give one of the two: its name
+        (from observe), or a description in the request's words
+        (description="red cube"): the arm
         then looks for what matches, closes until it feels it, and says what it
         is holding. Takes 20 to 60 seconds."""
         return twin(ctx).pick(name, client_id=client_of(ctx), description=description)
