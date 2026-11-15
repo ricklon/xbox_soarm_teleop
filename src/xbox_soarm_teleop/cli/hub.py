@@ -43,6 +43,8 @@ PRESETS: dict[str, dict] = {
         # exploring that lesson (--names).
         "names": "truthful",
         "notebook_url": SORTING_NOTEBOOK,
+        # Students' feedback goes here once the instructor posts it (gh login).
+        "feedback_repo": "ricklon/xbox_soarm_teleop",
     },
 }
 
@@ -81,6 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.50,
         help="Each arm's budget (USD) for the agent panel's model, for the whole session",
+    )
+    parser.add_argument(
+        "--feedback-repo",
+        default=None,
+        metavar="OWNER/NAME",
+        help="GitHub repository student feedback is posted to, as issues, once the instructor "
+        "reviews it on the instructor page (uses this computer's gh login). Default: posting off",
     )
     parser.add_argument(
         "--challenge",
@@ -349,6 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         picture_hz=args.picture_rate,
         agent_models=tuple(m.strip() for m in args.agent_models.split(",") if m.strip()),
         agent_budget_usd=args.agent_budget,
+        feedback_repo=args.feedback_repo or None,
     )
     base = (args.public_url or f"http://{args.host}:{args.port}").rstrip("/")
     for line in startup_lines(

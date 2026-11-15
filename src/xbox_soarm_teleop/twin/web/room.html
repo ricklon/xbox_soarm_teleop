@@ -116,6 +116,10 @@
   #challengeStatus.bad { color: #b42318; }
   #challengeResult { font-size: 14px; margin-top: 8px; }
   #challengeResult b.yes { color: #1f7a4a; } #challengeResult b.no { color: #b42318; }
+  #feedbackPanel label { display: block; font-weight: 600; margin: 8px 0 2px; }
+  #feedbackPanel textarea { width: 100%; min-height: 3.2em; font: inherit; padding: 6px 8px; box-sizing: border-box; resize: vertical; }
+  #feedbackPanel input[type=text] { font: inherit; padding: 5px 8px; width: min(100%, 260px); }
+  #feedbackSent { margin: 8px 0 0; padding-left: 1.2em; font-size: 13px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -177,6 +181,25 @@
       <p class="sub" id="challengeStatus" role="status"></p>
       <ul id="challengeNotes"></ul>
       <div id="challengeResult" aria-live="polite"></div>
+    </section>
+    <section class="panel" id="feedbackPanel">
+      <h2>How did it go?</h2>
+      <p class="sub">Tell the people building this. Your instructor reads it first and posts it to
+        the project's GitHub page; nothing is posted without them.</p>
+      <label for="fbWorked">What worked</label>
+      <textarea id="fbWorked" maxlength="2000"></textarea>
+      <label for="fbDidnt">What didn't work</label>
+      <textarea id="fbDidnt" maxlength="2000"></textarea>
+      <label for="fbWish">I wish it could...</label>
+      <textarea id="fbWish" maxlength="2000"></textarea>
+      <div class="agentopts">
+        <label style="display:inline;font-weight:400">Your name (optional) <input type="text" id="fbName" maxlength="80"></label>
+        <label style="display:inline;font-weight:400"><input type="checkbox" id="fbAttach" checked>
+          Include what I was doing (scene, challenge, the agent's last run)</label>
+      </div>
+      <div class="row"><button id="fbSend">Send</button></div>
+      <p class="sub" id="fbStatus" role="status"></p>
+      <ul id="feedbackSent"></ul>
     </section>
     <section class="panel">
       <h2>What happened</h2>
@@ -710,6 +733,35 @@ expect: {red_cube: red_bin, blue_cube: blue_bin, green_cube: green_bin}
   });
   loadExamples();
 
+
+  // --- feedback: what worked, what didn't, what they wish it could do -------
+  async function showSent() {
+    try {
+      const { feedback } = await (await fetch(`${base}/feedback`, { cache: "no-store" })).json();
+      const words = { new: "waiting for your instructor", dropped: "kept back by your instructor", posted: "posted" };
+      $("feedbackSent").replaceChildren(...feedback.map((f) => {
+        const first = f.worked || f.didnt || f.wish;
+        return el("li", "", `${f.created}: "${first.slice(0, 60)}${first.length > 60 ? "..." : ""}" (${words[f.status] || f.status})`);
+      }));
+    } catch (err) { /* offline */ }
+  }
+  $("fbSend").addEventListener("click", async () => {
+    const sent = {
+      worked: $("fbWorked").value, didnt: $("fbDidnt").value, wish: $("fbWish").value,
+      name: $("fbName").value, attach: $("fbAttach").checked,
+    };
+    $("fbSend").disabled = true;
+    const res = await fetch(`${base}/feedback`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sent),
+    }).catch(() => null);
+    const reply = res ? await res.json().catch(() => ({})) : { error: "offline" };
+    $("fbSend").disabled = false;
+    if (!res || !res.ok) { $("fbStatus").textContent = `Not sent: ${reply.error || "try again"}`; return; }
+    $("fbStatus").textContent = "Sent, thank you. Your instructor will read it before anything is posted.";
+    for (const id of ["fbWorked", "fbDidnt", "fbWish"]) $(id).value = "";
+    showSent();
+  });
+  showSent();
 
   // --- WebMCP: the same tools, for an agent running in this browser ---------
   // The browser API is experimental and was renamed from navigator.modelContext

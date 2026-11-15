@@ -328,6 +328,8 @@ def build_hub_app(
     agent_models: tuple[str, ...] | None = None,
     agent_budget_usd: float | None = None,
     agent_post=None,
+    feedback_repo: str | None = None,
+    feedback_post=None,
 ):
     """Build the ASGI app serving ``hub``.
 
@@ -345,6 +347,9 @@ def build_hub_app(
             (``twin.hub_agent``); an empty tuple turns the panel off.
         agent_budget_usd: Each arm's budget for the panel's agent model.
         agent_post: Sends requests to OpenRouter (tests pass a scripted model).
+        feedback_repo: GitHub repository (OWNER/NAME) the instructor posts
+            student feedback to (``twin.feedback``); None: posting is off.
+        feedback_post: Opens an issue (tests pass a stand-in for ``gh``).
     """
     picture_ms = round(1000 / min(max(picture_hz, PICTURE_HZ_RANGE[0]), PICTURE_HZ_RANGE[1]))
 
@@ -772,6 +777,155 @@ def build_hub_app(
         for room in hub.rooms.values():
             room.service.release_stop(by="instructor")
         return done()
+
+    # --- feedback: students send, the instructor reviews and posts ------------
+    from xbox_soarm_teleop.twin.feedback import (
+        FIELDS,
+        MAX_FIELD_CHARS,
+        FeedbackBox,
+        digest_text,
+        gh_post,
+        issue_text,
+        labels_for,
+        scrub,
+    )
+
+    logged = next((room.log_path for room in hub.rooms.values() if room.log_path), None)
+    feedback = FeedbackBox(logged.parent / "feedback.json" if logged else None)
+    post_issue = feedback_post or gh_post
+    hub.feedback = feedback
+
+    def keys() -> list[str]:
+        return [hub.admin_token, *hub.rooms]
+
+    def what_they_were_doing(room: Room) -> dict:
+        context: dict[str, Any] = {
+            "scene": room.service.observe()["scene"]["name"],
+            "names": room.service.naming,
+        }
+        if room.challenge is not None:
+            context["challenge"] = room.challenge.summary()
+            layout = room.service.layout
+            if layout is not None and layout.name == "challenge":
+                from xbox_soarm_teleop.twin.challenges import grade_challenge
+
+                truth = room.service.observe_truth()["scene"]["objects"]
+                in_bin = {n: thing.get("in_bin") for n, thing in truth.items()}
+                context["challenge_result"] = grade_challenge(room.challenge, in_bin)
+        run = desk.state(room).get("run")
+        if run:
+            calls = [
+                f"{call['name']}({(call.get('arguments') or '')[:100]}) {'ok' if call.get('ok') else 'FAILED'}"
+                for step in run.get("steps", [])
+                for call in step.get("calls") or []
+            ]
+            context["agent_run"] = {
+                "task": run.get("task"),
+                "model": run.get("model"),
+                "sees": run.get("sees"),
+                "stop_reason": run.get("stop_reason"),
+                "steps": len(run.get("steps", [])),
+                "calls": calls[-25:],
+                "final_text": (run.get("final_text") or "")[:1500],
+            }
+        return context
+
+    @server.custom_route("/r/{token}/feedback", methods=["GET"])
+    async def feedback_mine(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        return JSONResponse({"feedback": feedback.for_room(room.name)}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/feedback", methods=["POST"])
+    async def feedback_send(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        body = await request.body()
+        try:
+            sent = json.loads(body or b"{}") if len(body) <= 4 * MAX_FIELD_CHARS + 2000 else None
+        except ValueError:
+            sent = None
+        if not isinstance(sent, dict):
+            return JSONResponse({"error": "too long, or not a JSON object"}, status_code=400)
+        fields = {f: str(sent.get(f) or "").strip() for f in FIELDS}
+        if not any(fields.values()):
+            return JSONResponse({"error": "write at least one of the three"}, status_code=400)
+        if any(len(text) > MAX_FIELD_CHARS for text in fields.values()):
+            return JSONResponse(
+                {"error": f"each box takes up to {MAX_FIELD_CHARS} characters"}, status_code=400
+            )
+        context = what_they_were_doing(room) if sent.get("attach") else {}
+        item = feedback.add(
+            room=room.name,
+            name=scrub(str(sent.get("name") or "").strip()[:80], keys()),
+            context=scrub(context, keys()),
+            **scrub(fields, keys()),
+        )
+        return JSONResponse({"ok": True, "id": item.id}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/admin/{token}/feedback", methods=["GET"])
+    async def feedback_review(request: Request) -> Response:
+        if not is_admin(request):
+            return not_found
+        listing = {"feedback": feedback.all(), "repo": feedback_repo, "posting": bool(feedback_repo)}
+        return JSONResponse(listing, headers=PAGE_HEADERS)
+
+    async def post_items(items, title: str, body: str) -> Response:
+        if not feedback_repo:
+            return JSONResponse(
+                {"error": "posting is off: start the hub with --feedback-repo OWNER/NAME"},
+                status_code=409,
+                headers=PAGE_HEADERS,
+            )
+        try:
+            url = await asyncio.to_thread(post_issue, feedback_repo, title, body, labels_for(items))
+        except Exception as exc:  # noqa: BLE001 - gh missing, not logged in, offline: say so
+            return JSONResponse({"error": f"not posted: {exc}"}, status_code=502, headers=PAGE_HEADERS)
+        for item in items:
+            feedback.update(item, status="posted", url=url)
+        return JSONResponse({"ok": True, "url": url}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/admin/{token}/feedback/digest", methods=["POST"])
+    async def feedback_digest(request: Request) -> Response:
+        if not is_admin(request):
+            return not_found
+        items = [item for item in feedback.items if item.status == "new"]
+        if not items:
+            return JSONResponse({"error": "nothing new to post"}, status_code=409, headers=PAGE_HEADERS)
+        return await post_items(items, *digest_text(items))
+
+    @server.custom_route("/admin/{token}/feedback/{item_id:int}", methods=["POST"])
+    async def feedback_act(request: Request) -> Response:
+        if not is_admin(request):
+            return not_found
+        item = feedback.get(request.path_params["item_id"])
+        if item is None:
+            return not_found
+        try:
+            asked = json.loads(await request.body() or b"{}")
+        except ValueError:
+            asked = None
+        if not isinstance(asked, dict):
+            return JSONResponse({"error": "expected a JSON object"}, status_code=400)
+        action = asked.get("action")
+        if item.status == "posted":
+            return JSONResponse(
+                {"error": "already posted", "url": item.url}, status_code=409, headers=PAGE_HEADERS
+            )
+        if action == "drop":
+            feedback.update(item, status="dropped")
+        elif action == "restore":
+            feedback.update(item, status="new")
+        elif action == "edit":
+            changes = {f: str(asked[f])[:MAX_FIELD_CHARS] for f in (*FIELDS, "name") if f in asked}
+            feedback.update(item, **scrub(changes, keys()))
+        elif action == "post":
+            return await post_items([item], *issue_text(item))
+        else:
+            return JSONResponse({"error": "action: edit, drop, restore or post"}, status_code=400)
+        return JSONResponse({"ok": True}, headers=PAGE_HEADERS)
 
     hosts = [f"127.0.0.1:{port}", f"localhost:{port}", f"{host}:{port}"]
     origins = [f"http://127.0.0.1:{port}", f"http://localhost:{port}"]

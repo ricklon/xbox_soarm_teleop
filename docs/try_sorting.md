@@ -118,6 +118,21 @@ Each `locate` look costs about $0.0002 (Gemma 4 31B) and each check about
 $0.0002 (Clef), on the instructor's keys; a whole sort with skills is about
 1 to 2 cents. Your own agent's model is on your key.
 
+## Feedback to the project
+
+The **How did it go?** panel on the arm's page takes three short notes: what
+worked, what didn't, and what you wish it could do. Tick **Include what I was
+doing** to attach the scene, your challenge and the agent's last run, so the
+problem can be reproduced. Room and API keys are removed from everything sent.
+
+Nothing is posted by itself. Feedback waits on the instructor page under
+**Student feedback**, where the instructor edits, drops, or posts it as a
+GitHub issue (**Post as an issue**, or **Post all new as one issue**), using
+the instructor computer's `gh` login. With `--preset sorting` it goes to
+`ricklon/xbox_soarm_teleop`; choose another with `--feedback-repo OWNER/NAME`,
+or turn posting off with `--feedback-repo ""`. Feedback is also kept in
+`twin_logs/hub-<time>/feedback.json`.
+
 ## Next: design your own challenge
 
 Set the desk up yourself (where the cubes start, what the agent is told they
