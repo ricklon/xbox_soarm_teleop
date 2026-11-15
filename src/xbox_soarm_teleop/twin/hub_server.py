@@ -25,6 +25,8 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import sys
+import threading
 from contextvars import ContextVar
 from importlib import resources
 from typing import Any
@@ -47,6 +49,8 @@ RENDER_TIMEOUT_S = 3.0
 MAX_PAD_BYTES = 2048
 MAX_CHALLENGE_BYTES = 20_000  # a challenge file: a few dozen lines
 CHALLENGE_CLIENT = "challenge"  # who the session log says set a challenge up
+PROVE_AIM_RUNS = 2  # the page's "Can the arm do it?": a few seconds each
+PROVE_TIMEOUT_S = 120.0
 DEFAULT_PICTURE_HZ = 10.0  # camera pictures a second each student page asks for
 PICTURE_HZ_RANGE = (1.0, 30.0)
 AGENT_THREADS = 200  # agents block a worker thread while a move finishes
@@ -506,22 +510,101 @@ def build_hub_app(
         current = room.challenge.summary() if room.challenge is not None else None
         return JSONResponse({"challenge": current}, headers=PAGE_HEADERS)
 
-    @server.custom_route("/r/{token}/challenge", methods=["POST"])
-    async def challenge_post(request: Request) -> Response:
-        from xbox_soarm_teleop.twin.challenges import ChallengeError, check, load_challenge
+    async def posted_challenge(request: Request):
+        """The challenge in a request's body (JSON or YAML), or an error response."""
+        from xbox_soarm_teleop.twin.challenges import ChallengeError, load_challenge
 
-        room = room_of(request)
-        if room is None:
-            return not_found
         body = await request.body()
         if len(body) > MAX_CHALLENGE_BYTES:
             return JSONResponse({"error": "that challenge is too long"}, status_code=400)
         try:
             text = body.decode("utf-8")
             spec = json.loads(text) if text.lstrip().startswith("{") else text
-            challenge = load_challenge(spec if isinstance(spec, dict) else str(spec) + "\n")
+            return load_challenge(spec if isinstance(spec, dict) else str(spec) + "\n")
         except (ChallengeError, UnicodeDecodeError, ValueError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=400, headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/challenge/examples", methods=["GET"])
+    async def challenge_examples(request: Request) -> Response:
+        from xbox_soarm_teleop.twin.challenges import examples
+
+        if room_of(request) is None:
+            return not_found
+        listed = [{"name": name, "text": text} for name, text in examples().items()]
+        return JSONResponse({"examples": listed}, headers=PAGE_HEADERS)
+
+    proving = threading.Lock()  # one proof at a time: each runs a twin of its own
+
+    @server.custom_route("/r/{token}/challenge/prove", methods=["POST"])
+    async def challenge_prove(request: Request) -> Response:
+        if room_of(request) is None:
+            return not_found
+        challenge = await posted_challenge(request)
+        if isinstance(challenge, Response):
+            return challenge
+        if not proving.acquire(blocking=False):
+            return JSONResponse(
+                {"error": "another arm's challenge is being proved; try again in a few seconds"},
+                status_code=429,
+                headers=PAGE_HEADERS,
+            )
+        try:
+            # In a process of its own: a proof runs its own twin flat out, and
+            # in this one it would slow every student's arm.
+            child = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "xbox_soarm_teleop.cli.challenge",
+                "prove",
+                "-",
+                "--aim-runs",
+                str(PROVE_AIM_RUNS),
+                "--json",
+                "-",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            spec = json.dumps(challenge.summary()).encode()
+            out, _ = await asyncio.wait_for(child.communicate(spec), PROVE_TIMEOUT_S)
+            proof = json.loads(out.decode().strip().splitlines()[-1])
+        except (asyncio.TimeoutError, ValueError, IndexError, OSError) as exc:
+            if "child" in locals() and child.returncode is None:
+                child.kill()
+            return JSONResponse(
+                {"error": f"the check did not finish ({type(exc).__name__})"},
+                status_code=500,
+                headers=PAGE_HEADERS,
+            )
+        finally:
+            proving.release()
+
+        def run_summary(run):
+            if run is None:
+                return None
+            return {k: run.get(k) for k in ("done", "in_bin", "off_table")}
+
+        return JSONResponse(
+            {
+                "verdict": proof["verdict"],
+                "why": proof["why"],
+                "hidden": proof.get("hidden") or [],
+                "true_run": run_summary(proof.get("true_run")),
+                "aim_runs": [run_summary(run) for run in proof.get("aim_runs") or []],
+            },
+            headers=PAGE_HEADERS,
+        )
+
+    @server.custom_route("/r/{token}/challenge", methods=["POST"])
+    async def challenge_post(request: Request) -> Response:
+        from xbox_soarm_teleop.twin.challenges import check
+
+        room = room_of(request)
+        if room is None:
+            return not_found
+        challenge = await posted_challenge(request)
+        if isinstance(challenge, Response):
+            return challenge
         if desk.state(room)["running"]:
             return JSONResponse(
                 {"error": "an agent is running on this arm: stop it first"}, status_code=409
@@ -583,7 +666,10 @@ def build_hub_app(
         names = room.service.shown_names
         if names:  # in the names the student (and their agent) sees
             key = rename_objects(key, names)
-        if room.challenge is not None:  # in the designer's own names, whatever the agent sees
+        layout = room.service.layout
+        if room.challenge is not None and layout is not None and layout.name == "challenge":
+            # In the designer's own names, whatever the agent sees; not once
+            # another scene has been picked.
             from xbox_soarm_teleop.twin.challenges import grade_challenge
 
             in_bin = {n: thing.get("in_bin") for n, thing in truth["scene"]["objects"].items()}

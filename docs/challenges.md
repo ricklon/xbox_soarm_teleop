@@ -40,13 +40,13 @@ notes: Anything you want to say about it.
 | `expect` | each object's tray, or `null` to stay out of the trays. Objects you leave out must stay out of the trays |
 | `possible: false` | for an impossible challenge; add `asked:` with what the request asks for (a tray that does not exist is fine), which the proof tries and must fail at |
 
-Examples are in [`challenges/`](../challenges): a swap with misleading names,
+Examples come with the project ([`challenge_examples/`](../src/xbox_soarm_teleop/twin/challenge_examples)), and the arm's page offers them: a swap with misleading names,
 a crowded desk, and an impossible one (there is no yellow tray).
 
 ## 2. Check it
 
 ```bash
-uv run soarm-challenge check challenges/red_swap_tricky.yaml
+uv run soarm-challenge check red_swap_tricky
 ```
 
 What cannot be set up is refused with the reason (an object or tray that
@@ -58,7 +58,7 @@ near an edge or a tray, outside the arm's steady reach, turned.
 ## 3. Prove it is possible
 
 ```bash
-uv run soarm-challenge prove challenges/red_swap_tricky.yaml --aim-runs 3 --json proof.json
+uv run soarm-challenge prove red_swap_tricky --aim-runs 3 --json proof.json
 ```
 
 Before blaming an agent, check the arm can do it at all. The arm's own
@@ -81,6 +81,13 @@ with aim error, so the skills are sturdier than the layout rules assume.
 
 ## 4. Load it on your arm
 
+**On the arm's page** (a hub started with `--preset sorting`), the **Your
+challenge** panel does steps 1 to 4: pick an example or start blank, edit
+it in the box, press **Can the arm do it?** (the proof, on a separate copy
+of the desk, about 10 seconds), then **Load on my arm**. The panel lists the
+notes, puts the request in the agent box, and shows the result against your
+`expect` as the arm works. **Clear** puts the arm back.
+
 From the sorting notebook, or any script, post it to your arm's link:
 
 ```python
@@ -95,7 +102,7 @@ agents are told your `names`, and your request is first under **Try asking
 your agent**. The answer key (`{ARM}/scores`) gains a `challenge` entry:
 done or not, and where each object ended, in *your* names. `requests.delete(f"{ARM}/challenge")`
 puts the arm back. An instructor can start every arm with one:
-`soarm-hub --preset sorting --challenge challenges/crowded.yaml`.
+`soarm-hub --preset sorting --challenge crowded`.
 
 ## 5. Run agents on it
 
@@ -108,7 +115,7 @@ From the command line, graded and recorded:
 ```bash
 uv run python scripts/agent_trial.py --harness loop --model google/gemma-4-31b-it \
   --pointer openrouter:google/gemma-4-31b-it --judge clef --require-check \
-  --challenge challenges/red_swap_tricky.yaml --runs 3 --out twin_logs/my_runs.jsonl
+  --challenge red_swap_tricky --runs 3 --out twin_logs/my_runs.jsonl
 ```
 
 Add `--agent-sees` for an agent that sees the pictures. Each run uses the
@@ -117,7 +124,7 @@ next wording of your request. Runs cost about a cent each with Gemma 4 31B.
 ## 6. Report
 
 ```bash
-uv run soarm-challenge report challenges/red_swap_tricky.yaml twin_logs/my_runs.jsonl \
+uv run soarm-challenge report red_swap_tricky twin_logs/my_runs.jsonl \
   --proof proof.json -o findings.md
 ```
 

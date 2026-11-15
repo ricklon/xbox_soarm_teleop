@@ -466,7 +466,7 @@ md(r"""
 Now you set the test. Choose where the cubes start, what the agent is told
 they are called, what it is asked, and what should happen. Then find out
 where it breaks. The full guide is `docs/challenges.md`; examples are in
-`challenges/`.
+`src/xbox_soarm_teleop/twin/challenge_examples/` (the arm's page offers them too).
 
 Positions are metres from the arm's base: `x` forward, `y` to the arm's
 left. The arm grasps steadily 20 to 33 cm out. Objects you can use:

@@ -114,3 +114,35 @@ def test_clearing_the_challenge_puts_the_arm_back(served):
     assert "green_cube" in room.service.observe_truth()["scene"]["objects"]
     assert httpx.get(f"{base}/r/{token}/challenge").json()["challenge"] is None
     assert "challenge" not in httpx.get(f"{base}/r/{token}/scores").json()
+
+
+def test_the_page_offers_the_example_challenges(served):
+    hub, base = served
+    examples = httpx.get(f"{base}/r/{_token(hub)}/challenge/examples").json()["examples"]
+    names = {example["name"] for example in examples}
+    assert {"crowded", "no_yellow_bin", "red_swap_tricky"} <= names
+    assert all("request" in example["text"] for example in examples)
+
+
+def test_the_page_can_ask_whether_the_arm_can_do_it(served):
+    hub, base = served
+    token = _token(hub, 1)
+    reply = httpx.post(f"{base}/r/{token}/challenge/prove", content=SWAP_YAML, timeout=120)
+    assert reply.status_code == 200, reply.text
+    proof = reply.json()
+    assert proof["verdict"] in ("doable", "fragile") and proof["why"]
+    assert proof["true_run"]["in_bin"]["red_cube"] == "blue_bin"
+    bad = httpx.post(f"{base}/r/{token}/challenge/prove", content="name: x\nobjects: {}\n")
+    assert bad.status_code == 400
+    # Proving uses a twin of its own: this arm was not touched.
+    assert hub.rooms[token].challenge is None
+
+
+def test_a_scene_picked_after_a_challenge_is_not_graded_as_it(served):
+    hub, base = served
+    token = _token(hub)
+    httpx.post(f"{base}/r/{token}/challenge", content=SWAP_YAML)
+    room = hub.rooms[token]
+    room.service.load_scene("sort_colors", client_id="student").result(timeout=10)
+    assert "challenge" not in httpx.get(f"{base}/r/{token}/scores").json()
+    httpx.delete(f"{base}/r/{token}/challenge")

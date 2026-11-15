@@ -1,8 +1,8 @@
 """soarm-challenge: check, prove and report on a challenge file.
 
-    soarm-challenge check challenges/red_swap_tricky.yaml
-    soarm-challenge prove challenges/red_swap_tricky.yaml --aim-runs 3
-    soarm-challenge report challenges/red_swap_tricky.yaml twin_logs/my_runs.jsonl -o findings.md
+    soarm-challenge check red_swap_tricky
+    soarm-challenge prove red_swap_tricky --aim-runs 3
+    soarm-challenge report red_swap_tricky twin_logs/my_runs.jsonl -o findings.md
 
 Agents are run on a challenge with ``scripts/agent_trial.py --challenge FILE``
 (or the agent panel on a hub arm the challenge is loaded on); ``report`` turns
@@ -27,6 +27,9 @@ def _load(path: str):
     from xbox_soarm_teleop.twin.challenges import ChallengeError, load_challenge
 
     try:
+        if path == "-":  # from standard input: JSON or YAML (the hub's proofs)
+            text = sys.stdin.read()
+            return load_challenge(json.loads(text) if text.lstrip().startswith("{") else text + "\n")
         return load_challenge(Path(path))
     except (ChallengeError, OSError) as exc:
         print(f"Cannot set this challenge up: {exc}")
@@ -93,6 +96,9 @@ def cmd_prove(args) -> int:
     challenge = _load(args.file)
     if challenge is None:
         return 1
+    if args.json == "-":  # only the proof, as JSON (the hub runs proofs this way)
+        print(json.dumps(prove(challenge, aim_runs=args.aim_runs, seed=args.seed), default=str))
+        return 0
     print("\n".join(_describe(challenge)))
     print("Proving with the arm's own skills...", flush=True)
     proof = prove(challenge, aim_runs=args.aim_runs, seed=args.seed)
@@ -218,7 +224,9 @@ def build_parser() -> argparse.ArgumentParser:
     prove.add_argument("file")
     prove.add_argument("--aim-runs", type=int, default=3, help="Tries with an agent's aim error")
     prove.add_argument("--seed", type=int, default=0)
-    prove.add_argument("--json", default=None, help="Save the proof here (for report --proof)")
+    prove.add_argument(
+        "--json", default=None, help="Save the proof here (for report --proof); - prints only it"
+    )
     prove.set_defaults(run=cmd_prove)
     report = sub.add_parser(
         "report", help="A findings report from agent runs (agent_trial.py --challenge)"

@@ -109,6 +109,13 @@
   #agentLog .call { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted, #555); word-break: break-word; }
   #agentLog .call.failed { color: #b42318; }
   #agentLog .final { font-weight: 600; white-space: pre-wrap; }
+  #challengeText { width: 100%; min-height: 13em; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 6px 8px; box-sizing: border-box; resize: vertical; tab-size: 2; }
+  #challengeNotes { margin: 6px 0 0; padding-left: 1.2em; font-size: 13px; color: var(--muted); }
+  #challengeNotes li { margin-bottom: 3px; }
+  #challengeStatus.bad { color: #b42318; }
+  #challengeResult { font-size: 14px; margin-top: 8px; }
+  #challengeResult b.yes { color: #1f7a4a; } #challengeResult b.no { color: #b42318; }
 </style>
 </head>
 <body>
@@ -151,6 +158,25 @@
       </div>
       <p class="sub" id="agentStatus" role="status"></p>
       <ol id="agentLog" aria-live="polite"></ol>
+    </section>
+    <section class="panel" id="challengePanel">
+      <h2>Your challenge</h2>
+      <p class="sub">Set the desk up yourself: where the cubes start, what the agent is told they
+        are called, what it is asked, and what should happen. Then find where it breaks.
+        Guide: docs/challenges.md.</p>
+      <div class="scenepick">
+        <label for="challengeExample">Start from</label>
+        <select id="challengeExample"><option value="">an example...</option></select>
+      </div>
+      <textarea id="challengeText" spellcheck="false" aria-label="Your challenge (YAML)"></textarea>
+      <div class="row">
+        <button id="challengeLoad">Load on my arm</button>
+        <button id="challengeProve">Can the arm do it?</button>
+        <button id="challengeClear" disabled>Clear</button>
+      </div>
+      <p class="sub" id="challengeStatus" role="status"></p>
+      <ul id="challengeNotes"></ul>
+      <div id="challengeResult" aria-live="polite"></div>
     </section>
     <section class="panel">
       <h2>What happened</h2>
@@ -475,7 +501,7 @@
   loadSceneList();
 
   // --- starter prompts -----------------------------------------------------
-  fetch(`${base}/prompts`, { cache: "no-store" }).then((r) => r.json()).then(({ prompts }) => {
+  const loadPrompts = () => fetch(`${base}/prompts`, { cache: "no-store" }).then((r) => r.json()).then(({ prompts }) => {
     $("prompts").replaceChildren(...prompts.map((p) => {
       const li = document.createElement("li");
       const b = document.createElement("b"); b.textContent = p.title;
@@ -489,6 +515,7 @@
       return li;
     }));
   }).catch(() => { $("prompts").textContent = "Could not load the prompts."; });
+  loadPrompts();
 
   // --- the agent panel: the hub runs the tested agent loop on this arm --------
   // Everything the model says or a tool answers is shown as text, never as HTML.
@@ -571,6 +598,118 @@
     refreshAgent();
   });
   refreshAgent();
+
+  // --- your challenge: set the desk up, prove it, load it, see the result ---
+  // Everything shown comes from text the hub returns, set as text, never HTML.
+  const BLANK_CHALLENGE = `name: my-challenge
+scene: sort_colors
+objects:              # metres from the arm's base: x forward, y to its left
+  red_cube:   {x: 0.27, y: -0.06}
+  blue_cube:  {x: 0.27, y: 0.04}
+  green_cube: {x: 0.30, y: 0.13, turn_deg: 30}
+names: truthful       # or neutral, or misleading
+request: Sort the cubes by colour into the bins.
+expect: {red_cube: red_bin, blue_cube: blue_bin, green_cube: green_bin}
+`;
+  let challengeActive = false, challengeTimer = null;
+  const challengeSay = (text, bad = false) => {
+    $("challengeStatus").textContent = text;
+    $("challengeStatus").classList.toggle("bad", bad);
+  };
+  const challengeNotes = (notes) => $("challengeNotes").replaceChildren(...(notes || []).map((n) => el("li", "", n)));
+  async function challengeCall(path, method, body) {
+    const res = await fetch(`${base}/challenge${path}`, {
+      method, body, headers: body ? { "Content-Type": "text/yaml" } : {}, cache: "no-store",
+    });
+    const reply = await res.json().catch(() => ({}));
+    return { ok: res.ok, reply };
+  }
+  async function showChallengeResult() {
+    clearTimeout(challengeTimer);
+    if (!challengeActive) { $("challengeResult").replaceChildren(); return; }
+    try {
+      const key = await (await fetch(`${base}/scores`, { cache: "no-store" })).json();
+      const graded = key.challenge;
+      if (!graded) {
+        $("challengeResult").textContent = "Another scene is loaded: Load your challenge again to grade it.";
+      } else {
+        const where = Object.entries(graded.in_bin).map(([n, b]) => `${n}: ${b || "not in a bin"}`).join(", ");
+        const verdict = el("b", graded.done ? "yes" : "no", graded.done ? "Done" : "Not done yet");
+        const counts = graded.right !== undefined
+          ? ` (${graded.right} right, ${graded.wrong} in a wrong bin, ${graded.unsorted} not put away)` : "";
+        $("challengeResult").replaceChildren("Result now: ", verdict, `${counts}. ${where}.`);
+      }
+    } catch (err) { /* offline: the status line says so */ }
+    challengeTimer = setTimeout(showChallengeResult, 4000);
+  }
+  async function loadExamples() {
+    try {
+      const { examples } = await (await fetch(`${base}/challenge/examples`, { cache: "no-store" })).json();
+      window.challengeExamples = Object.fromEntries(examples.map((e) => [e.name, e.text]));
+      $("challengeExample").append(
+        ...examples.map((e) => { const o = el("option", "", e.name.replace(/_/g, " ")); o.value = e.name; return o; }),
+        Object.assign(el("option", "", "a blank one"), { value: "__blank" }),
+      );
+    } catch (err) { /* the blank start still works */ }
+    const current = await challengeCall("", "GET").catch(() => null);
+    if (current && current.reply.challenge) {
+      challengeActive = true;
+      $("challengeClear").disabled = false;
+      challengeSay(`Loaded on your arm: ${current.reply.challenge.name}.`);
+      showChallengeResult();
+    }
+    if (!$("challengeText").value) $("challengeText").value = BLANK_CHALLENGE;
+  }
+  $("challengeExample").addEventListener("change", () => {
+    const name = $("challengeExample").value;
+    if (!name) return;
+    $("challengeText").value = name === "__blank" ? BLANK_CHALLENGE : (window.challengeExamples || {})[name] || "";
+    challengeSay("Edit it, then Load on my arm (or ask whether the arm can do it first).");
+    challengeNotes([]);
+  });
+  $("challengeLoad").addEventListener("click", async () => {
+    $("challengeLoad").disabled = true;
+    challengeSay("Setting your arm up...");
+    const { ok, reply } = await challengeCall("", "POST", $("challengeText").value)
+      .catch((err) => ({ ok: false, reply: { error: String(err) } }));
+    $("challengeLoad").disabled = false;
+    if (!ok) { challengeSay(`Not loaded: ${reply.error || "refused"}`, true); return; }
+    const c = reply.challenge;
+    challengeActive = true;
+    $("challengeClear").disabled = false;
+    loadedHere = "challenge";  // the scene picker: this was the student, not an agent
+    challengeSay(`Loaded: ${c.name}. The agent is told ${c.names} names. Its request is in the agent box.`);
+    challengeNotes(reply.warnings);
+    $("agentTask").value = c.requests[0] || "";
+    loadPrompts();
+    showChallengeResult();
+  });
+  $("challengeProve").addEventListener("click", async () => {
+    $("challengeProve").disabled = true;
+    challengeSay("Trying it with the arm's own skills, on a separate copy of the desk (a few seconds)...");
+    const { ok, reply } = await challengeCall("/prove", "POST", $("challengeText").value)
+      .catch((err) => ({ ok: false, reply: { error: String(err) } }));
+    $("challengeProve").disabled = false;
+    if (!ok) { challengeSay(`Could not check: ${reply.error || "refused"}`, true); return; }
+    const words = { doable: "Doable", fragile: "Fragile", not_doable: "Not doable",
+      impossible: "Impossible, as you meant", possible_after_all: "Possible after all", not_checked: "Not checked" };
+    const aims = reply.aim_runs || [];
+    const aimText = aims.length ? ` With an agent's aim error: done ${aims.filter((r) => r.done).length} of ${aims.length}.` : "";
+    challengeSay(`${words[reply.verdict] || reply.verdict}: ${reply.why}.${aimText}`, reply.verdict === "not_doable");
+    challengeNotes(reply.hidden);
+  });
+  $("challengeClear").addEventListener("click", async () => {
+    $("challengeClear").disabled = true;
+    const { ok, reply } = await challengeCall("", "DELETE").catch((err) => ({ ok: false, reply: { error: String(err) } }));
+    if (!ok) { $("challengeClear").disabled = false; challengeSay(`Not cleared: ${reply.error || "refused"}`, true); return; }
+    challengeActive = false;
+    challengeSay("Cleared: your arm is back to the standard desk and names.");
+    challengeNotes([]);
+    loadPrompts();
+    showChallengeResult();
+  });
+  loadExamples();
+
 
   // --- WebMCP: the same tools, for an agent running in this browser ---------
   // The browser API is experimental and was renamed from navigator.modelContext

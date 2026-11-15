@@ -86,6 +86,26 @@ WRIST_ERROR_M = 0.005  # the wrist camera's, close up
 TRAY_MIXUP_RATE = 0.5  # from overhead, a cube and the tray of its colour look alike
 
 
+def examples() -> dict[str, str]:
+    """The example challenges that come with the project: name -> YAML text."""
+    from importlib import resources
+
+    folder = resources.files("xbox_soarm_teleop.twin").joinpath("challenge_examples")
+    return {
+        entry.name.removesuffix(".yaml"): entry.read_text()
+        for entry in sorted(folder.iterdir(), key=lambda e: e.name)
+        if entry.name.endswith(".yaml")
+    }
+
+
+def example_path(name: str) -> Path | None:
+    """An example's file, given its name ("crowded"), when no such file exists here."""
+    if Path(name).exists():
+        return None
+    candidate = Path(__file__).parent / "challenge_examples" / f"{Path(name).stem}.yaml"
+    return candidate if candidate.is_file() else None
+
+
 class ChallengeError(ValueError):
     """A challenge that cannot be set up; the message says why."""
 
@@ -194,11 +214,13 @@ def _tray_gap(name: str, x: float, y: float) -> tuple[str, float]:
 
 
 def load_challenge(source: str | Path | dict) -> Challenge:
-    """A challenge from a dict, a YAML file, or YAML text.
+    """A challenge from a dict, a YAML file, YAML text, or an example's name.
 
     Raises:
         ChallengeError: it cannot be set up, with the reason.
     """
+    if not isinstance(source, dict) and "\n" not in str(source):
+        source = example_path(str(source)) or source  # an example by name: "crowded"
     if isinstance(source, dict):
         spec = source
     else:

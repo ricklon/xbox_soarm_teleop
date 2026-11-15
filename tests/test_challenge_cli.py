@@ -37,10 +37,12 @@ def swap_file(tmp_path):
 
 
 def test_the_example_challenges_load(capsys):
-    examples = sorted((ROOT / "challenges").glob("*.yaml"))
-    assert len(examples) >= 3
-    for path in examples:
-        assert challenge_cli.main(["check", str(path)]) == 0, path
+    from xbox_soarm_teleop.twin.challenges import examples
+
+    found = examples()
+    assert {"crowded", "no_yellow_bin", "red_swap_tricky"} <= set(found)
+    for name in found:
+        assert challenge_cli.main(["check", name]) == 0, name  # by name, wherever installed
 
 
 def test_check_prints_the_challenge_and_its_warnings(swap_file, capsys):
