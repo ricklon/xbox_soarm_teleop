@@ -341,6 +341,36 @@ class TwinService:
             )
         )
 
+    def load_layout(self, layout, *, client_id: str = "agent") -> Future:
+        """Set the desk up as ``layout`` says (a challenge's own arrangement,
+        ``twin.challenges``): home the arm, swap the objects. Reset restores it.
+
+        Resolves to the layout's summary; refused if ``layout`` is for another
+        compiled scene.
+        """
+        return self.call(
+            self._logged(
+                "load_layout",
+                client_id,
+                {"objects": {name: list(pose) for name, pose in layout.objects.items()}},
+                lambda: self._load_layout(layout, client_id),
+            )
+        )
+
+    def _load_layout(self, layout, client_id: str) -> dict[str, Any]:
+        if self.stop_latched_by is not None:
+            raise ActionRejected(ReasonCode.STOPPED, f"latched by {self.stop_latched_by}")
+        if layout.model_scene != self.sim.scene:
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST,
+                f"that arrangement is for the {layout.model_scene} scene, this arm has {self.sim.scene}",
+            )
+        self._ensure_owner(client_id)
+        self.layout = layout
+        self._reset_scene()
+        self._event("layout loaded")
+        return {**self.layout.summary(), "current": True}
+
     def list_scenes(self) -> list[dict[str, Any]]:
         """The scenes ``load_scene`` accepts, easiest first, marking the current one."""
         layouts = layouts_for(self.sim.scene)
