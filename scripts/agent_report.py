@@ -22,7 +22,8 @@ import sys
 from pathlib import Path
 
 # The same pattern as agent_trial.PROVIDER_ERROR: a provider refused a request.
-PROVIDER_ERROR = re.compile(r"HTTP (402|429|5\d\d)")
+# ...or could not be reached at all (the network dropped mid-run).
+PROVIDER_ERROR = re.compile(r"HTTP (402|429|5\d\d)|cannot reach ")
 
 
 def _invalid(row: dict) -> bool:

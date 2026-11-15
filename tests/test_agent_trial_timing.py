@@ -279,9 +279,15 @@ def test_runs_cut_short_by_the_model_service_are_invalid():
     rows = [
         {"model": "m", "variant": "no_judge", "in_goal": True, "agent_error": None},
         {"model": "m", "variant": "no_judge", "in_goal": False, "agent_error": "HTTP 402 from x"},
+        {
+            "model": "m",
+            "variant": "no_judge",
+            "in_goal": False,
+            "agent_error": "cannot reach https://openrouter.ai/api/v1/chat/completions: <urlopen error>",
+        },
     ]
     (row,) = report.summarize(rows)
-    assert row["runs"] == 1 and row["invalid_runs"] == 1 and row["in_box"] == 1.0
+    assert row["runs"] == 1 and row["invalid_runs"] == 2 and row["in_box"] == 1.0
 
 
 def test_trials_record_and_report_what_the_agent_was_given(tmp_path):

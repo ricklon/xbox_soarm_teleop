@@ -28,6 +28,7 @@ workspace limits end them as they would end any agent's motion.
 
 from __future__ import annotations
 
+import weakref
 from typing import Any
 
 import numpy as np
@@ -40,6 +41,9 @@ CARRY_ABOVE_TABLE_M = 0.20  # the jaw center's height while carrying
 RELEASE_ABOVE_FLOOR_M = 0.02  # an object's bottom over a bin floor when let go
 LIFT_M = 0.05  # straight up after letting go, before anything else
 ATTEMPTS = 3
+# What each twin holds because it was picked by description: (name, description),
+# so place can answer in the request's words too.
+_DESCRIBED: "weakref.WeakKeyDictionary[Any, tuple[str, str]]" = weakref.WeakKeyDictionary()
 OPEN_UNKNOWN_M = 0.09  # open this wide for an object of unknown size
 CLOSE_STEP_M = 0.005  # closing by feel: less than the twin's 6 mm squeeze margin
 CLOSE_FLOOR_M = 0.015  # nothing narrower than this is picked up
@@ -203,9 +207,12 @@ def pick(
 
     By ``name``; or by ``description`` alone, in the request's words ("red
     cube"): the arm looks for what matches, opens wide, closes by feel, and
-    says what it is holding. A name that misleads the agent cannot mislead it.
+    says what it is holding in the same words. The reply never carries the
+    object's name: an agent told misleading names sorted by the name in the
+    reply (lesson 24), so a name that misleads the agent cannot mislead it here.
 
-    Returns ``{"ok": True, "holding": name, "attempts": n, "looks": n}``, or
+    Returns ``{"ok": True, "holding": name or description, "attempts": n,
+    "looks": n}``, or
     ``{"ok": False, "reason": ..., "detail": ...}``: ``invalid_request`` (no
     such object), ``no_pointer``, ``not_found``, ``missed`` (every attempt),
     or why a motion ended (``stopped``, ``preempted``, ``workspace_bound``...).
@@ -225,6 +232,8 @@ def pick(
             raise SkillFailed("busy", "already holding something: place it first")
         if service.pointer is None and service.hide_positions:  # before moving at all
             raise SkillFailed("no_pointer", "no pointing model, and positions are hidden")
+        asked = None if name is not None else description.strip()
+        _DESCRIBED.pop(service, None)
         target = name
         if name is None and service.pointer is None:
             target = _shown_match(service, description)
@@ -256,6 +265,9 @@ def pick(
             if held is not None:
                 carry = (service.table_top_z or 0.0) + CARRY_ABOVE_TABLE_M
                 _move_by(service, 0.0, 0.0, carry - _jaw(service)[2], client_id)
+                if asked is not None:  # answer in the request's words, not a name
+                    _DESCRIBED[service] = (held, asked)
+                    held = asked
                 return {"ok": True, "holding": held, "attempts": tried, "looks": looks[0]}
             _grip(service, wide, client_id)  # missed: open, up, look again
             _move_by(service, 0.0, 0.0, HOVER_M, client_id)
@@ -304,6 +316,9 @@ def place(service, bin_name: str, *, client_id: str = "agent") -> dict[str, Any]
         _act(service, {"type": "set_gripper", "params": {"position": 0.0}}, client_id)
         _move_by(service, 0.0, 0.0, LIFT_M, client_id)
         _act(service, {"type": "home"}, client_id)
+        described = _DESCRIBED.pop(service, None)
+        if described is not None and described[0] == name:
+            name = described[1]  # picked by description: say it the same way
         return {"ok": True, "released": name, "bin": bin_name}
     except SkillFailed as exc:
         return {"ok": False, "reason": exc.reason, "detail": exc.detail}

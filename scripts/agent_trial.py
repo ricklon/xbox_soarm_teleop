@@ -175,7 +175,8 @@ def time_split(lines: list[dict]) -> dict:
 
 # A provider refusing a request (no credit, rate limit, outage): the run then
 # tests the provider, not the agent. agent_report.py uses the same pattern.
-PROVIDER_ERROR = re.compile(r"HTTP (402|429|5\d\d)")
+# ...or could not be reached at all (the network dropped mid-run).
+PROVIDER_ERROR = re.compile(r"HTTP (402|429|5\d\d)|cannot reach ")
 
 
 def grade(log_path: Path, name: str) -> dict:

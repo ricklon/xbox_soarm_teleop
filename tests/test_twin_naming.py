@@ -147,14 +147,16 @@ def test_the_agent_sees_only_the_shown_names(served):
 
 def test_pick_by_description_sees_past_a_misleading_name(served):
     """Under misleading names the red cube is called something else; asked
-    for "the red cube", the arm picks the red one and names it as shown."""
+    for "the red cube", the arm picks the red one, and its replies say "red
+    cube" without the misleading name: agents sorted by a name in the reply."""
     service, url = served
     names = service.shown_names
     picked, released = _calls(
         url, [("pick", {"description": "red cube"}), ("place", {"bin": "red_bin"})]
     )
-    assert picked["ok"] is True and picked["holding"] == names["pick_cube"]
-    assert released["ok"] is True
+    assert picked["ok"] is True and picked["holding"] == "red cube"
+    assert released["ok"] is True and released["released"] == "red cube"
+    assert names["pick_cube"] not in json.dumps([picked, released])
     import time as _time
 
     _time.sleep(0.5)

@@ -169,6 +169,17 @@ and take over. Benchmark each layer at its own job.
     whole chain has to speak the request's language: perception, action and
     check. Next: `pick(description="red cube")`.
 
+    With `pick(description="red cube")` (blind, misleading names, 2 valid
+    runs; a third and the seeing runs were lost to a network drop), every
+    pick found the real red cube on the first attempt. But the reply said
+    `"holding": "blue_cube"`, the red cube's misleading name, and the agent
+    put it in the blue tray, picked it up again by description, and put it
+    back, for 15 minutes until the time limit (0 of 2 sorted, no claims).
+    The agent asked in the request's words and then believed the name in
+    the answer. Every reply an agent reads has to stay in the request's
+    words: `pick` and `place` now answer "red cube" when asked by
+    description and never carry the name. `observe` still lists names.
+
 ## Running experiments
 
 25. **Budget and limits are part of the setup.** OpenRouter refuses requests

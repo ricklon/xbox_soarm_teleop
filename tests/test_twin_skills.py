@@ -231,10 +231,10 @@ def test_pick_by_description_finds_it_by_looking_and_closes_by_feel(running):
     service = running
     _reset(service)
     result = service.pick(description="red cube", client_id="test")
-    assert result["ok"] is True and result["holding"] == "pick_cube"
+    assert result["ok"] is True and result["holding"] == "red cube"  # its words, not a name
     assert service.observe()["scene"]["objects"]["pick_cube"]["attached"] is True
     placed = service.place("red_bin", client_id="test")
-    assert placed["ok"] is True
+    assert placed["ok"] is True and placed["released"] == "red cube"
     time.sleep(0.5)
     assert service.observe_truth()["scene"]["objects"]["pick_cube"]["in_bin"] == "red_bin"
 
