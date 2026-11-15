@@ -8,9 +8,11 @@ table, in the gripper and on the floor. The truth comes from the simulator,
 so the answers can be scored before any agent relies on them.
 """
 
+import json
 import logging
 import warnings
 
+import numpy as np
 import pytest
 
 from xbox_soarm_teleop.twin import build_twin, scenarios
@@ -177,5 +179,31 @@ def test_a_description_given_as_a_name_is_pointed_at_description():
         answer = _check_in_thread(twin, name="red cube", bin_name="red_bin")
         assert answer["reason"] == "invalid_request"
         assert 'description="red cube"' in answer["detail"]
+    finally:
+        twin.close()
+
+
+def test_the_judge_is_asked_about_a_movable_box_too(monkeypatch):
+    """With the orange box out, it is one of the places Clef may answer, and
+    the check is graded against where the box is now."""
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "cfTESTTOKEN0123456789abcdef")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef")
+    twin = build_twin(scene="sort_colors_box", with_controller=False)
+    try:
+        twin.tick()
+        box = twin.observe_truth()["scene"]["objects"]["orange_box"]["xyz_m"]
+        twin.grasp.place("pick_cube", np.array([box[0], box[1], box[2] + 0.004 + 0.02]))
+        for _ in range(30):
+            twin.tick()
+        twin.judge, asked = _clef_answers({"orange_box": 0.93, "red_bin": 0.03, "on_table": 0.04})
+        result = _check_in_thread(twin, name="pick_cube", bin_name="orange_box")
+        assert result["ok"] is True and result["verdict"] == "done", result
+        assert twin.success_checks()[-1]["correct"] is True  # it really is in the box
+        assert "orange box" in json.dumps(asked[-1])
+        # Without the box out, it is not an option.
+        twin.load_scene("sort_colors")
+        twin.tick()
+        refused = _check_in_thread(twin, name="pick_cube", bin_name="orange_box")
+        assert refused["reason"] == "invalid_request"
     finally:
         twin.close()

@@ -34,8 +34,9 @@ notes: Anything you want to say about it.
 | Field | What you can use |
 |---|---|
 | `objects` | `red_cube`, `blue_cube`, `green_cube`, `yellow_cube`, `red_small_cube`, `red_bar`, `blue_bean_bag`, each with `x`, `y` and, if you like, `turn_deg` |
+| a box | `orange_box`: an open box the arm can push (`push`) and put things in (`place(bin="orange_box")`). It sits square to the desk; `turn_deg` turns it. In `expect` it is a tray like the others; it cannot itself go in a tray |
 | where | `x` forward from the base, `y` to the arm's left; the desk runs x −0.10 to 0.44, y −0.42 to 0.42. The arm grasps steadily 20 to 33 cm from its base |
-| trays | `red_bin`, `blue_bin`, `green_bin` (fixed, at the arm's sides) |
+| trays | `red_bin`, `blue_bin`, `green_bin` (fixed, at the arm's sides), and `orange_box` when it is on the desk |
 | `names` | `truthful` (red_cube), `neutral` (object_1 ...), `misleading` (the red cube called blue_cube), `as_is` (the twin's own) |
 | `expect` | each object's tray, or `null` to stay out of the trays. Objects you leave out must stay out of the trays |
 | `possible: false` | for an impossible challenge; add `asked:` with what the request asks for (a tray that does not exist is fine), which the proof tries and must fail at |

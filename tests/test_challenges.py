@@ -202,3 +202,35 @@ def test_the_swap_is_proved_doable_with_true_positions_and_aim_error():
     assert len(proof["aim_runs"]) == 1
     assert proof["verdict"] in ("doable", "fragile")
     assert proof["hidden"] == []  # every object is in view of the front and overhead cameras
+
+
+BOXED = {
+    "name": "into-the-box",
+    "scene": "sort_colors_box",
+    "objects": {
+        "red_cube": {"x": 0.275, "y": -0.06},
+        "orange_box": {"x": 0.31, "y": 0.06, "turn_deg": 20},
+    },
+    "request": "Put the red cube in the orange box.",
+    "expect": {"red_cube": "orange_box"},
+}
+
+
+def test_a_challenge_can_use_the_movable_box():
+    challenge = load_challenge(BOXED)
+    x, y, z, yaw = challenge.layout().objects["orange_box"]
+    assert (x, y) == (0.31, 0.06)
+    assert yaw == pytest.approx(math.radians(20))  # turned from square to the desk, not facing the arm
+    assert z < 0.01  # its floor plate rests on the desk
+    assert challenge.task().expect == {"pick_cube": "orange_box", "orange_box": None}
+    assert not any("orange_box is turned" in w for w in check(challenge))
+    with pytest.raises(ChallengeError, match="push"):
+        load_challenge({**BOXED, "expect": {"orange_box": "red_bin"}})
+    with pytest.raises(ChallengeError, match="orange_box"):
+        load_challenge({**BOXED, "objects": {"red_cube": {"x": 0.275, "y": -0.06}}})  # no box out
+
+
+def test_putting_a_cube_in_the_box_is_proved_doable():
+    proof = prove(load_challenge(BOXED), aim_runs=1)
+    assert proof["true_run"]["in_bin"]["red_cube"] == "orange_box", proof
+    assert proof["verdict"] in ("doable", "fragile")

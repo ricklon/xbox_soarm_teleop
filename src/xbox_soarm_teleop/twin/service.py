@@ -646,6 +646,10 @@ class TwinService:
                 "detail": "this twin has no success judge (start it with --judge)",
             }
         boxes = [(box.name, box.label or box.name) for box in BINS[self.sim.scene]]
+        out = self.observe()["scene"]["objects"]  # and any movable box out on the table
+        boxes += [
+            (box.name, box.label) for box in MOVABLE_BOXES.get(self.sim.scene, ()) if box.name in out
+        ]
         if bin_name is not None and bin_name not in dict(boxes):
             known = ", ".join(name_ for name_, _ in boxes)
             return {

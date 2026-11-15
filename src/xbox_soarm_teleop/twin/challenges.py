@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
-from xbox_soarm_teleop.sim.table_scenes import TABLE_SCENES
+from xbox_soarm_teleop.sim.table_scenes import BIN_FLOOR_M, TABLE_SCENES
 from xbox_soarm_teleop.twin.layouts import LAYOUTS, Layout
 from xbox_soarm_teleop.twin.naming import APPEARANCE, NAMINGS, shown_names
 from xbox_soarm_teleop.twin.tasks import SortTask, grade
@@ -61,6 +61,7 @@ _INTERNAL = (
     "red_cube_small",
     "red_bar",
     sim_cli.BEAN_BAG_NAME,
+    *(box.name for box in TABLE_SCENES[CELL].boxes),
 )
 PERSON_NAMES: dict[str, str] = shown_names(_INTERNAL, "truthful")
 """The twin's name -> the name a person uses (``pick_cube`` -> ``red_cube``)."""
@@ -71,6 +72,15 @@ _HALF: dict[str, tuple[float, float, float]] = {
     sim_cli.BEAN_BAG_NAME: tuple(float(v) for v in sim_cli.BEAN_BAG_HALF_EXTENTS),
     **{name: tuple(half) for name, half, _, _ in sim_cli.DISTRACTOR_OBJECTS},
 }
+# Movable boxes (sim/table_scenes.py): objects that hold others; pushed, never picked.
+BOXES = {box.name: box for box in TABLE_SCENES[CELL].boxes}
+for _box in BOXES.values():
+    _out = _box.inner_half_m[0] + 2 * _box.wall_m
+    _HALF[_box.name] = (
+        _out,
+        _box.inner_half_m[1] + 2 * _box.wall_m,
+        _box.inner_half_m[2] + BIN_FLOOR_M,
+    )
 
 # The layout rules the built-in desk keeps (tests/test_twin_sort.py), found by
 # agents knocking cubes about: the open jaws span about 9 cm and an agent's
@@ -146,6 +156,9 @@ class Challenge:
         by its ``turn_deg``. Its name tells an agent nothing about the challenge."""
         objects = {}
         for name, (x, y, turn) in self.objects.items():
+            if name in BOXES:  # square to the desk, turned by turn_deg; resting on its floor plate
+                objects[name] = (x, y, DESK.top_z + BIN_FLOOR_M + 0.0005, math.radians(turn))
+                continue
             yaw = math.atan2(y, x) + math.radians(turn)
             objects[name] = (x, y, DESK.top_z + _HALF[name][2], yaw)
         return Layout(
@@ -307,8 +320,19 @@ def load_challenge(source: str | Path | dict) -> Challenge:
             internal = _internal(str(person), key)
             if internal not in objects:
                 raise ChallengeError(f"{key}: {person} is not on the desk (add it to objects)")
-            if tray is not None and str(tray) not in TRAYS and trays_must_exist:
-                raise ChallengeError(f"{key}: no tray '{tray}'. Trays: {', '.join(TRAYS)}, or null")
+            boxes_out = [b for b in BOXES if b in objects and b != internal]
+            if internal in BOXES and tray is not None:
+                raise ChallengeError(f"{key}: {person} is a box: it can be pushed, not put in a tray")
+            if (
+                tray is not None
+                and trays_must_exist
+                and str(tray) not in TRAYS
+                and str(tray) not in boxes_out
+            ):
+                if str(tray) in BOXES:
+                    raise ChallengeError(f"{key}: put {tray} on the desk (in objects) to use it")
+                trays = ", ".join([*TRAYS, *boxes_out])
+                raise ChallengeError(f"{key}: no tray '{tray}'. Trays: {trays}, or null")
             result[internal] = None if tray is None else str(tray)
         return result
 
@@ -357,7 +381,7 @@ def check(challenge: Challenge) -> list[str]:
             warnings.append(
                 f"{person} is {max(gap, 0) * 100:.0f} cm from {tray}'s wall: the jaws may catch the tray"
             )
-        if turn % 360:
+        if turn % 360 and name not in BOXES:
             warnings.append(
                 f"{person} is turned {turn:g}° from facing the arm: the wrist must turn to grip it square"
             )
