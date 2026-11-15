@@ -40,7 +40,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from xbox_soarm_teleop.twin.cameras import MAX_SIZE, VIEWS
 from xbox_soarm_teleop.twin.hub import Hub, Room
-from xbox_soarm_teleop.twin.layouts import BINS
+from xbox_soarm_teleop.twin.layouts import BINS, MOVABLE_BOXES
 from xbox_soarm_teleop.twin.mcp_server import _client_id, build_mcp_server, rename_objects
 from xbox_soarm_teleop.twin.service import TwinService
 from xbox_soarm_teleop.twin.status import status_text
@@ -255,6 +255,8 @@ def where_each_object_is(service: TwinService) -> dict[str, str]:
     scene = service.observe_truth()["scene"]
     labels = {box["name"]: box.get("label") or box["name"] for box in scene.get("bins", [])}
     names = service.shown_names or {}
+    for box in MOVABLE_BOXES.get(service.sim.scene, ()):  # in the name the agent is shown
+        labels[box.name] = names.get(box.name, box.label).replace("_", " ")
     where = {}
     for name, entry in scene["objects"].items():
         if entry.get("attached"):

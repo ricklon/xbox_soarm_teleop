@@ -32,6 +32,7 @@ APPEARANCE: dict[str, tuple[str, str]] = {
     "blue_cube": ("blue", "cube"),
     "green_cube": ("green", "cube"),
     "yellow_cube": ("yellow", "cube"),
+    "orange_box": ("orange", "box"),
     sim_cli.BEAN_BAG_NAME: ("blue", "bean_bag"),
 }
 _SPARE_COLOURS = ("purple", "orange", "white")

@@ -34,7 +34,7 @@ DISTRACTOR_SCENES = (
     "distractors_clutter",
 )
 # The colour-sort scenes (twin.layouts, on the sort_bins table scene).
-SORT_SCENES = ("sort_colors", "sort_colors_decoy")
+SORT_SCENES = ("sort_colors", "sort_colors_decoy", "sort_colors_box")
 # The object an agent trial picks in each scene (--start moves it).
 START_TARGETS = {"pick_place_basic": "pick_cube", "pick_place_easy": "bean_bag"}
 SCENES = (

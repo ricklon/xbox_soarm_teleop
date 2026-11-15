@@ -12,7 +12,7 @@ import math
 from dataclasses import dataclass, field, replace
 
 from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
-from xbox_soarm_teleop.sim.table_scenes import TABLE_SCENES, Bin
+from xbox_soarm_teleop.sim.table_scenes import BIN_FLOOR_M, TABLE_SCENES, Bin
 
 
 @dataclass(frozen=True)
@@ -151,6 +151,27 @@ LAYOUTS: dict[str, Layout] = {
                 "green_cube": _on_desk("green_cube", 0.30, 0.07),
             },
         ),
+        # The desk with a movable box (sim/table_scenes.py): put things in it,
+        # push it about. Square to the desk, clear of the trays and the cubes.
+        Layout(
+            name="sort_colors_box",
+            model_scene="sort_bins",
+            difficulty="hard",
+            description=(
+                "A red and a blue cube, an orange box that slides when pushed, and a red, "
+                "a blue and a green bin. Things in the box move with it."
+            ),
+            objects={
+                "pick_cube": _on_desk("pick_cube", 0.275, -0.06),
+                "blue_cube": _on_desk("blue_cube", 0.23, -0.16),
+                "orange_box": (
+                    0.31,
+                    0.04,
+                    TABLE_SCENES["sort_bins"].table.top_z + BIN_FLOOR_M + 0.0005,
+                    0.0,
+                ),
+            },
+        ),
         Layout(
             name="sort_colors_decoy",
             model_scene="sort_bins",
@@ -178,6 +199,7 @@ class GoalBox:
     center_xyz_m: tuple[float, float, float]  # middle of its floor's top face
     inner_size_m: tuple[float, float, float]  # inside length, width and wall height
     label: str = ""
+    yaw: float = 0.0  # turned about the vertical (a movable box that was pushed)
 
     def summary(self) -> dict:
         summary = {
@@ -195,6 +217,10 @@ class GoalBox:
         lx, ly, height = self.inner_size_m
         hx, hy, hz = (float(v) for v in half_extents_world)
         x, y, z = (float(v) for v in center)
+        if self.yaw:  # into the box's own frame
+            c, s = math.cos(self.yaw), math.sin(self.yaw)
+            dx, dy = x - cx, y - cy
+            x, y = cx + c * dx + s * dy, cy - s * dx + c * dy
         inside = abs(x - cx) <= lx / 2 - hx + 1e-3 and abs(y - cy) <= ly / 2 - hy + 1e-3
         resting = floor + hz - 0.01 <= z <= floor + hz + 0.01  # on the floor, not on a wall
         return inside and resting
@@ -218,6 +244,26 @@ BINS: dict[str, tuple[GoalBox, ...]] = {
     name: tuple(_box(bin_, scene.table.top_z) for bin_ in scene.bins)
     for name, scene in TABLE_SCENES.items()
 }
+# Movable boxes (``TableScene.boxes``): objects to the twin, and containers;
+# where they are is read from the simulation (``live_box``).
+MOVABLE_BOXES: dict[str, tuple[Bin, ...]] = {
+    name: scene.boxes for name, scene in TABLE_SCENES.items() if scene.boxes
+}
+
+
+def live_box(box: Bin, origin_xyz, yaw: float) -> GoalBox:
+    """A movable box where it is now: its body origin (the middle of its floor
+    plate) and its turn."""
+    x, y, z = (float(v) for v in origin_xyz)
+    return GoalBox(
+        name=box.name,
+        center_xyz_m=(x, y, z + BIN_FLOOR_M),
+        inner_size_m=tuple(float(2 * v) for v in box.inner_half_m),
+        label=box.label,
+        yaw=float(yaw),
+    )
+
+
 GOALS: dict[str, GoalBox] = {
     name: replace(boxes[0], label="") for name, boxes in BINS.items() if len(boxes) == 1
 }
@@ -234,6 +280,7 @@ OBJECT_DESCRIPTIONS: dict[str, str] = {
     "red_bar": "red bar",
     "green_cube": "green cube",
     "yellow_cube": "yellow cube",
+    "orange_box": "orange box",
 }
 
 

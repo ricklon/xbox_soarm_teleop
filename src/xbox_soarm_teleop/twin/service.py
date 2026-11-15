@@ -68,8 +68,10 @@ from xbox_soarm_teleop.twin.grasp import AssistedGrasp
 from xbox_soarm_teleop.twin.layouts import (
     BINS,
     GOALS,
+    MOVABLE_BOXES,
     Layout,
     layouts_for,
+    live_box,
     object_description,
 )
 from xbox_soarm_teleop.twin.pointing import Pointer, PointRequest, mask_secrets
@@ -1537,6 +1539,14 @@ class TwinService:
         goal = GOALS.get(self.sim.scene)
         # A scene with several bins (a sorting scene) says which bin each object is in.
         bins = BINS.get(self.sim.scene, ()) if goal is None else ()
+        loose = self.grasp.positions()
+        movable = {}  # movable boxes out on the table, where they are now
+        for box in MOVABLE_BOXES.get(self.sim.scene, ()):
+            if box.name in loose:
+                turn = self.grasp._rotation(box.name)  # noqa: SLF001 - the twin's own grasp
+                yaw = math.atan2(float(turn[1, 0]), float(turn[0, 0]))
+                movable[box.name] = live_box(box, loose[box.name], yaw)
+        bins = tuple(bins) + tuple(movable.values())
         opening = self.grasp.settings.jaw_opening_m(self.state.gripper_pos)
         jaw_center = self.grasp.jaw_center(opening)
         objects = {}
@@ -1557,9 +1567,15 @@ class TwinService:
             if bins:
                 half = self.grasp.half_extents_world(name)
                 entry["in_bin"] = next(
-                    (box.name for box in bins if name != self.grasp.attached and box.holds(xyz, half)),
+                    (
+                        box.name
+                        for box in bins
+                        if box.name != name and name != self.grasp.attached and box.holds(xyz, half)
+                    ),
                     None,
                 )
+            if name in movable:
+                entry["box"] = True  # an open box: things go in it; push it to move it
             objects[name] = entry
         scene = {
             "name": self.layout.name if self.layout is not None else self.sim.scene,

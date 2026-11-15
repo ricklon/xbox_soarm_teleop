@@ -50,6 +50,7 @@ CLOSE_FLOOR_M = 0.015  # nothing narrower than this is picked up
 AGREE_M = 0.03  # two views that put an object this close agree on where it is
 TRAY_MARGIN_M = 0.01  # an estimate this far inside a bin's walls counts as in it
 ACTION_TIMEOUT_S = 30.0
+MOVABLE_FLOOR_ABOVE_TABLE_M = 0.0085  # a movable box's floor top (sim/table_scenes.py)
 
 
 class SkillFailed(Exception):
@@ -233,6 +234,11 @@ def pick(
         if name is not None and name not in objects:
             known = ", ".join(objects) or "none"
             raise SkillFailed("invalid_request", f"Unknown object '{name}'. On the table: {known}")
+        if name is not None and objects[name].get("box"):
+            raise SkillFailed(
+                "invalid_request",
+                f"{name} is a box, too big to pick up: push it to move it, or place things in it",
+            )
         if name is not None and objects[name]["attached"]:
             return {"ok": True, "holding": name, "attempts": 0, "looks": 0}
         if _held(service) is not None:
@@ -306,11 +312,17 @@ def place(service, bin_name: str, *, client_id: str = "agent") -> dict[str, Any]
         boxes = {box["name"]: box for box in scene.get("bins", [])}
         if "goal" in scene:
             boxes[scene["goal"]["name"]] = scene["goal"]
-        if bin_name not in boxes:
-            known = ", ".join(boxes) or "none"
+        movable = [n for n, entry in scene["objects"].items() if entry.get("box")]
+        if bin_name not in boxes and bin_name not in movable:
+            known = ", ".join([*boxes, *movable]) or "none"
             raise SkillFailed("invalid_request", f"Unknown bin '{bin_name}'. Here: {known}")
         name = held[0]
-        cx, cy, floor = boxes[bin_name]["center_xyz_m"]
+        if bin_name in movable:  # a box that may have been pushed: look where it is now
+            box_xyz, _move = _first_look(service, bin_name, None, client_id, [0])
+            cx, cy = float(box_xyz[0]), float(box_xyz[1])
+            floor = (service.table_top_z or 0.0) + MOVABLE_FLOOR_ABOVE_TABLE_M
+        else:
+            cx, cy, floor = boxes[bin_name]["center_xyz_m"]
         carry = (service.table_top_z or 0.0) + CARRY_ABOVE_TABLE_M
         jaw = _jaw(service)
         if jaw[2] < carry - 0.01:
