@@ -93,7 +93,9 @@ GOAL_BOX = Bin(
 # direction from the base: reaching into one never swings the forearm over
 # another (in a row leading away from the base, lowering into the far bin
 # knocked a cube out of the near one). 7 cm inside, 1 cm apart.
-_SORT_BIN = (0.035, 0.035, 0.03)
+# Low trays (2 cm walls): they stand between the front camera and the table,
+# and 6 cm walls hid the cubes behind them from locate.
+_SORT_BIN = (0.035, 0.035, 0.01)
 RED_BIN = Bin("red_bin", "red bin", (0.41, 0.13), _SORT_BIN, (0.80, 0.20, 0.18, 0.85))
 BLUE_BIN = Bin("blue_bin", "blue bin", (0.41, 0.04), _SORT_BIN, (0.20, 0.35, 0.85, 0.85))
 GREEN_BIN = Bin("green_bin", "green bin", (0.41, -0.05), _SORT_BIN, GOAL_GREEN)

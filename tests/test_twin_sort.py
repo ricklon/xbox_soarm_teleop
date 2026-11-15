@@ -202,3 +202,46 @@ def test_every_task_can_be_done(task_name):
         assert grade(task, final)["done"] is True
     finally:
         service.close()
+
+
+def _visible_pixels(service, renderer, name: str) -> int:
+    from xbox_soarm_teleop.twin.cameras import point_camera
+
+    camera = mujoco.MjvCamera()
+    point_camera(camera, service.sim.model, "front")
+    renderer.update_scene(service.sim.data, camera=camera)
+    seg = renderer.render()
+    body = service.grasp.objects[name].body_id
+    geoms = [i for i in range(service.sim.model.ngeom) if service.sim.model.geom_bodyid[i] == body]
+    on_geom = seg[..., 1] == mujoco.mjtObj.mjOBJ_GEOM
+    return int((on_geom & (seg[..., 0][..., None] == geoms).any(-1)).sum())
+
+
+@pytest.mark.parametrize("layout", SORT_LAYOUTS)
+def test_the_front_camera_sees_every_object_at_the_start(layout):
+    """locate looks from the front by default. The bins stand between that
+    camera and the table, so they must be low enough to see past, and an object
+    under the arm at home is hidden from it."""
+    service = build_twin(scene=layout, with_controller=False)
+    renderer = mujoco.Renderer(service.sim.model, 480, 640)
+    renderer.enable_segmentation_rendering()
+    try:
+        service.tick()
+        model = service.sim.model
+        names = list(service.observe()["scene"]["objects"])
+        with_bins = {name: _visible_pixels(service, renderer, name) for name in names}
+        bin_geoms = [i for i in range(model.ngeom) if "_bin_" in (model.geom(i).name or "")]
+        saved = model.geom_pos[bin_geoms].copy()
+        model.geom_pos[bin_geoms, 2] -= 5.0  # out of the picture
+        mujoco.mj_forward(model, service.sim.data)
+        alone = {name: _visible_pixels(service, renderer, name) for name in names}
+        model.geom_pos[bin_geoms] = saved
+        mujoco.mj_forward(model, service.sim.data)
+        for name in names:
+            # Clearly in view (a 3 cm cube fully seen is about 900 pixels), so not
+            # under the arm at home either; and the bins hide little of it.
+            assert alone[name] >= 500, (name, alone[name])
+            assert with_bins[name] >= 0.8 * alone[name], (name, with_bins[name], alone[name])
+    finally:
+        renderer.close()
+        service.close()

@@ -21,7 +21,7 @@ top at z 0.12 m) and the same objects (the red cube, the bean bag and five
 look-alikes). A recipe adds the fixed furniture: bins.
 
 ```python
-RED_BIN = Bin("red_bin", "red bin", (0.41, 0.13), (0.035, 0.035, 0.03), (0.80, 0.20, 0.18, 0.85))
+RED_BIN = Bin("red_bin", "red bin", (0.41, 0.13), (0.035, 0.035, 0.01), (0.80, 0.20, 0.18, 0.85))
 ...
 TableScene("sort_bins", (RED_BIN, BLUE_BIN, GREEN_BIN))
 ```
@@ -41,7 +41,8 @@ no-coordinates mode, like positions; the room's answer key at
 Where the bins go matters. In a row leading away from the base, lowering into
 the far bin swung the forearm over the near one and knocked its cube out. The
 bins now stand in a column along the far edge, each in its own direction from
-the base.
+the base. They are low trays (2 cm walls): the front camera, which `locate`
+uses by default, looks across them, and 6 cm walls hid the cubes behind them.
 
 ## 2. The layout: what is on the table
 
@@ -61,6 +62,9 @@ Rules for starts, all found the hard way:
 - Keep objects near the arm's straight-ahead line. A cube sitting square to
   the table at (0.20, 0.10) is about 40 degrees off from the jaws, which
   reach it at an angle, and it slips.
+- Keep objects where the front camera sees them: not behind tall furniture,
+  and not under the arm at home (around x 0.18 to 0.22, y near 0), where the
+  arm itself hides them.
 - Keep objects well behind the bins (toward the base), off the lines from the
   base to each bin.
 
@@ -114,6 +118,9 @@ carries out each task's arrangement by script, with the true positions: pick,
 place, lift 5 cm, home, for each object in turn. It then checks that every
 object is where the task wants it, so nothing already placed was knocked out.
 A new task is tested as soon as it is added.
+`test_the_front_camera_sees_every_object_at_the_start` checks that every
+object is clearly in the front camera's view, by segmentation, before any
+agent has to find it there.
 
 ## Not yet built
 
