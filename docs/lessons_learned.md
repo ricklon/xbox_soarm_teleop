@@ -180,6 +180,14 @@ and take over. Benchmark each layer at its own job.
     words: `pick` and `place` now answer "red cube" when asked by
     description and never carry the name. `observe` still lists names.
 
+    Rerun with those replies (Gemma 4 31B, misleading names, Clef check
+    required): 6 of 6 sorted, 3 blind and 3 seeing, every claim of "done"
+    true. Every run picked all three cubes by description, first try, and
+    checked all three by description; about 2 minutes and under 1 cent each.
+    From 0 of 6 to 6 of 6 without changing the model or the prompt: once
+    perception, action, check *and every reply* speak the request's words,
+    a misleading name has nothing to work on.
+
 ## Running experiments
 
 25. **Budget and limits are part of the setup.** OpenRouter refuses requests
@@ -194,9 +202,9 @@ and take over. Benchmark each layer at its own job.
 
 - The plan-first step (agent states what it sees and intends before moving)
   is designed and its tests written, but not built.
-- Agents believe names without looking (lesson 23). Neutral names, a
-  `describe` tool that answers what an object looks like, and a judge that
-  checks the result are the planned answers.
+- Agents believe names without looking (lesson 23). Working by description
+  (lesson 24) answers it for colour sorting; `observe` still lists names,
+  and requests that need more than colour and shape are untested.
 - The 8 of 9 `pick` rate uses simulated aim errors; real pointer behaviour
   differs (lesson 16).
 - Nothing yet compares with a learned policy or with a person on the pad on
