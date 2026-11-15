@@ -3,9 +3,9 @@
     uv run python scripts/agent_report.py twin_logs/agent_ab.jsonl
 
 One row per model, harness and variant (no_judge, judge, judge+required).
-Judged runs where the judge could not answer (check_errors), and runs the
-model service cut off (agent_error, such as HTTP 402: no credit), are counted
-as invalid and left out of the rates:
+Runs where the judge could not answer (check_errors) or a provider refused the
+agent model or the pointer (HTTP 402, 429, 5xx) are counted as invalid and left
+out of the rates:
 how often the object really ended in the box, how often the agent stopped by
 itself, how often its RESULT claim was true, how many success checks it made
 and how many of those were right, median time, and median and total cost
@@ -16,9 +16,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import sys
 from pathlib import Path
+
+# The same pattern as agent_trial.PROVIDER_ERROR: a provider refused a request.
+PROVIDER_ERROR = re.compile(r"HTTP (402|429|5\d\d)")
+
+
+def _invalid(row: dict) -> bool:
+    """A judge that could not answer, or a provider that refused the agent model
+    or the pointer: the run tests neither the agent nor the judge."""
+    return bool(
+        row.get("check_errors")
+        or row.get("provider_errors")
+        or PROVIDER_ERROR.search(str(row.get("agent_error") or ""))
+    )
 
 
 def _rate(values) -> float | None:
@@ -42,11 +56,8 @@ def summarize(rows: list[dict]) -> list[dict]:
     for (model, harness, variant, task, naming, sight), everything in sorted(
         groups.items(), key=lambda item: tuple(map(str, item[0]))
     ):
-        # A judged run whose judge could not answer tests nothing about the judge,
-        # and a run its model service cut off (no credit, rate limit) tests nothing.
-        group = [
-            row for row in everything if not row.get("check_errors") and not row.get("agent_error")
-        ]
+        # A judged run whose judge could not answer tests nothing about the judge.
+        group = [row for row in everything if not _invalid(row)]
         invalid = len(everything) - len(group)
         if not group:
             table.append(

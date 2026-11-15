@@ -320,3 +320,42 @@ def test_a_sort_task_can_require_the_tray_check():
     prompt = agent_trial.prompt_for(args, 0)
     assert "check_success(description, bin)" in prompt and "RESULT: done" in prompt
     assert "check_success" not in agent_trial.prompt_for(_task_args(task="by_colour"), 0)
+
+
+def test_provider_failures_make_a_run_invalid(tmp_path):
+    """A run whose agent model or pointer was refused by its provider (no credit,
+    rate limit, outage) tests the provider, not the agent."""
+    import json
+
+    lines = [
+        _line("header", 0.0),
+        _line("locate_result", 1.0, ok=False, backend="openrouter", detail="HTTP 402 from x: credits"),
+        _line("locate_result", 2.0, ok=False, reason="not_found", backend="openrouter"),
+        _line("observation", 3.0, scene={"objects": {"pick_cube": {"in_goal": False}}}),
+    ]
+    log = tmp_path / "s.jsonl"
+    log.write_text("\n".join(json.dumps(line) for line in lines))
+    assert agent_trial.grade(log, "pick_cube")["provider_errors"] == 1  # not_found is a real answer
+
+    spec = importlib.util.spec_from_file_location(
+        "agent_report", Path(__file__).parent.parent / "scripts" / "agent_report.py"
+    )
+    report = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(report)
+    rows = [
+        {"model": "m", "variant": "judge", "in_goal": True, "provider_errors": 0},
+        {"model": "m", "variant": "judge", "in_goal": False, "provider_errors": 3},
+        {"model": "m", "variant": "judge", "in_goal": False, "agent_error": "HTTP 402 from x: credits"},
+        {"model": "m", "variant": "judge", "in_goal": False, "agent_error": "HTTP 503 from x"},
+        {"model": "m", "variant": "judge", "in_goal": False, "agent_error": "bad tool call"},
+    ]
+    row = report.summarize(rows)[0]
+    assert row["runs"] == 2 and row["invalid_runs"] == 3 and row["in_box"] == 0.5
+
+
+def test_trials_need_openrouter_credit_before_they_start():
+    def fetch(remaining):
+        return lambda url, headers: {"data": {"total_credits": 10.0, "total_usage": 10.0 - remaining}}
+
+    assert agent_trial.openrouter_credit_ok(1.0, fetch=fetch(2.5)) is True
+    assert agent_trial.openrouter_credit_ok(1.0, fetch=fetch(0.4)) is False
