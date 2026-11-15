@@ -38,6 +38,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from xbox_soarm_teleop.twin.cameras import MAX_SIZE, VIEWS
 from xbox_soarm_teleop.twin.hub import Hub, Room
+from xbox_soarm_teleop.twin.layouts import BINS
 from xbox_soarm_teleop.twin.mcp_server import _client_id, build_mcp_server
 from xbox_soarm_teleop.twin.service import TwinService
 from xbox_soarm_teleop.twin.status import status_text
@@ -186,6 +187,41 @@ STARTER_PROMPTS: list[dict[str, str]] = [
     },
 ]
 
+# On the sorting desk (sort_colors): what to ask an agent there, easiest first.
+SORTING_PROMPTS: list[dict[str, str]] = [
+    {
+        "title": "Look around",
+        "text": "Observe the arm and tell me what is on the desk and which bins there are. "
+        "Do not move anything yet.",
+    },
+    {
+        "title": "Sort by colour",
+        "text": "Sort the cubes by colour into the bins. Use pick and place. When you are "
+        "done, check each cube with check_success, describing it by colour, and tell me "
+        "what it said.",
+    },
+    {
+        "title": "Swap two",
+        "text": "Put the red cube in the blue bin and the blue cube in the red bin. Leave the "
+        "green cube where it is.",
+    },
+    {
+        "title": "Only one",
+        "text": "Put only the red cube away, in the red bin. Nothing else moves.",
+    },
+    {
+        "title": "The odd one out",
+        "text": "Load the sort_colors_decoy scene and put the cubes away by colour. Tell me "
+        "what you did with the cube that has no bin of its colour, and why.",
+    },
+    {
+        "title": "Check, don't trust",
+        "text": "Without moving anything, check where every cube is with check_success, "
+        "describing each by colour, and tell me whether the desk is sorted. Did anything "
+        "you were told disagree with what the check found?",
+    },
+]
+
 
 def _bearer(value: str | None) -> str | None:
     if not value:
@@ -196,6 +232,29 @@ def _bearer(value: str | None) -> str | None:
 
 def _page(name: str) -> str:
     return resources.files("xbox_soarm_teleop.twin").joinpath("web", name).read_text("utf-8")
+
+
+def where_each_object_is(service: TwinService) -> dict[str, str]:
+    """For the student's page: where each object is, in words, from the truth
+    (in the gripper, in a bin or the goal box, on the table, off the table),
+    under the names the student's agent is shown. No positions."""
+    scene = service.observe_truth()["scene"]
+    labels = {box["name"]: box.get("label") or box["name"] for box in scene.get("bins", [])}
+    names = service.shown_names or {}
+    where = {}
+    for name, entry in scene["objects"].items():
+        if entry.get("attached"):
+            words = "in the gripper"
+        elif entry.get("in_bin"):
+            words = f"in the {labels.get(entry['in_bin'], entry['in_bin'])}"
+        elif entry.get("in_goal"):
+            words = "in the goal box"
+        elif entry.get("off_table"):
+            words = "off the table"
+        else:
+            words = "on the table"
+        where[names.get(name, name)] = words
+    return where
 
 
 def room_summary(room: Room) -> dict[str, Any]:
@@ -210,6 +269,7 @@ def room_summary(room: Room) -> dict[str, Any]:
         "ee": observation["ee"]["xyz_m"],
         "gripper": observation["gripper"],
         "objects": observation["scene"]["objects"],
+        "where": where_each_object_is(room.service),
         "events": control["events"],
     }
 
@@ -361,9 +421,15 @@ def build_hub_app(
 
     @server.custom_route("/r/{token}/prompts", methods=["GET"])
     async def prompts(request: Request) -> Response:
-        if room_of(request) is None:
+        room = room_of(request)
+        if room is None:
             return not_found
-        return JSONResponse({"prompts": STARTER_PROMPTS}, headers=PAGE_HEADERS)
+        prompts = (
+            SORTING_PROMPTS
+            if BINS.get(room.service.sim.scene) and len(BINS[room.service.sim.scene]) > 1
+            else STARTER_PROMPTS
+        )
+        return JSONResponse({"prompts": prompts}, headers=PAGE_HEADERS)
 
     @server.custom_route("/r/{token}/scores", methods=["GET"])
     async def scores(request: Request) -> Response:

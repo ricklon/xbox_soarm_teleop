@@ -178,6 +178,8 @@ class Hub:
             (``twin.pointing.make_pointer``); None for no ``locate``.
         judge: Success judge spec for every arm's ``check_success``
             (``twin.judge.make_judge``); None for no checks.
+        naming: The names every arm's agents are shown for objects
+            (``twin.naming``).
     """
 
     def __init__(
@@ -193,6 +195,7 @@ class Hub:
         hide_positions: bool = False,
         pointer: str | None = None,
         judge: str | None = None,
+        naming: str = "as_is",
     ) -> None:
         if seats < 1:
             raise ValueError("seats must be at least 1")
@@ -230,6 +233,7 @@ class Hub:
                 hide_positions=hide_positions,
                 pointer=make_pointer(pointer),
                 judge=make_judge(judge),
+                naming=naming,
             )
             controller.gripper_feedback = lambda service=service: float(service.state.gripper_pos)
             service.stop_release_hint = "press Release stop on the arm's web page"

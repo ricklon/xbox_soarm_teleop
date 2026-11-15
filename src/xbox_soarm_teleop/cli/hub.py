@@ -24,11 +24,54 @@ DEFAULT_NOTEBOOK = (
 )
 
 
+# Whole sessions in one option; anything given explicitly still wins.
+PRESETS: dict[str, dict] = {
+    # The sorting desk, as students meet it: no coordinates, so agents must
+    # look (locate, with Gemma 4 31B: about 0.02 cents a look), and Clef to
+    # check which tray things ended up in (measured: docs/building_scenes.md).
+    "sorting": {
+        "scene": "sort_colors",
+        "no_coordinates": True,
+        "pointer": "openrouter:google/gemma-4-31b-it",
+        "judge": "clef",
+        # Names that say what each cube looks like ("red_cube"): the twin's own
+        # ("pick_cube") misled an agent. Neutral or misleading names are for
+        # exploring that lesson (--names).
+        "names": "truthful",
+    },
+}
+
+
+def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill in the preset's settings wherever the command line left the default."""
+    preset = PRESETS.get(getattr(args, "preset", None) or "", {})
+    defaults = build_parser().parse_args([])
+    for key, value in preset.items():
+        if getattr(args, key) == getattr(defaults, key):
+            setattr(args, key, value)
+    return args
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="soarm-hub", description="Host one simulated SO-ARM101 per workshop student."
     )
     parser.add_argument("--seats", type=int, default=4, help="Number of students (arms)")
+    parser.add_argument(
+        "--preset",
+        choices=sorted(PRESETS),
+        default=None,
+        help="A whole session in one option. sorting: the sorting desk, no coordinates, "
+        "locate with Gemma 4 31B (OPENROUTER_API_KEY), check_success with Clef "
+        "(CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID). Options you give still win",
+    )
+    parser.add_argument(
+        "--names",
+        default="as_is",
+        choices=("as_is", "truthful", "neutral", "misleading"),
+        help="The names agents are shown for objects: the twin's own, what each looks like "
+        "(red_cube), object_1 ..., or another object's colour (twin/naming.py)",
+    )
     parser.add_argument(
         "--scene",
         choices=("pick_place_easy", "pick_place_basic", "sort_colors", "stack"),
@@ -223,7 +266,7 @@ def _open_when_ready(
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = apply_preset(build_parser().parse_args(argv))
     if args.seats < 1:
         print("ERROR: --seats must be at least 1", flush=True)
         return 2
@@ -259,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         hide_positions=args.no_coordinates,
         pointer=args.pointer,
         judge=args.judge,
+        naming=args.names,
     )
     app = build_hub_app(
         hub,
