@@ -365,8 +365,14 @@
     r: ["up", 1], f: ["up", -1], q: ["roll", -1], e: ["roll", 1],
   };
   const buttonFor = (axis, dir) => document.querySelector(`[data-axis="${axis}"][data-dir="${dir}"]`);
+  // Typing in a text box (the agent's request) is typing, not driving: a space
+  // there must not stop the arm, nor a "w" move it.
+  const typing = (e) => {
+    const t = e.target;
+    return !!t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+  };
   addEventListener("keydown", (e) => {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || typing(e)) return;
     const k = e.key.toLowerCase();
     if (k === " ") { e.preventDefault(); if (!e.repeat) presses.push("stop"); return; }
     if (e.repeat) return;

@@ -168,10 +168,12 @@ def build_report(
         request_lines="\n".join(f"> {request}" for request in summary["requests"]),
         object_rows="\n".join(object_rows),
         names=summary["names"],
-        possible="no: the agent should notice it cannot be done"
-        + (f" (asked: {summary['asked']})" if summary["asked"] else "")
-        if not summary["possible"]
-        else "no, it is meant to be possible",
+        possible=(
+            "yes"
+            if summary["possible"]
+            else "no: the agent should notice it cannot be done"
+            + (f" (asked: {summary['asked']})" if summary["asked"] else "")
+        ),
         notes=f"- **Notes:** {summary['notes']}\n" if summary["notes"] else "",
         proof=_proof_text(proof)
         if proof

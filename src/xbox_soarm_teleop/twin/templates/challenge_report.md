@@ -11,7 +11,7 @@
 {object_rows}
 
 - **Names the agent was told:** {names}
-- **Possible on purpose?** {possible}
+- **Meant to be possible?** {possible}
 {notes}
 ## Can the arm do it? (the proof)
 
