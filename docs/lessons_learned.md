@@ -151,14 +151,24 @@ and take over. Benchmark each layer at its own job.
     the result: a judge that looks (Clef "which tray?") would have caught all
     six false claims.
 
+24. **A check only catches what it is asked independently.** With misleading
+    names and Clef's tray check required, agents still sorted 0 of 6 and
+    claimed "done" in 5. Clef answered all 18 checks correctly: each agent
+    asked "is the cube called `red_cube` in the red tray?", and the cube
+    with that name (really green) was. The check confirmed the action
+    against the agent's own belief, and the belief was the mistake. To
+    catch a misunderstanding, the check must be phrased in the request's
+    terms ("is the *red* cube in the red tray?", found by appearance), or
+    judge the request itself, never the agent's labels.
+
 ## Running experiments
 
-24. **Budget and limits are part of the setup.** OpenRouter refuses requests
+25. **Budget and limits are part of the setup.** OpenRouter refuses requests
     (HTTP 402, "in-flight budget") when the balance runs low, even with some
     credit left; run trials one at a time and check the balance first. The
     Gemini API's free tier allows 20 calls a day; Cloudflare's free tier has a
     daily allocation.
-25. **Costs per call:** Gemini 3.5 Flash $0.004, Gemma 4 31B $0.0002, Clef
+26. **Costs per call:** Gemini 3.5 Flash $0.004, Gemma 4 31B $0.0002, Clef
     $0.0002. A whole sort run with skills: about 1 to 2 cents.
 
 ## What we have not solved yet
