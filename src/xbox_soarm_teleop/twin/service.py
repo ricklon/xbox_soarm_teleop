@@ -465,10 +465,12 @@ class TwinService:
         self,
         name: str,
         *,
+        bin_name: str | None = None,
         client_id: str = "agent",
         timeout_s: float = LOCATE_TIMEOUT_S,
     ) -> dict[str, Any]:
-        """Is ``name`` in the goal box? Ask the judge about a front picture.
+        """Is ``name`` in the goal box (or, in a sorting scene, in ``bin_name``)?
+        Ask the judge about a front picture.
 
         Returns the judge's probabilities and a verdict: ``done`` at
         ``DONE_AT`` or more, ``retry`` at ``RETRY_AT`` or less, ``look_again``
@@ -476,16 +478,8 @@ class TwinService:
         lines, :meth:`success_checks`) and never returned. Blocks while the
         judge answers; call it from a client thread.
         """
-        if GOALS.get(self.sim.scene) is None:
-            # Clef's in-the-box question has been measured for the one goal box,
-            # not for "which bin": asking it about bins would give unmeasured answers.
-            return {
-                "ok": False,
-                "reason": "not_supported",
-                "detail": "this scene has bins, not one goal box, and check_success only "
-                "judges the goal box. Look with camera, or locate(name, rest_z_m=the bin "
-                "floor z) and compare with scene.bins",
-            }
+        if GOALS.get(self.sim.scene) is None and BINS.get(self.sim.scene):
+            return self._check_trays(name, bin_name, client_id, timeout_s)
         judge = self.judge
         if judge is None:
             return {
@@ -549,7 +543,87 @@ class TwinService:
         )
         return result
 
-    def _check_setup(self, name: str) -> dict[str, Any]:
+    def _check_trays(
+        self, name: str, bin_name: str | None, client_id: str, timeout_s: float
+    ) -> dict[str, Any]:
+        """check_success in a sorting scene: which tray is ``name`` in?
+
+        Clef answers from the front picture with the cell's bins as options
+        (measured on the sorting desk: 95% right, and every answer of 0.9 or
+        more right; overhead was far worse, scripts/tray_judge_benchmark.py).
+        """
+        from xbox_soarm_teleop.twin.judge import tray_truth
+
+        judge = self.judge
+        if judge is None:
+            return {
+                "ok": False,
+                "reason": "no_judge",
+                "detail": "this twin has no success judge (start it with --judge)",
+            }
+        boxes = [(box.name, box.label or box.name) for box in BINS[self.sim.scene]]
+        if bin_name is not None and bin_name not in dict(boxes):
+            known = ", ".join(name_ for name_, _ in boxes)
+            return {
+                "ok": False,
+                "reason": "invalid_request",
+                "detail": f"Unknown bin '{bin_name}'. Here: {known}",
+            }
+        try:
+            self._log("request", client_id=client_id, type="check_success", name=name)
+            setup = self.call(lambda: self._check_setup(name, tray_truth)).result(timeout=timeout_s)
+            picture = self.render(
+                "front", width=CHECK_SIZE[0], height=CHECK_SIZE[1], fmt="png", client_id=client_id
+            ).result(timeout=timeout_s)
+        except ActionRejected as exc:
+            return {"ok": False, "reason": exc.reason.value, "detail": exc.detail}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"ok": False, "reason": "error", "detail": str(exc)}
+        started = time.monotonic()
+        try:
+            answer = judge.judge_trays(
+                [picture], setup["description"], boxes, views=["front"], others=setup["others"]
+            )
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            detail = mask_secrets(str(exc))
+            self._log("success_check", client_id=client_id, ok=False, name=name, detail=detail)
+            return {"ok": False, "reason": "judge_error", "detail": detail}
+        probabilities = {k: round(float(v), 4) for k, v in answer["where"].items()}
+        where = max(probabilities, key=probabilities.get)
+        result = {
+            "ok": True,
+            "name": name,
+            "description": setup["description"],
+            "where": where,
+            "p_where": probabilities,
+            "judge": getattr(judge, "model", "judge"),
+            "seconds": round(time.monotonic() - started, 3),
+            "cost_usd": answer.get("cost_usd"),
+        }
+        truth = setup["truth"]
+        if bin_name is not None:
+            p_in_bin = probabilities.get(bin_name, 0.0)
+            verdict = verdict_for(p_in_bin)
+            result.update(bin=bin_name, p_in_bin=p_in_bin, verdict=verdict)
+            correct = None if verdict == "look_again" else (verdict == "done") == (truth == bin_name)
+        else:
+            correct = where == truth
+        record = {
+            **result,
+            "client_id": client_id,
+            "sim_time_s": round(self.now_s, 3),
+            "truth": {"where": truth, "in_goal": truth == bin_name if bin_name else None},
+            "correct": correct,
+        }
+        self._success_checks.append(record)
+        self._log(
+            "success_check",
+            client_id=client_id,
+            **{k: v for k, v in record.items() if k != "client_id"},
+        )
+        return result
+
+    def _check_setup(self, name: str, truth_of=None) -> dict[str, Any]:
         """On the loop thread: check the name, word the question, read the truth."""
         from xbox_soarm_teleop.twin.judge import truth_labels
 
@@ -562,7 +636,7 @@ class TwinService:
         return {
             "description": object_description(name, self.layout),
             "others": [object_description(other, self.layout) for other in positions if other != name],
-            "truth": truth_labels(self, name),
+            "truth": (truth_of or truth_labels)(self, name),
         }
 
     def locate(

@@ -104,7 +104,9 @@ gives each bin's name, label, floor center and inside size, and each object's
 `in_bin` says which bin it is in (null: none). Which object goes in which bin
 is up to the request you were given; if it leaves something open, say what
 you assumed. Release into a bin as into the goal box, then lift straight up
-5 cm before any other move. check_success does not judge bins.
+5 cm before any other move. After the last move, check each object with
+check_success(name, bin): a judge looks at a front picture and says whether it
+is in that bin.
 
 Skills: pick(name) picks an object up by itself (it looks, centres the
 jaws, grasps, checks it holds it and retries after a miss) and place(bin)

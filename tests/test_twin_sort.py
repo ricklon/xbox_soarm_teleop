@@ -135,10 +135,9 @@ def test_no_coordinates_hides_the_bins_contents_but_not_the_bins():
         service.close()
 
 
-def test_check_success_does_not_pretend_to_judge_bins(twin):
-    result = twin.check_success("pick_cube")
-    assert result["ok"] is False and result["reason"] == "not_supported"
-    assert "bin" in result["detail"]
+def test_check_success_needs_a_judge_in_the_sort_scene_too(twin):
+    result = twin.check_success("pick_cube", bin_name="red_bin")
+    assert result["ok"] is False and result["reason"] == "no_judge"
 
 
 def test_layouts_switch_within_the_sort_scene(twin):

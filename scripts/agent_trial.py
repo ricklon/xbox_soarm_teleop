@@ -59,6 +59,11 @@ Work step by step with the tools; check the result of every call. When you
 are finished, end your reply with exactly one line, RESULT: done or
 RESULT: not_done, saying whether you did what was asked.
 """
+# --require-check with --task: confirm every object's tray with the judge.
+SORT_REQUIRE_CHECK = """Before you finish, after the last move, confirm where each object ended
+up with check_success(name, bin). If it says retry, pick that object up and
+place it again; if it says look_again, ask again.
+"""
 # --require-check: the task also asks for the judge's confirmation.
 REQUIRE_CHECK = """Before you finish, after homing, confirm the placement with check_success.
 If it says retry, pick the {description} up again; if it says look_again, ask
@@ -266,7 +271,10 @@ def prompt_for(args, run: int) -> str:
         from xbox_soarm_teleop.twin.tasks import TASKS
 
         requests = TASKS[task_name].requests
-        return SORT_PROMPT.format(request=requests[run % len(requests)])
+        prompt = SORT_PROMPT.format(request=requests[run % len(requests)])
+        if getattr(args, "require_check", False):
+            prompt += "\n" + SORT_REQUIRE_CHECK
+        return prompt
     name, description = DESCRIPTIONS[args.scene]
     prompt = PROMPT.format(description=description, name=name)
     if args.require_check:
@@ -545,8 +553,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.task not in TASKS:
             parser.error(f"--task must be one of {', '.join(sorted(TASKS))}")
-        if args.random_start or args.judge or args.require_check:
-            parser.error("--task runs without --random-start, --judge or --require-check")
+        if args.random_start:
+            parser.error("--task runs without --random-start")
         args.scene = TASKS[args.task].scene
     if args.judge and not judge_answers(args.judge):
         return 2

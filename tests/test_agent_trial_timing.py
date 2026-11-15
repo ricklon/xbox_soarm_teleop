@@ -313,3 +313,10 @@ def test_trials_record_and_report_what_the_agent_was_given(tmp_path):
         ("misleading", "sees"),
         ("misleading", "blind"),
     }
+
+
+def test_a_sort_task_can_require_the_tray_check():
+    args = _task_args(task="by_colour", require_check=True)
+    prompt = agent_trial.prompt_for(args, 0)
+    assert "check_success(name, bin)" in prompt and "RESULT: done" in prompt
+    assert "check_success" not in agent_trial.prompt_for(_task_args(task="by_colour"), 0)

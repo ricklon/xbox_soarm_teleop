@@ -180,6 +180,29 @@ their answers give nothing away. They run through the twin's own actions, one
 at a time, so a stop, a person taking over or the workspace limits end them as
 they end any motion. The agent's job becomes deciding what goes where.
 
+## Checking: which tray is it in?
+
+`check_success(name, bin)` asks the Clef judge about a front picture, with the
+cell's own trays as the options (plus on the table, in the gripper, on the
+floor), and answers P(in that bin), a verdict (done at 0.9 or more, retry at
+0.1 or less, look again between) and where the object most likely is. The
+truth is logged beside every answer and never returned.
+
+Measured first (`scripts/tray_judge_benchmark.py`: each cube in each tray,
+the right one and the wrong ones, on the desk and held, with the other cubes
+as look-alikes; 42 situations):
+
+| judge, picture | right | confident (0.9+) answers right |
+|---|---|---|
+| Clef, front | 95% | 34 of 34 |
+| Clef, overhead | 57% | 4 of 5 |
+| Clef-flash, front | 95% | 21 of 21 |
+| Clef-flash, overhead | 38% | 4 of 13 |
+
+From overhead, at 78 cm, the cubes are small and both judges are often
+confidently wrong; from the front, every confident answer was right. So the
+check uses Clef and the front camera.
+
 ## Not yet built
 
 - The gripper's bounding box dips about 6 mm below the desk at the lowest
@@ -187,9 +210,6 @@ they end any motion. The agent's job becomes deciding what goes where.
   kinematically, so nothing stops it; a real arm would scrape. Check against
   the real gripper before trusting low grasps.
 
-- `check_success` judges only the goal box, and refuses in sorting scenes.
-  Clef can answer "which bin is it in?", but its accuracy has to be measured
-  first, as it was for the box.
 - An `ask_user` tool, so an agent can ask about an ambiguous request instead
   of guessing.
 - Neutral object names. Names like `blue_cube` give the colour away; a real

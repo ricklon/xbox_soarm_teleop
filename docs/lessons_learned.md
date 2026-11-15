@@ -163,7 +163,6 @@ and take over. Benchmark each layer at its own job.
 
 ## What we have not solved yet
 
-- `check_success` judges only the goal box, not bins.
 - The plan-first step (agent states what it sees and intends before moving)
   is designed and its tests written, but not built.
 - Agents believe names without looking (lesson 23). Neutral names, a

@@ -125,6 +125,55 @@ def state_text(description: str, views: list[str], others: list[str] | None = No
     return "\n".join(lines)
 
 
+# ------------------------------------------------------- trays (sorting cells)
+TRAY_ELSEWHERE = ("on_table", "in_gripper", "on_floor")
+
+
+def tray_options(bins: list[tuple[str, str]]) -> tuple[str, ...]:
+    """The answers to "where is it?" in a cell with these bins: each bin's name,
+    then on the table, in the gripper, on the floor."""
+    return (*(name for name, _ in bins), *TRAY_ELSEWHERE)
+
+
+def tray_questions(description: str, bins: list[tuple[str, str]]) -> dict[str, dict]:
+    """One multiple-choice question: which bin is the object in, if any."""
+    d = description
+    criteria = {name: f"inside the {label}, resting on its floor" for name, label in bins}
+    criteria.update(
+        {
+            "on_table": f"on the table, not inside any {'bin' if bins else 'box'}",
+            "in_gripper": "held in the robot's gripper",
+            "on_floor": "fallen off the table",
+        }
+    )
+    return {
+        "where": {
+            "type": "choice",
+            "instructions": f"Where is the {d}? Look at its colour and shape, and at which "
+            "coloured bin, if any, it is inside.",
+            "criteria": criteria,
+        }
+    }
+
+
+def tray_state_text(
+    description: str, views: list[str], bins: list[tuple[str, str]], others: list[str] | None = None
+) -> str:
+    """What Clef is told: the desk, its labelled bins, the objects, the views."""
+    things = [f"a {description}", *(f"a {other}" for other in others or [])]
+    listed = things[0] if len(things) == 1 else ", ".join(things[:-1]) + " and " + things[-1]
+    labels = [label for _, label in bins]
+    trays = ", ".join(labels[:-1]) + " and " + labels[-1] if len(labels) > 1 else labels[0]
+    lines = [
+        f"Camera pictures of a robot arm's sorting desk. On it are {listed}, and low open "
+        f"bins: a {trays}. The robot has a two-jaw gripper.",
+        "The pictures, in order:",
+    ]
+    for index, view in enumerate(views, start=1):
+        lines.append(f"{index}. {view}: {VIEW_TEXT.get(view, view)}")
+    return "\n".join(lines)
+
+
 @dataclass
 class ClefJudge:
     """Asks Clef the success questions about a set of pictures."""
@@ -150,6 +199,62 @@ class ClefJudge:
         if not 1 <= len(images) <= MAX_IMAGES:
             raise ValueError(f"give 1 to {MAX_IMAGES} images")
         views = list(views or [f"view {i + 1}" for i in range(len(images))])
+        reply, secrets = self._ask(
+            images, state_text(description, views, others), questions_for(description)
+        )
+        try:
+            answers = reply["result"]["answers"]
+            verdict: dict[str, Any] = {q: float(answers[q]["noul"]) for q in NOUL_IDS}
+            probabilities = answers["where"]["probabilities"]
+            verdict["where"] = {
+                option: float(probabilities.get(option, 0.0)) for option in WHERE_OPTIONS
+            }
+        except (KeyError, TypeError, ValueError):
+            raise JudgeError(
+                mask_secrets(f"unexpected Clef reply: {str(reply)[:300]}", secrets)
+            ) from None
+        return self._with_cost(verdict, reply)
+
+    def judge_trays(
+        self,
+        images: list[bytes],
+        description: str,
+        bins: list[tuple[str, str]],
+        views: list[str] | None = None,
+        others: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """A probability for each place the object could be: each of the cell's
+        bins (``(name, label)`` pairs), on the table, in the gripper, on the floor."""
+        if not 1 <= len(images) <= MAX_IMAGES:
+            raise ValueError(f"give 1 to {MAX_IMAGES} images")
+        views = list(views or [f"view {i + 1}" for i in range(len(images))])
+        reply, secrets = self._ask(
+            images,
+            tray_state_text(description, views, bins, others),
+            tray_questions(description, bins),
+        )
+        try:
+            probabilities = reply["result"]["answers"]["where"]["probabilities"]
+            verdict = {
+                "where": {
+                    option: float(probabilities.get(option, 0.0)) for option in tray_options(bins)
+                }
+            }
+        except (KeyError, TypeError, ValueError):
+            raise JudgeError(
+                mask_secrets(f"unexpected Clef reply: {str(reply)[:300]}", secrets)
+            ) from None
+        return self._with_cost(verdict, reply)
+
+    def _with_cost(self, verdict: dict[str, Any], reply: dict) -> dict[str, Any]:
+        tokens = (reply["result"].get("usage") or {}).get("input_tokens")
+        verdict["input_tokens"] = tokens
+        price = PRICE_PER_M_INPUT.get(self.model)
+        verdict["cost_usd"] = tokens * price / 1e6 if tokens is not None and price is not None else None
+        return verdict
+
+    def _ask(self, images: list[bytes], state: str, questions: dict) -> tuple[dict, tuple]:
+        """Send pictures, state and questions to Clef; its reply, and the secrets to mask."""
         token = load_secret("CLOUDFLARE_API_TOKEN")
         account = load_secret("CLOUDFLARE_ACCOUNT_ID")
         if not token or not account:
@@ -161,11 +266,11 @@ class ClefJudge:
             raise JudgeError(f"{' and '.join(missing)} not set (environment or a .env file)")
         body = {
             "model": self.model,
-            "state": state_text(description, views, others),
+            "state": state,
             "images": [
                 "data:image/png;base64," + base64.b64encode(image).decode("ascii") for image in images
             ],
-            "questions": questions_for(description),
+            "questions": questions,
         }
         secrets = (token, account)
         try:
@@ -182,22 +287,7 @@ class ClefJudge:
                 or str(reply)[:300]
             )
             raise JudgeError(mask_secrets(f"Clef refused: {errors}", secrets))
-        try:
-            answers = reply["result"]["answers"]
-            verdict: dict[str, Any] = {q: float(answers[q]["noul"]) for q in NOUL_IDS}
-            probabilities = answers["where"]["probabilities"]
-            verdict["where"] = {
-                option: float(probabilities.get(option, 0.0)) for option in WHERE_OPTIONS
-            }
-        except (KeyError, TypeError, ValueError):
-            raise JudgeError(
-                mask_secrets(f"unexpected Clef reply: {str(reply)[:300]}", secrets)
-            ) from None
-        tokens = (reply["result"].get("usage") or {}).get("input_tokens")
-        verdict["input_tokens"] = tokens
-        price = PRICE_PER_M_INPUT.get(self.model)
-        verdict["cost_usd"] = tokens * price / 1e6 if tokens is not None and price is not None else None
-        return verdict
+        return reply, secrets
 
 
 # ------------------------------------------------------------------ truth
@@ -232,6 +322,21 @@ def truth_labels(twin, name: str) -> dict[str, Any]:
     else:
         where = "on_table"
     return {"in_goal": in_goal, "held": held, "tipped": tipped, "where": where}
+
+
+def tray_truth(twin, name: str) -> str:
+    """Where the object really is, as a tray answer: a bin's name, or
+    on_table, in_gripper, on_floor."""
+    if twin.grasp.attached == name:
+        return "in_gripper"
+    entry = twin.observe_truth()["scene"]["objects"][name]
+    if entry.get("in_bin"):
+        return entry["in_bin"]
+    position = twin.grasp.position(name)
+    table = twin.table_top_z
+    if table is not None and float(position[2]) < table - OFF_TABLE_MARGIN_M:
+        return "on_floor"
+    return "on_table"
 
 
 # ------------------------------------------------------------------ metrics
@@ -297,5 +402,37 @@ def where_metrics(probabilities: list[dict[str, float]], truth: list[str]) -> di
         "accuracy": right / n,
         "p_true_mean": p_true / n,
         "brier": brier / n,
+        "confusion": confusion,
+    }
+
+
+CONFIDENT = 0.9  # an answer this sure is one an agent could act on
+
+
+def tray_metrics(
+    answers: list[dict[str, float]], truth: list[str], options: tuple[str, ...]
+) -> dict[str, Any]:
+    """Like :func:`where_metrics` for a cell's own options, plus how often the
+    confident answers (top option at ``CONFIDENT`` or more) were right."""
+    n = len(truth)
+    if n == 0:
+        return {"n": 0}
+    confusion = {actual: {chosen: 0 for chosen in options} for actual in options}
+    right, p_true, brier, sure, sure_right = 0, 0.0, 0.0, 0, 0
+    for probs, actual in zip(answers, truth):
+        chosen = max(options, key=lambda option: probs.get(option, 0.0))
+        right += chosen == actual
+        p_true += probs.get(actual, 0.0)
+        brier += sum((probs.get(o, 0.0) - (o == actual)) ** 2 for o in options)
+        confusion.setdefault(actual, {c: 0 for c in options})[chosen] += 1
+        if probs.get(chosen, 0.0) >= CONFIDENT:
+            sure += 1
+            sure_right += chosen == actual
+    return {
+        "n": n,
+        "accuracy": right / n,
+        "p_true_mean": p_true / n,
+        "brier": brier / n,
+        "confident": {"n": sure, "right": sure_right},
         "confusion": confusion,
     }
