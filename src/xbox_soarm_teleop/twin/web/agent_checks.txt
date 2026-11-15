@@ -1,0 +1,35 @@
+You are connected to a simulated robot arm over MCP (server "soarm-arm").
+Run these checks in order. After each, report PASS or FAIL with the tool output that shows it.
+Do not skip a check because an earlier one failed.
+
+"Center the jaws over X" means: observe, then move_by(dx = X.x - jaw_center_xyz_m.x,
+dy = X.y - jaw_center_xyz_m.y, dz = 0); do it twice.
+"Grasp X" means: move_to 6 cm above X; set_wrist_roll -1.5; observe X's grip_width_m (W);
+set_gripper opening_m = W + 0.05; center the jaws over X; move_by dz = max(X.z, 0.14) - jaw_center z;
+set_gripper opening_m = W.
+
+1. list_scenes: expect pick_place_easy (easy, bean_bag) and pick_place_basic (hard, pick_cube), one current.
+2. load_scene "pick_place_easy", then observe: only bean_bag with size_m and grip_width_m; top-level
+   gripper_opening_m and jaw_center_xyz_m (different from ee.xyz_m); scene.goal.
+3. Grasp the bean bag: expect "holding": "bean_bag", and the bag moved under 3 mm before the close.
+4. Lift 10 cm, move_to over scene.goal's center at z 0.22, center the jaws over the goal,
+   set_gripper position 0, wait a second, observe: in_goal true.
+5. load_scene "pick_place_basic", observe: only pick_cube, size_m [0.04, 0.04, 0.04], arm home.
+6. The old way: move_to 6 cm above the cube, set_wrist_roll -1.5, move_to 2.5 cm above its
+   center, set_gripper opening_m 0.04. Expect holding null and an event "missed ..." that gives
+   a set_gripper opening and move_by steps.
+7. Do exactly what the "missed" event says, each step in order (the set_gripper, then each
+   move_by separately), then set_gripper opening_m 0.04: expect "holding": "pick_cube".
+8. Lift 10 cm, move_to (0.333, -0.008, 0.30), then set_wrist_roll 0. Observe: pick_cube's
+   xyz_m stays within 1 cm of jaw_center_xyz_m after each step (it rides between the jaws).
+9. set_gripper position 1.0: expect holding null and a "squeezed out" event.
+10. reset_scene. At wrist roll 0, move_to 2.5 cm above the cube and set_gripper opening_m 0.04:
+    expect a "slipped ... set_wrist_roll(angle_rad=X)" event.
+11. Grasp the cube, lift 8 cm, carry it to scene.goal (center the jaws over it), open.
+    After a second, observe: pick_cube in_goal true.
+12. Take the cube out of the box and put it on the table at (0.34, -0.03), using only what
+    the tools and events tell you. Report each attempt.
+13. load_scene "moon_base": expect ok false, reason invalid_request, both real scene names listed.
+14. set_gripper with no arguments: expect ok false, reason invalid_request.
+
+Finish with a table of the 14 checks and anything that surprised you.

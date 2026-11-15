@@ -86,6 +86,12 @@
     display: block; padding: 8px 96px 8px 10px; white-space: pre-wrap; word-break: break-all;
     border: 1px solid var(--line); margin: 4px 0 10px; position: relative; cursor: copy;
   }
+  .scenepick { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .scenepick select { font: inherit; padding: 4px 6px; flex: 1; min-width: 0; }
+  .prompts { padding-left: 1.4em; margin: 6px 0 0; }
+  .prompts li { margin-bottom: 10px; }
+  .prompts .copy { display: block; white-space: normal; word-break: normal; overflow-wrap: break-word;
+    font-family: inherit; font-size: 14px; line-height: 1.4; padding: 22px 10px 8px; }
   .copy::after { content: "click to copy"; position: absolute; right: 8px; top: 6px; color: var(--muted); font-size: 11px; }
   .copy.copied::after { content: "copied"; color: var(--accent); }
   #events { list-style: none; margin: 0; padding: 0; color: var(--muted); max-height: 9.5em; overflow: auto; }
@@ -118,7 +124,7 @@
       <div class="readout">
         <span>Tool <b id="ee">-</b> m</span>
         <span>Gripper <b id="grip">-</b></span>
-        <span>Cube <b id="cube">-</b></span>
+        <span>Object <b id="cube">-</b></span>
       </div>
     </section>
     <section class="panel">
@@ -165,6 +171,10 @@
         <button data-press="home">Home</button>
         <button data-press="reset">Reset scene</button>
       </div>
+      <label class="scenepick">Scene
+        <select id="scenePick" aria-label="Scene" disabled><option>loading...</option></select>
+      </label>
+      <p class="sub" id="sceneNote" role="status"></p>
       <div class="row" style="margin-top: 12px">
         <button id="stop" data-press="stop">STOP<kbd>Space</kbd></button>
       </div>
@@ -191,6 +201,12 @@
         on this computer; for students, start the hub with <code>--public-url</code>.</p>
       <p class="sub">An agent in this browser</p>
       <p id="webmcp">Checking this browser...</p>
+    </section>
+
+    <section class="panel">
+      <h2>Try asking your agent</h2>
+      <p class="sub">Click one to copy it, then paste it into your agent. They get harder as you go.</p>
+      <ol id="prompts" class="prompts"></ol>
     </section>
   </div>
 </main>
@@ -264,6 +280,7 @@
     setStatus(kind, s.status[0], s.status[1]);
     $("title").textContent = s.name;
     $("scene").textContent = s.scene;
+    showScene(s.scene);
     $("ee").textContent = fmt(s.ee);
     reportedGrip = s.gripper;
     $("grip").textContent = s.gripper < 0.1 ? "open" : s.gripper > 0.9 ? "closed" : s.gripper.toFixed(2);
@@ -375,6 +392,70 @@
     try { await navigator.clipboard.writeText(copies.get(el) || el.textContent); } catch (err) { return; }
     el.classList.add("copied"); setTimeout(() => el.classList.remove("copied"), 1500);
   }));
+
+  // --- scenes ------------------------------------------------------------
+  // The page calls the arm's own list_scenes and load_scene tools, as an agent would.
+  async function pageTool(name, args) {
+    const reply = await callTool(name, args);  // the WebMCP section's call, below
+    return JSON.parse(reply.content[0].text);
+  }
+  const pick = $("scenePick");
+  let sceneShown = null;
+  async function loadSceneList() {
+    const listed = await pageTool("list_scenes").catch(() => null);
+    if (!listed || !listed.scenes) { $("sceneNote").textContent = "Could not list the scenes."; return; }
+    pick.replaceChildren(...listed.scenes.map((sc) => {
+      const o = document.createElement("option");
+      o.value = sc.name;
+      // "Easy: bean bag" reads better than the scene's name, which the tooltip keeps.
+      const things = (sc.objects || []).map((n) => n.replace(/^pick_/, "").replace(/_/g, " ")).join(", ");
+      const level = sc.difficulty ? sc.difficulty[0].toUpperCase() + sc.difficulty.slice(1) : "";
+      o.textContent = level && things ? `${level}: ${things}` : sc.name;
+      o.title = `${sc.name}. ${sc.description || ""}`;
+      return o;
+    }));
+    const current = listed.scenes.find((sc) => sc.current);
+    if (current) pick.value = current.name;
+    pick.disabled = listed.scenes.length < 2;
+  }
+  let loadedHere = null;
+  pick.addEventListener("change", async () => {
+    const name = pick.value;
+    loadedHere = name;
+    pick.disabled = true;
+    $("sceneNote").textContent = `Loading ${name}...`;
+    const result = await pageTool("load_scene", { name }).catch((err) => ({ ok: false, detail: String(err) }));
+    $("sceneNote").textContent = result.ok
+      ? `Loaded ${name}: the arm went home and the object changed.`
+      : `Not loaded: ${result.detail || result.reason || "refused"}`;
+    if (!result.ok && sceneShown) pick.value = sceneShown;
+    pick.disabled = false;
+  });
+  const showScene = (name) => {
+    // An agent can switch scenes too: follow it, unless the student is choosing.
+    if (name !== sceneShown && document.activeElement !== pick) {
+      if ([...pick.options].some((o) => o.value === name)) pick.value = name;
+      if (sceneShown !== null && name !== loadedHere) $("sceneNote").textContent = `Now ${name}: switched by an agent.`;
+      sceneShown = name;
+      loadedHere = null;
+    }
+  };
+  loadSceneList();
+
+  // --- starter prompts -----------------------------------------------------
+  fetch(`${base}/prompts`, { cache: "no-store" }).then((r) => r.json()).then(({ prompts }) => {
+    $("prompts").replaceChildren(...prompts.map((p) => {
+      const li = document.createElement("li");
+      const b = document.createElement("b"); b.textContent = p.title;
+      const code = document.createElement("code"); code.className = "copy"; code.textContent = p.text;
+      code.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(p.text); } catch (err) { return; }
+        code.classList.add("copied"); setTimeout(() => code.classList.remove("copied"), 1500);
+      });
+      li.append(b, code);
+      return li;
+    }));
+  }).catch(() => { $("prompts").textContent = "Could not load the prompts."; });
 
   // --- WebMCP: the same tools, for an agent running in this browser ---------
   // The browser API is experimental and was renamed from navigator.modelContext

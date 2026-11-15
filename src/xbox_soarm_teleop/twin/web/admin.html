@@ -42,6 +42,9 @@
   .room .last { color: var(--muted); font-size: 13px; min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .room .links { display: flex; gap: 10px; font-size: 13px; margin-top: 6px; }
   a { color: var(--accent); }
+  dialog#checks { max-width: min(900px, 92vw); background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
+  dialog#checks pre { white-space: pre-wrap; max-height: 60vh; overflow: auto; font-size: 12px;
+    border: 1px solid var(--line); padding: 8px; }
   .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
 </style>
 </head>
@@ -52,6 +55,7 @@
   <span id="where"></span>
   <button id="copyInstructor" title="Puts the link to this page, key included, on your clipboard without showing it">Copy instructor link</button>
   <button id="copyAll">Copy all student links</button>
+  <button id="showChecks" title="A script to paste into an AI agent, to check it uses the arm as intended">Agent checks</button>
   <button id="releaseAll">Release all stops</button>
   <button id="stopAll" class="stop">STOP ALL</button>
 </header>
@@ -64,6 +68,14 @@
   <span id="enterError" role="alert"></span>
 </form>
 <div id="rooms"></div>
+<dialog id="checks">
+  <h2>Agent checks</h2>
+  <p>Paste this into an AI agent connected to a spare arm. It runs 14 checks and reports a table.
+    Use it to try a new model, or after changing the twin. <code>docs/agent_checks.md</code> says
+    what each check is for and what to record when comparing models.</p>
+  <pre id="checksText"></pre>
+  <button id="copyChecks">Copy</button> <button id="closeChecks">Close</button>
+</dialog>
 <script>
 (() => {
   // The link carries the key. Keep it for this tab and take it out of the
@@ -172,6 +184,22 @@
   }
 
   const post = (path) => fetch(base + path, { method: "POST" }).then(refresh);
+
+  // The checks open here rather than at their own address, which would carry the key.
+  let checksText = "";
+  document.getElementById("showChecks").addEventListener("click", async () => {
+    if (!checksText) {
+      try { checksText = (await (await fetch(base + "/checks", { cache: "no-store" })).json()).checks; }
+      catch (err) { checksText = "Could not load the checks."; }
+    }
+    document.getElementById("checksText").textContent = checksText;
+    document.getElementById("checks").showModal();
+  });
+  document.getElementById("copyChecks").addEventListener("click", async (e) => {
+    try { await navigator.clipboard.writeText(checksText); e.target.textContent = "Copied"; } catch (err) { /* */ }
+    setTimeout(() => { e.target.textContent = "Copy"; }, 1500);
+  });
+  document.getElementById("closeChecks").addEventListener("click", () => document.getElementById("checks").close());
   document.getElementById("stopAll").addEventListener("click", () => post("/stop_all"));
   document.getElementById("releaseAll").addEventListener("click", () => post("/release_all"));
   document.getElementById("copyInstructor").addEventListener("click", (event) => {

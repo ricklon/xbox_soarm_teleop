@@ -63,6 +63,8 @@ class TwinParts:
     runtime: Any
     model: Any
     workspace_bounds: dict
+    layout: Any = None
+    """The layout twins start in (``twin.layouts.Layout``), if the scene has layouts."""
 
 
 def build_parts(
@@ -72,9 +74,17 @@ def build_parts(
     controller_backend: str = "auto",
     deadzone: float = 0.15,
 ) -> TwinParts:
-    """Build the shareable pieces of a twin (see :class:`TwinParts`)."""
+    """Build the shareable pieces of a twin (see :class:`TwinParts`).
+
+    ``scene`` may name a layout (``pick_place_easy``): the parts are then those
+    of the scene it arranges, and twins built from them start in that layout.
+    """
     from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
     from xbox_soarm_teleop.runtime import build_control_runtime
+    from xbox_soarm_teleop.twin.layouts import LAYOUTS, model_scene
+
+    layout = LAYOUTS.get(scene)
+    scene = model_scene(scene)
 
     runtime = build_control_runtime(
         controller_type="xbox",
@@ -96,6 +106,7 @@ def build_parts(
         runtime=runtime,
         model=model,
         workspace_bounds=scene_workspace(scene),
+        layout=layout,
     )
 
 
@@ -120,7 +131,7 @@ def build_twin(
     ``service.controller.connect()`` from the loop's process.
 
     Args:
-        scene: Scene name.
+        scene: Scene name, or the name of one of its layouts (``twin.layouts``).
         world: Lighting/floor preset.
         controller_backend: Xbox backend (``auto``, ``sdl``, ``inputs``, ``subprocess``).
         deadzone: Controller deadzone.
@@ -176,4 +187,5 @@ def build_twin(
         controller=controller,
         log=log,
         cameras=cameras,
+        layout=parts.layout,
     )

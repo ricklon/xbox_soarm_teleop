@@ -134,10 +134,24 @@ PICK_PLACE_TABLE_CENTER = np.array([0.31, 0.04, PICK_PLACE_TABLE_HEIGHT / 2.0], 
 PICK_PLACE_TABLE_HALF_EXTENTS = np.array([0.16, 0.14, PICK_PLACE_TABLE_HEIGHT / 2.0], dtype=float)
 PICK_PLACE_CUBE_HALF_EXTENT = 0.02
 PICK_PLACE_CUBE_MASS = 0.04
-PICK_PLACE_CUBE_START = np.array([0.34, -0.03, PICK_PLACE_TABLE_HEIGHT + PICK_PLACE_CUBE_HALF_EXTENT], dtype=float)
+PICK_PLACE_CUBE_START = np.array(
+    [0.34, -0.03, PICK_PLACE_TABLE_HEIGHT + PICK_PLACE_CUBE_HALF_EXTENT], dtype=float
+)
 PICK_PLACE_GOAL_CENTER = np.array([0.29, 0.13, PICK_PLACE_TABLE_HEIGHT + 0.001], dtype=float)
 PICK_PLACE_GOAL_INNER_HALF_EXTENTS = np.array([0.045, 0.045, 0.03], dtype=float)
 PICK_PLACE_GOAL_WALL_THICKNESS = 0.005
+# A soft object for first grasps. It is a rigid box to the physics, but the arm
+# passes through it instead of pushing it (see ``SOFT_OBJECT_COLLISION_BIT``),
+# the way a real bean bag gives way to a jaw.
+BEAN_BAG_NAME = "bean_bag"
+BEAN_BAG_HALF_EXTENTS = np.array([0.03, 0.025, 0.012], dtype=float)
+BEAN_BAG_MASS = 0.03
+BEAN_BAG_START = np.array(
+    [0.26, -0.03, PICK_PLACE_TABLE_HEIGHT + BEAN_BAG_HALF_EXTENTS[2]], dtype=float
+)
+# Soft objects collide only with geoms that carry this bit: the table, the goal
+# box and the floor, but not the robot (whose geoms keep MuJoCo's default bit 1).
+SOFT_OBJECT_COLLISION_BIT = 2
 
 
 class StackChallenge:
@@ -151,7 +165,9 @@ class StackChallenge:
     def start(self) -> None:
         print("\n=== STACK CHALLENGE ===", flush=True)
         print("Touch or push the physical cube stack until each cube moves.", flush=True)
-        print(f"Success threshold: {self.move_threshold * 100:.1f}cm displacement from rest\n", flush=True)
+        print(
+            f"Success threshold: {self.move_threshold * 100:.1f}cm displacement from rest\n", flush=True
+        )
 
     def update(self) -> list[str]:
         moved_now: list[str] = []
@@ -276,7 +292,11 @@ def reset_active_scene(
     if hasattr(mapper, "reset"):
         mapper.reset()
 
-    if getattr(control_mode, "value", None) == "cartesian" and cartesian_state is not None and kinematics is not None:
+    if (
+        getattr(control_mode, "value", None) == "cartesian"
+        and cartesian_state is not None
+        and kinematics is not None
+    ):
         sync_cartesian_state(
             cartesian_state,
             kinematics,
@@ -561,8 +581,111 @@ def _robot_spec(urdf_path: str) -> mujoco.MjSpec:
     # filter world-vs-child contacts. The convex hulls of the base meshes
     # overlap the shoulder, which wedged the arm in physics scenes.
     spec.add_exclude(bodyname1="world", bodyname2="shoulder_link")
+    _add_gripper_collision_boxes(spec)
+    _add_moving_jaw_collision_boxes(spec, base_model)
     _add_wrist_camera(spec)
     return spec
+
+
+# The gripper body's mesh (wrist and fixed finger in one piece) collides as its
+# convex hull, which fills the open space between the finger and the wrist: a
+# held cube sat 12 mm inside it and was thrown out sideways when released.
+# These shapes follow the visible one instead (gripper_link frame, m; measured
+# from the mesh). The fixed finger is a capsule, rounded like the real finger
+# end: a box's sharp edge wedged under a pushed cube and tipped it over. It
+# leans a little, as the finger's inner face steps back from x -0.008 at the
+# tip to -0.0117 near the wrist. The gap between the fingers is open up to
+# z -0.04, where the jaw servo (its own geom) begins.
+GRIPPER_BODY_MESH = "wrist_roll_follower_so101_v1"
+FIXED_FINGER_RADIUS_M = 0.0105
+FIXED_FINGER_AXIS = ((-0.0185, -0.0002, -0.0939), (-0.0222, -0.0002, -0.0500))
+GRIPPER_COLLISION_BOXES = {
+    # name: ((x min, x max), (y min, y max), (z min, z max))
+    "wrist_body": ((-0.0352, 0.0300), (-0.0280, 0.0240), (-0.0400, 0.0010)),
+}
+
+
+MOVING_JAW_BODY = "moving_jaw_so101_v1_link"
+MOVING_JAW_MESH = "moving_jaw_so101_v1"
+# The moving jaw is one curved finger; its hull fills the inside of the curve.
+# Collide it as boxes, one per slice along the finger (its -y, in its own
+# frame), each the slice's extent: thin slices follow the curve.
+MOVING_JAW_FINGER_END_Y = -0.026  # beyond this (toward +y) is the hub at the hinge
+MOVING_JAW_FINGER_SLICE_M = 0.004
+MOVING_JAW_HUB_SLICE_M = 0.012
+
+
+def _collision_box(body, name: str, low, high) -> None:
+    box = body.add_geom()
+    box.name = name
+    box.type = mujoco.mjtGeom.mjGEOM_BOX
+    box.pos = [(a + b) / 2 for a, b in zip(low, high)]
+    box.size = [max((b - a) / 2, 1e-4) for a, b in zip(low, high)]
+    box.contype = 1
+    box.conaffinity = 1
+    box.group = 3  # not drawn by the viewer or the cameras
+    box.rgba = [0.0, 0.0, 0.0, 0.0]
+    box.mass = 0.0
+
+
+def _add_moving_jaw_collision_boxes(spec: mujoco.MjSpec, model: mujoco.MjModel) -> None:
+    """Collide the moving jaw as slices along its finger, not as its hull."""
+    body = spec.body(MOVING_JAW_BODY)
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, MOVING_JAW_BODY)
+    if body is None or body_id < 0:
+        return
+    mesh_geoms = [geom for geom in body.geoms if geom.meshname == MOVING_JAW_MESH]
+    model_geoms = [
+        g
+        for g in range(model.ngeom)
+        if model.geom_bodyid[g] == body_id and model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH
+    ]
+    if not mesh_geoms or not model_geoms:
+        return
+    geom = model_geoms[0]
+    mesh = model.geom_dataid[geom]
+    start = model.mesh_vertadr[mesh]
+    vertices = model.mesh_vert[start : start + model.mesh_vertnum[mesh]]
+    rotation = np.zeros(9)
+    mujoco.mju_quat2Mat(rotation, model.geom_quat[geom])
+    points = vertices @ rotation.reshape(3, 3).T + model.geom_pos[geom]  # jaw body frame
+    for mesh_geom in mesh_geoms:  # still drawn, no longer collides
+        mesh_geom.contype = 0
+        mesh_geom.conaffinity = 0
+    low_y, high_y = float(points[:, 1].min()), float(points[:, 1].max())
+    edges = list(np.arange(low_y, MOVING_JAW_FINGER_END_Y, MOVING_JAW_FINGER_SLICE_M))
+    edges += list(np.arange(MOVING_JAW_FINGER_END_Y, high_y, MOVING_JAW_HUB_SLICE_M)) + [high_y + 1e-6]
+    for index, (y0, y1) in enumerate(zip(edges[:-1], edges[1:])):
+        part = points[(points[:, 1] >= y0) & (points[:, 1] < y1)]
+        if len(part) < 4:
+            continue
+        low, high = part.min(axis=0), part.max(axis=0)
+        _collision_box(body, f"moving_jaw_slice_{index}_collision", low, high)
+
+
+def _add_gripper_collision_boxes(spec: mujoco.MjSpec) -> None:
+    """Collide the gripper body as boxes that follow its shape, not its hull."""
+    body = spec.body("gripper_link")
+    if body is None:
+        return
+    meshes = [geom for geom in body.geoms if geom.meshname == GRIPPER_BODY_MESH]
+    if not meshes:
+        return
+    for geom in meshes:  # still drawn, no longer collides
+        geom.contype = 0
+        geom.conaffinity = 0
+    for name, ((x0, x1), (y0, y1), (z0, z1)) in GRIPPER_COLLISION_BOXES.items():
+        _collision_box(body, f"gripper_{name}_collision", (x0, y0, z0), (x1, y1, z1))
+    finger = body.add_geom()
+    finger.name = "gripper_fixed_finger_collision"
+    finger.type = mujoco.mjtGeom.mjGEOM_CAPSULE
+    finger.fromto = [*FIXED_FINGER_AXIS[0], *FIXED_FINGER_AXIS[1]]
+    finger.size = [FIXED_FINGER_RADIUS_M, 0.0, 0.0]
+    finger.contype = 1
+    finger.conaffinity = 1
+    finger.group = 3
+    finger.rgba = [0.0, 0.0, 0.0, 0.0]
+    finger.mass = 0.0
 
 
 # Wrist camera on gripper_link (local frame: -z points along the gripper toward
@@ -629,6 +752,7 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
     table.pos = PICK_PLACE_TABLE_CENTER.tolist()
     table.rgba = [0.60, 0.60, 0.60, 1.0]
     table.friction = [1.1, 0.02, 0.001]
+    table.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
 
     cube_body = spec.worldbody.add_body()
     cube_body.name = "pick_cube"
@@ -642,27 +766,73 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
     cube_geom.rgba = [0.85, 0.25, 0.20, 1.0]
     cube_geom.friction = [1.1, 0.02, 0.001]
 
+    bag_body = spec.worldbody.add_body()
+    bag_body.name = BEAN_BAG_NAME
+    bag_body.pos = BEAN_BAG_START.tolist()
+    bag_body.add_freejoint()
+    bag_geom = bag_body.add_geom()
+    bag_geom.name = f"{BEAN_BAG_NAME}_geom"
+    bag_geom.type = mujoco.mjtGeom.mjGEOM_BOX
+    bag_geom.size = BEAN_BAG_HALF_EXTENTS.tolist()
+    bag_geom.mass = BEAN_BAG_MASS
+    bag_geom.rgba = [0.20, 0.40, 0.85, 1.0]
+    bag_geom.friction = [1.5, 0.05, 0.002]
+    bag_geom.contype = SOFT_OBJECT_COLLISION_BIT
+    bag_geom.conaffinity = SOFT_OBJECT_COLLISION_BIT
+
     goal_parts = [
         ("goal_base", [0.0, 0.0, 0.0], [*PICK_PLACE_GOAL_INNER_HALF_EXTENTS[:2], 0.004]),
         (
             "goal_wall_left",
-            [-(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS), 0.0, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-            [PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1], PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            [
+                -(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS),
+                0.0,
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
+            ],
+            [
+                PICK_PLACE_GOAL_WALL_THICKNESS,
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1],
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
+            ],
         ),
         (
             "goal_wall_right",
-            [(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS), 0.0, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-            [PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1], PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            [
+                (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS),
+                0.0,
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
+            ],
+            [
+                PICK_PLACE_GOAL_WALL_THICKNESS,
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1],
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
+            ],
         ),
         (
             "goal_wall_back",
-            [0.0, -(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS), PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-            [PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            [
+                0.0,
+                -(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS),
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
+            ],
+            [
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS,
+                PICK_PLACE_GOAL_WALL_THICKNESS,
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
+            ],
         ),
         (
             "goal_wall_front",
-            [0.0, (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS), PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
-            [PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_WALL_THICKNESS, PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2]],
+            [
+                0.0,
+                (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS),
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
+            ],
+            [
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS,
+                PICK_PLACE_GOAL_WALL_THICKNESS,
+                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
+            ],
         ),
     ]
     for name, offset, size in goal_parts:
@@ -673,7 +843,7 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
         geom.size = size
         geom.rgba = [0.10, 0.65, 0.35, 0.85]
         geom.contype = 1
-        geom.conaffinity = 1
+        geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
 
 
 def build_stack_scene_model(urdf_path: str, world: str = "plain") -> mujoco.MjModel:
@@ -708,6 +878,9 @@ def load_model_with_cameras(
         _add_stack_scene(spec, add_floor=not world_has_floor)
     elif scene == "pick_place_basic":
         _add_pick_place_scene(spec, add_floor=not world_has_floor)
+        for geom in spec.geoms:
+            if geom.type == mujoco.mjtGeom.mjGEOM_PLANE:  # soft objects land on any floor
+                geom.conaffinity = int(geom.conaffinity) | SOFT_OBJECT_COLLISION_BIT
     if mesh_cell_mm <= 0:
         return spec.compile()
 
@@ -1385,8 +1558,7 @@ def _show_limit_overlay(viewer, message: str) -> None:
         return
     if message:
         set_texts(
-            (mujoco.mjtFontScale.mjFONTSCALE_200, mujoco.mjtGridPos.mjGRID_TOPRIGHT,
-             "Stopped", message)
+            (mujoco.mjtFontScale.mjFONTSCALE_200, mujoco.mjtGridPos.mjGRID_TOPRIGHT, "Stopped", message)
         )
     else:
         set_texts([])
@@ -1488,7 +1660,9 @@ def run_with_controller(
 
     print(f"Controller deadzone: {getattr(controller_cfg, 'deadzone', 'n/a')}", flush=True)
     print(f"Linear scale: {_proc_cfg.linear_scale} m/s", flush=True)
-    orientation_enabled = bool(getattr(mapper, "enable_pitch", False) or getattr(mapper, "enable_yaw", False))
+    orientation_enabled = bool(
+        getattr(mapper, "enable_pitch", False) or getattr(mapper, "enable_yaw", False)
+    )
     if orientation_enabled:
         print(f"Orientation scale: {_proc_cfg.orientation_scale} rad/s", flush=True)
     else:
@@ -1528,7 +1702,9 @@ def run_with_controller(
                 if controller_type == "dual_joycon":
                     print("  Keep both Joy-Cons awake; the right Joy-Con provides IMU orientation.")
                 else:
-                    print("  Single Joy-Con mode on macOS is limited; prefer dual_joycon for IMU workflows.")
+                    print(
+                        "  Single Joy-Con mode on macOS is limited; prefer dual_joycon for IMU workflows."
+                    )
             else:
                 try:
                     import evdev
@@ -1546,7 +1722,9 @@ def run_with_controller(
                         for n in names:
                             print(n)
                     else:
-                        print("  No input devices found (check permissions: sudo usermod -aG input $USER)")
+                        print(
+                            "  No input devices found (check permissions: sudo usermod -aG input $USER)"
+                        )
                 except ImportError:
                     print("  evdev not installed — run: uv pip install evdev")
                 if controller_type == "joycon":
@@ -1563,7 +1741,6 @@ def run_with_controller(
     print_controls(controller_type, mode, exit_hint="Close window              exit")
     if sim.has_stack_scene() or sim.has_pick_place_scene():
         print("  Y button                  reset scene", flush=True)
-
 
     # Initialize challenge mode if enabled
     challenge: ChallengeManager | None = None
@@ -1595,7 +1772,9 @@ def run_with_controller(
 
     # IK joint positions (4 joints: base, shoulder_lift, elbow_flex, wrist_flex)
     ik_joint_pos_deg = np.zeros(4)
-    cartesian_state = make_cartesian_state(kinematics, ik_joint_pos_deg) if kinematics is not None else None
+    cartesian_state = (
+        make_cartesian_state(kinematics, ik_joint_pos_deg) if kinematics is not None else None
+    )
     gripper_rate = runtime.gripper_rate  # Position change per second
     step_config = CartesianStepConfig(
         dt=LOOP_PERIOD,
@@ -1882,11 +2061,7 @@ def run_with_controller(
             homing_active = step.homing
             frame_phase = step.phase
             frame_limit = step.limit
-            if (
-                debug_ik
-                and step.target_pose is not None
-                and loop_counter % max(debug_ik_every, 1) == 0
-            ):
+            if debug_ik and step.target_pose is not None and loop_counter % max(debug_ik_every, 1) == 0:
                 target_pos = step.target_pos
                 pos_error = np.linalg.norm(step.target_pose[:3, 3] - cartesian_state.ee_pose[:3, 3])
                 print(
@@ -2212,8 +2387,9 @@ def run_demo_mode(
         print(f"\nCamera: {active_camera_name}", flush=True)
 
     viewer_context = (
-        _HeadlessViewer() if headless else
-        mujoco.viewer.launch_passive(sim.model, sim.data, key_callback=key_callback)
+        _HeadlessViewer()
+        if headless
+        else mujoco.viewer.launch_passive(sim.model, sim.data, key_callback=key_callback)
     )
     with viewer_context as viewer:
         if not headless:
@@ -2228,9 +2404,17 @@ def run_demo_mode(
                     set_viewer_free_camera(viewer)
                 else:
                     set_viewer_camera(viewer, active_camera_name)
-            redraw_workspace = not headless and workspace_draw and (
-                not workspace_drawn
-                or (routine_trace and not hasattr(viewer, "add_marker") and hasattr(viewer, "user_scn"))
+            redraw_workspace = (
+                not headless
+                and workspace_draw
+                and (
+                    not workspace_drawn
+                    or (
+                        routine_trace
+                        and not hasattr(viewer, "add_marker")
+                        and hasattr(viewer, "user_scn")
+                    )
+                )
             )
             if redraw_workspace:
                 if not draw_workspace(
@@ -2265,8 +2449,12 @@ def run_demo_mode(
 
             # Solve IK for position only (4 joints)
             new_joints, next_wrist_roll_deg = solve_cartesian_motion(
-                cartesian_state, kinematics, target_pose, EEDelta(droll=droll),
-                dt=LOOP_PERIOD, orientation_weight=0.0,
+                cartesian_state,
+                kinematics,
+                target_pose,
+                EEDelta(droll=droll),
+                dt=LOOP_PERIOD,
+                orientation_weight=0.0,
                 max_joint_step_deg=ik_joint_vel_limits * LOOP_PERIOD,
             )
             ik_result = new_joints[:4]
@@ -2890,11 +3078,7 @@ def _maybe_reexec_under_mjpython(
             "MuJoCo is not importable, so the macOS viewer relaunch path is unavailable."
         )
     native = (
-        Path(mujoco_spec.origin).parent
-        / "MuJoCo_(mjpython).app"
-        / "Contents"
-        / "MacOS"
-        / "mjpython"
+        Path(mujoco_spec.origin).parent / "MuJoCo_(mjpython).app" / "Contents" / "MacOS" / "mjpython"
     )
     if not native.exists():
         raise RuntimeError(

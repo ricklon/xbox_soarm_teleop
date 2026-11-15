@@ -63,6 +63,7 @@ from xbox_soarm_teleop.twin.actions import (
 )
 from xbox_soarm_teleop.twin.cameras import DEFAULT_SIZE, VIEWS, CameraRig, encode
 from xbox_soarm_teleop.twin.grasp import AssistedGrasp
+from xbox_soarm_teleop.twin.layouts import GOALS, Layout, layouts_for
 from xbox_soarm_teleop.twin.session_log import SessionLog
 
 ARM_JOINT_NAMES = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
@@ -115,6 +116,9 @@ class TwinService:
         cameras: Optional camera rig shared with other twins of the same
             model. The caller owns it: this service draws its own state with
             it and never closes it. Created on first use when None.
+        layout: Which of the scene's objects start on the table
+            (``twin.layouts``); ``load_scene`` changes it. None leaves every
+            object where the model has it.
     """
 
     def __init__(
@@ -133,6 +137,7 @@ class TwinService:
         table_top_z: float | None = None,
         log: SessionLog | None = None,
         cameras: CameraRig | None = None,
+        layout: Layout | None = None,
     ) -> None:
         self.log = log
         self._shared_cameras = cameras is not None
@@ -158,6 +163,8 @@ class TwinService:
             substeps = max(1, round(dt / sim.model.opt.timestep)) if sim.physics_scene_active else 1
         self.substeps = substeps
         self.grasp = AssistedGrasp(sim.model, sim.data)
+        self.layout = layout
+        self._arrange_objects()
         self.state = make_cartesian_state(kinematics, np.zeros(4))
 
         self.frame = 0
@@ -273,6 +280,34 @@ class TwinService:
         return self.call(
             self._logged("reset_scene", client_id, {}, lambda: self._reset_scene_cmd(client_id))
         )
+
+    def load_scene(self, name: str, *, client_id: str = "agent") -> Future:
+        """Switch to another layout of this scene: home the arm, swap the objects.
+
+        Resolves to the layout's summary; an unknown name is rejected with the
+        names that exist.
+        """
+        return self.call(
+            self._logged(
+                "load_scene", client_id, {"name": name}, lambda: self._load_scene(name, client_id)
+            )
+        )
+
+    def list_scenes(self) -> list[dict[str, Any]]:
+        """The scenes ``load_scene`` accepts, easiest first, marking the current one."""
+        layouts = layouts_for(self.sim.scene)
+        if not layouts:
+            return [
+                {
+                    "name": self.sim.scene,
+                    "difficulty": None,
+                    "description": "",
+                    "objects": list(self.grasp.objects),
+                    "current": True,
+                }
+            ]
+        current = self.layout.name if self.layout is not None else None
+        return [{**layout.summary(), "current": layout.name == current} for layout in layouts]
 
     def render(
         self,
@@ -690,6 +725,28 @@ class TwinService:
         self._reset_scene()
         return True
 
+    def _load_scene(self, name: str, client_id: str) -> dict[str, Any]:
+        if self.stop_latched_by is not None:
+            raise ActionRejected(ReasonCode.STOPPED, f"latched by {self.stop_latched_by}")
+        layouts = {layout.name: layout for layout in layouts_for(self.sim.scene)}
+        if name not in layouts:
+            known = ", ".join(scene["name"] for scene in self.list_scenes())
+            raise ActionRejected(ReasonCode.INVALID_REQUEST, f"Unknown scene '{name}'. Known: {known}")
+        self._ensure_owner(client_id)
+        self.layout = layouts[name]
+        self._reset_scene()
+        self._event(f"scene loaded: {name}")
+        return {**self.layout.summary(), "current": True}
+
+    def _arrange_objects(self) -> None:
+        """Put the layout's objects at their starts and park the others."""
+        if self.layout is None:
+            return
+        for name, xyz in self.layout.objects.items():
+            self.grasp.place(name, np.asarray(xyz, dtype=float))
+        self.grasp.park(name for name in self.grasp.objects if name not in self.layout.objects)
+        mujoco.mj_forward(self.sim.model, self.sim.data)
+
     def _reset_scene(self) -> None:
         self._end_action(ActionState.CANCELLED, ReasonCode.CANCELLED, "scene reset")
         self.grasp.reset()
@@ -701,6 +758,7 @@ class TwinService:
             sim.reset_stack_scene()
         elif sim.has_pick_place_scene():
             sim.reset_pick_place_scene()
+        self._arrange_objects()
         sync_cartesian_state(
             self.state,
             self.kinematics,
@@ -747,6 +805,12 @@ class TwinService:
                     self._opening_for_home = False  # done, or the person took the gripper back
                 else:
                     return replace(delta, gripper=0.0)
+            # Jaws a person drives shut stop on a rigid object instead of
+            # squeezing it out: nobody holds a trigger to the millimetre.
+            limit = self.grasp.hold_limit()
+            if limit is not None and delta.gripper > limit:
+                delta = replace(delta, gripper=max(limit, min(delta.gripper, self.state.gripper_pos)))
+                self._gripper_following = True
             # Soft takeover: the trigger is absolute, so only follow it once it
             # reaches the current gripper position (no sudden drop of a cube).
             if not self._gripper_following:
@@ -783,7 +847,8 @@ class TwinService:
             sim.set_joint_targets(prev_joints + (joints_deg - prev_joints) * alpha)
             sim.set_gripper(prev_gripper + (gripper - prev_gripper) * alpha)
             mujoco.mj_kinematics(sim.model, sim.data)
-            self.grasp.carry(sim.get_ee_position())
+            self.grasp.carry()
+            self.grasp.hold_parked()
             sim.step()
         self._last_cmd = (joints_deg.copy(), float(gripper))
         for event in self.grasp.update(sim.get_ee_position(), gripper):
@@ -795,6 +860,31 @@ class TwinService:
         joints = self.sim.get_joint_positions_deg()
         ik = getattr(self.kinematics, "last_ik_result", None)
         step = self.last_step
+        goal = GOALS.get(self.sim.scene)
+        opening = self.grasp.settings.jaw_opening_m(self.state.gripper_pos)
+        jaw_center = self.grasp.jaw_center(opening)
+        objects = {}
+        for name, xyz in self.grasp.positions().items():
+            entry = {
+                "xyz_m": [round(float(v), 4) for v in xyz],
+                "size_m": [round(float(v), 4) for v in self.grasp.size(name)],
+                # Its size across the jaws as the gripper is turned now: close to this.
+                "grip_width_m": round(self.grasp.fit(name)[0], 4),
+                "attached": name == self.grasp.attached,
+                "off_table": self.table_top_z is not None
+                and float(xyz[2]) < self.table_top_z - OFF_TABLE_MARGIN_M,
+            }
+            if goal is not None:
+                entry["in_goal"] = name != self.grasp.attached and goal.holds(
+                    xyz, self.grasp.half_extents_world(name)
+                )
+            objects[name] = entry
+        scene = {
+            "name": self.layout.name if self.layout is not None else self.sim.scene,
+            "objects": objects,
+        }
+        if goal is not None:
+            scene["goal"] = goal.summary()
         observation = Observation(
             frame=self.frame,
             sim_time_s=round(self.now_s, 6),
@@ -815,23 +905,16 @@ class TwinService:
             ),
             limit=step.limit if step is not None else "",
             workspace=self.workspace_bounds,
-            scene={
-                "name": self.sim.scene,
-                "objects": {
-                    name: {
-                        "xyz_m": [round(float(v), 4) for v in xyz],
-                        "attached": name == self.grasp.attached,
-                        "off_table": self.table_top_z is not None
-                        and float(xyz[2]) < self.table_top_z - OFF_TABLE_MARGIN_M,
-                    }
-                    for name, xyz in self.grasp.positions().items()
-                },
-            },
+            scene=scene,
             control={
                 "stop_latched_by": self.stop_latched_by,
                 "human_in_control": self._human_in_control(self.now_s),
                 "controller_connected": self.controller_connected,
                 "events": list(self.events),
             },
+            gripper_opening_m=round(opening, 4),
+            jaw_center_xyz_m=(
+                [round(float(v), 4) for v in jaw_center] if jaw_center is not None else None
+            ),
         )
         return observation.to_dict()

@@ -99,9 +99,10 @@ it stays stopped until you press Menu (☰).
 
 Top speed is 10 cm/s, so nothing happens fast.
 
-**Grasping is assisted.** Put the gripper within about 4 cm of the cube's
-center and squeeze the trigger. The cube attaches at the moment the gripper
-closes; a gripper that is already closed only pushes things.
+**Grasping is assisted.** Open the gripper, bring it down so the cube sits
+between the two jaws (not under them), and squeeze the trigger. The cube
+attaches at the moment the gripper closes on it; a gripper that is already
+closed only pushes things. Watch the Front or Side view as you come down.
 
 The arm will not go below the table top. If the cube falls off the table,
 press Y.
@@ -234,6 +235,6 @@ request that was refused. The format is described in [Schemas](schemas.md).
 | The agent is refused with `workspace_bound` | The target is outside the workspace or below the table. The detail says which side |
 | The cube is on the floor (`off_table`) | Press Y, or ask the agent to `reset_scene` |
 | The agent cannot see the tools | The twin must be running before you start `claude`. Check with `claude mcp list` |
-| Trigger does not grab the cube | Open the gripper fully first, get within about 4 cm, then close |
+| Trigger does not grab the cube | Open the gripper first, get the cube between the jaws (check the Side view), then close |
 
 To quit, close the window or press Ctrl+C in the twin's terminal.
