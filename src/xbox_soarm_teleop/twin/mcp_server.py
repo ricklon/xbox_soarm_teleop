@@ -88,7 +88,11 @@ jaws, grasps, checks it holds it and retries after a miss); pick(description=
 and says what it is holding. When a request describes objects by how they
 look (colour, shape), pick and check them by description, not by their names:
 names can be wrong. place(bin)
-puts what it holds into a bin, lifts clear and goes home. Prefer them to
+puts what it holds into a bin, lifts clear and goes home.
+push(name or description, direction="left", distance_m=0.05) slides an object
+along the table without lifting it (directions as seen from the arm's base:
+forward/away, back/toward, left, right; or dx_m, dy_m); it pushes whatever is
+in its way too, so one object can push another. Prefer them to
 steering the jaws step by step: decide what goes where, and let the arm do
 the moving.
 
@@ -158,7 +162,7 @@ def _status_dict(status) -> dict[str, Any]:
 
 
 # Tools whose ``name`` argument is an object (load_scene's is a scene).
-NAME_TAKING_TOOLS = {"locate", "pick", "report_estimate", "check_success"}
+NAME_TAKING_TOOLS = {"locate", "pick", "push", "report_estimate", "check_success"}
 # Tools whose answer carries the twin's own words for the object ("red cube").
 DESCRIBING_TOOLS = {"locate", "check_success"}
 
@@ -420,6 +424,34 @@ def build_mcp_server(
         then looks for what matches, closes until it feels it, and says what it
         is holding. Takes 20 to 60 seconds."""
         return twin(ctx).pick(name, client_id=client_of(ctx), description=description)
+
+    @tool
+    def push(
+        name: str | None = None,
+        description: str | None = None,
+        direction: str | None = None,
+        distance_m: float | None = None,
+        dx_m: float | None = None,
+        dy_m: float | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Slide an object along the table without lifting it: to nudge it, line
+        things up, or push one object with another. Say what (its name, or a
+        description in the request's words) and where: direction ("forward" or
+        "away", "back" or "toward", "left", "right", as seen from the arm's base)
+        with distance_m, or dx_m and dy_m (metres; +x away from the base, +y to
+        its left), at most 0.15 m. The arm closes its jaws, gets behind the
+        object, goes low and slides it, then looks again and pushes the rest.
+        Whatever is in its way is pushed too. Takes 20 to 60 seconds."""
+        return twin(ctx).push(
+            name,
+            description=description,
+            direction=direction,
+            distance_m=distance_m,
+            dx_m=dx_m,
+            dy_m=dy_m,
+            client_id=client_of(ctx),
+        )
 
     @tool
     def place(bin: str, ctx: Context | None = None) -> dict[str, Any]:

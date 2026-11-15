@@ -122,7 +122,11 @@ jaws, grasps, checks it holds it and retries after a miss); pick(description=
 and says what it is holding. When a request describes objects by how they
 look (colour, shape), pick and check them by description, not by their names:
 names can be wrong. place(bin)
-puts what it holds into a bin, lifts clear and goes home. Prefer them to
+puts what it holds into a bin, lifts clear and goes home.
+push(name or description, direction="left", distance_m=0.05) slides an object
+along the table without lifting it (directions as seen from the arm's base:
+forward/away, back/toward, left, right; or dx_m, dy_m); it pushes whatever is
+in its way too, so one object can push another. Prefer them to
 steering the jaws step by step: decide what goes where, and let the arm do
 the moving.
 

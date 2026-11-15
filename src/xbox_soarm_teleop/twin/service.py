@@ -496,6 +496,29 @@ class TwinService:
         self._log("skill_result", client_id=client_id, skill="place", target_bin=bin_name, **result)
         return result
 
+    def push(
+        self,
+        name: str | None = None,
+        *,
+        description: str | None = None,
+        direction: str | None = None,
+        distance_m: float | None = None,
+        dx_m: float | None = None,
+        dy_m: float | None = None,
+        client_id: str = "agent",
+    ) -> dict[str, Any]:
+        """Slide an object along the table (``twin.skills.push``). Blocks; call it
+        from a client thread."""
+        from xbox_soarm_teleop.twin import skills
+
+        asked = {"direction": direction, "distance_m": distance_m, "dx_m": dx_m, "dy_m": dy_m}
+        self._log(
+            "request", client_id=client_id, type="push", name=name, description=description, **asked
+        )
+        result = skills.push(self, name, description=description, client_id=client_id, **asked)
+        self._log("skill_result", client_id=client_id, skill="push", target=name, **result)
+        return result
+
     def check_success(
         self,
         name: str | None = None,
