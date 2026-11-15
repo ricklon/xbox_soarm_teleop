@@ -50,6 +50,7 @@ CLOSE_FLOOR_M = 0.015  # nothing narrower than this is picked up
 AGREE_M = 0.03  # two views that put an object this close agree on where it is
 TRAY_MARGIN_M = 0.01  # an estimate this far inside a bin's walls counts as in it
 ACTION_TIMEOUT_S = 30.0
+MOVABLE_FLOOR_ABOVE_TABLE_M = 0.0085  # a movable box's floor top (sim/table_scenes.py)
 
 
 class SkillFailed(Exception):
@@ -222,10 +223,22 @@ def pick(
     try:
         objects = _objects(service)
         if name is None and not description:
-            raise SkillFailed("invalid_request", 'say what to pick: a name, or description="red cube"')
+            # Say what there is, so the next call can get it right.
+            loose = [n for n, entry in objects.items() if not entry["attached"]] or list(objects)
+            example = loose[0] if loose else "red_cube"
+            raise SkillFailed(
+                "invalid_request",
+                f'say what to pick: pick(name="{example}"), or pick(description="red cube") in '
+                f"the request's words. Objects here: {', '.join(loose) or 'none'}",
+            )
         if name is not None and name not in objects:
             known = ", ".join(objects) or "none"
             raise SkillFailed("invalid_request", f"Unknown object '{name}'. On the table: {known}")
+        if name is not None and objects[name].get("box"):
+            raise SkillFailed(
+                "invalid_request",
+                f"{name} is a box, too big to pick up: push it to move it, or place things in it",
+            )
         if name is not None and objects[name]["attached"]:
             return {"ok": True, "holding": name, "attempts": 0, "looks": 0}
         if _held(service) is not None:
@@ -299,11 +312,17 @@ def place(service, bin_name: str, *, client_id: str = "agent") -> dict[str, Any]
         boxes = {box["name"]: box for box in scene.get("bins", [])}
         if "goal" in scene:
             boxes[scene["goal"]["name"]] = scene["goal"]
-        if bin_name not in boxes:
-            known = ", ".join(boxes) or "none"
+        movable = [n for n, entry in scene["objects"].items() if entry.get("box")]
+        if bin_name not in boxes and bin_name not in movable:
+            known = ", ".join([*boxes, *movable]) or "none"
             raise SkillFailed("invalid_request", f"Unknown bin '{bin_name}'. Here: {known}")
         name = held[0]
-        cx, cy, floor = boxes[bin_name]["center_xyz_m"]
+        if bin_name in movable:  # a box that may have been pushed: look where it is now
+            box_xyz, _move = _first_look(service, bin_name, None, client_id, [0])
+            cx, cy = float(box_xyz[0]), float(box_xyz[1])
+            floor = (service.table_top_z or 0.0) + MOVABLE_FLOOR_ABOVE_TABLE_M
+        else:
+            cx, cy, floor = boxes[bin_name]["center_xyz_m"]
         carry = (service.table_top_z or 0.0) + CARRY_ABOVE_TABLE_M
         jaw = _jaw(service)
         if jaw[2] < carry - 0.01:
@@ -322,3 +341,161 @@ def place(service, bin_name: str, *, client_id: str = "agent") -> dict[str, Any]
         return {"ok": True, "released": name, "bin": bin_name}
     except SkillFailed as exc:
         return {"ok": False, "reason": exc.reason, "detail": exc.detail}
+
+
+# Pushing (``push``): the arm's own words for directions, as seen from its base.
+DIRECTIONS = {
+    "forward": (1.0, 0.0),
+    "away": (1.0, 0.0),
+    "back": (-1.0, 0.0),
+    "toward": (-1.0, 0.0),
+    "left": (0.0, 1.0),
+    "right": (0.0, -1.0),
+}
+PUSH_MAX_M = 0.15  # one push request moves an object at most this far
+PUSH_CLEAR_M = 0.03  # the closed jaws start this far behind the object's back face
+PUSH_LOW_M = 0.012  # the jaw centre's height above the table while pushing
+PUSH_CLOSE_M = 0.01  # near enough: stop pushing
+PUSH_SPEED_M_S = 0.03  # the push stroke itself
+PUSH_LEAD_M = 0.025  # how far a slow push carries on past where the jaw centre stops (measured)
+PUSH_TRIES = 4  # pushes, each followed by a fresh look
+
+
+def _where(service, target, description, client_id, looks) -> np.ndarray:
+    """Where the arm thinks the object is now (its looks; observe when shown)."""
+    xyz, _move = _first_look(service, target, description, client_id, looks)
+    return np.asarray(xyz, dtype=float)
+
+
+def push(
+    service,
+    name: str | None = None,
+    *,
+    description: str | None = None,
+    direction: str | None = None,
+    distance_m: float | None = None,
+    dx_m: float | None = None,
+    dy_m: float | None = None,
+    client_id: str = "agent",
+) -> dict[str, Any]:
+    """Slide an object along the table, without lifting it.
+
+    Say what (``name``, or ``description`` in the request's words) and where:
+    a ``direction`` ("forward"/"away", "back"/"toward", "left", "right", as
+    seen from the arm's base) and ``distance_m``, or ``dx_m``/``dy_m`` (m;
+    +x away from the base, +y to its left). The arm closes its jaws, gets
+    behind the object, goes low, slides through, then looks again and pushes
+    the rest, since one push drifts. It pushes what is in the way too.
+
+    Returns ``{"ok": True, "pushed": name or description, "pushes": n,
+    "moved_m": [dx, dy], "off_by_m": d}`` as far as the arm can tell from its
+    own looks, or ``{"ok": False, "reason": ..., "detail": ...}``.
+    """
+    looks = [0]
+    pushes = 0
+    try:
+        objects = _objects(service)
+        if name is None and not description:
+            loose = [n for n, entry in objects.items() if not entry["attached"]]
+            raise SkillFailed(
+                "invalid_request",
+                f'say what to push: push(name="{loose[0] if loose else "red_cube"}", ...), or '
+                f'push(description="red cube", ...). Objects here: {", ".join(loose) or "none"}',
+            )
+        if name is not None and name not in objects:
+            known = ", ".join(objects) or "none"
+            raise SkillFailed("invalid_request", f"Unknown object '{name}'. On the table: {known}")
+        by_words = direction is not None or distance_m is not None
+        by_numbers = dx_m is not None or dy_m is not None
+        if by_words and by_numbers:
+            raise SkillFailed(
+                "invalid_request", "give either direction and distance_m, or dx_m and dy_m"
+            )
+        if by_words:
+            if direction not in DIRECTIONS:
+                raise SkillFailed(
+                    "invalid_request", f"direction '{direction}': one of {', '.join(DIRECTIONS)}"
+                )
+            if distance_m is None:
+                raise SkillFailed("invalid_request", "say how far: distance_m (metres)")
+            step = np.asarray(DIRECTIONS[direction]) * float(distance_m)
+        elif by_numbers:
+            step = np.array([float(dx_m or 0.0), float(dy_m or 0.0)])
+        else:
+            raise SkillFailed("invalid_request", "say how far, and which way: direction and distance_m")
+        if np.linalg.norm(step) > PUSH_MAX_M:
+            raise SkillFailed("invalid_request", f"push at most {PUSH_MAX_M:.2f} m at a time")
+        if np.linalg.norm(step) < PUSH_CLOSE_M:
+            raise SkillFailed("invalid_request", f"push at least {PUSH_CLOSE_M:.2f} m")
+        if _held(service) is not None:
+            raise SkillFailed("busy", "holding something: place it first")
+        target = name
+        if name is None and service.pointer is None:
+            target = _shown_match(service, description)
+            if target is None:
+                raise SkillFailed("not_found", f"nothing on the table matches '{description}'")
+        # A pointing model looks for the description; without one, observe by name.
+        look_with = description if name is None and service.pointer is not None else None
+        half = float(max(objects[target]["size_m"][:2]) / 2.0) if target else 0.02
+
+        start = _where(service, target, look_with, client_id, looks)
+        goal = start[:2] + step
+        table = service.table_top_z or 0.0
+        low = table + PUSH_LOW_M
+        high = table + CARRY_ABOVE_TABLE_M / 2.0
+        _act(service, {"type": "set_gripper", "params": {"position": 1.0}}, client_id)  # jaws shut
+        now = start
+        for pushes in range(1, PUSH_TRIES + 1):
+            remaining = goal - now[:2]
+            gap = float(np.linalg.norm(remaining))
+            # Done when near enough, or past the goal: pushing back means coming
+            # down in front of the object, and the gripper's body hangs back
+            # toward the base, onto it.
+            if gap <= PUSH_CLOSE_M or float(np.dot(remaining, step)) <= 0.0:
+                pushes -= 1
+                break
+            way = remaining / gap
+            behind = now[:2] - way * (half + PUSH_CLEAR_M)
+            jaw = _jaw(service)
+            if jaw[2] < high - 0.01:
+                _move_by(service, 0.0, 0.0, high - jaw[2], client_id)  # up, clear of everything
+            for _ in range(2):  # the gripper tilts a little as it moves
+                jaw = _jaw(service)
+                _move_by(service, behind[0] - jaw[0], behind[1] - jaw[1], 0.0, client_id)
+            jaw = _jaw(service)
+            _move_by(service, 0.0, 0.0, low - jaw[2], client_id)
+            # Contact after the gap, then the rest, stopping short by the closed
+            # jaws' lead (their face is ahead of the jaw centre, and further on a
+            # diagonal): a push that falls short is finished by the next one; one
+            # that overshoots cannot be undone without going round.
+            through = way * (PUSH_CLEAR_M + max(gap - PUSH_LEAD_M, gap * 0.5))
+            _act(  # slowly: the arm moves kinematically, and fast it kicks, not pushes
+                service,
+                {
+                    "type": "move_ee_by",
+                    "params": {"dxyz_m": [float(through[0]), float(through[1]), 0.0]},
+                    "max_speed_m_s": PUSH_SPEED_M_S,
+                },
+                client_id,
+            )
+            jaw = _jaw(service)
+            _move_by(service, 0.0, 0.0, high - jaw[2], client_id)  # lift clear before looking
+            now = _where(service, target, look_with, client_id, looks)
+        _act(service, {"type": "home"}, client_id)
+        moved = now[:2] - start[:2]
+        return {
+            "ok": True,
+            "pushed": description.strip() if name is None else name,
+            "pushes": pushes,
+            "moved_m": [round(float(v), 3) for v in moved],
+            "off_by_m": round(float(np.linalg.norm(goal - now[:2])), 3),
+            "looks": looks[0],
+        }
+    except SkillFailed as exc:
+        return {
+            "ok": False,
+            "reason": exc.reason,
+            "detail": exc.detail,
+            "pushes": pushes,
+            "looks": looks[0],
+        }

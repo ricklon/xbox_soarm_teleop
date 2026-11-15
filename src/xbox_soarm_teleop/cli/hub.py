@@ -43,6 +43,8 @@ PRESETS: dict[str, dict] = {
         # exploring that lesson (--names).
         "names": "truthful",
         "notebook_url": SORTING_NOTEBOOK,
+        # Students' feedback goes here once the instructor posts it (gh login).
+        "feedback_repo": "ricklon/xbox_soarm_teleop",
     },
 }
 
@@ -81,6 +83,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.50,
         help="Each arm's budget (USD) for the agent panel's model, for the whole session",
+    )
+    parser.add_argument(
+        "--feedback-repo",
+        default=None,
+        metavar="OWNER/NAME",
+        help="GitHub repository student feedback is posted to, as issues, once the instructor "
+        "reviews it on the instructor page (uses this computer's gh login). Default: posting off",
+    )
+    parser.add_argument(
+        "--challenge",
+        default=None,
+        metavar="FILE",
+        help="Start every arm with a challenge file (twin/challenges.py): its desk, its "
+        "request on the page, its names for agents. Students can post their own to "
+        "/r/{key}/challenge (the sorting notebook shows how)",
     )
     parser.add_argument(
         "--names",
@@ -309,6 +326,17 @@ def main(argv: list[str] | None = None) -> int:
             )
             print("  Pass --public-url to use another address, or --no-find-tunnel.", flush=True)
 
+    challenge = None
+    if args.challenge:
+        from xbox_soarm_teleop.twin.challenges import ChallengeError, load_challenge
+
+        try:
+            challenge = load_challenge(Path(args.challenge))
+        except (ChallengeError, OSError) as exc:
+            print(f"ERROR: --challenge: {exc}", flush=True)
+            return 2
+        args.scene = challenge.scene
+
     print(f"Building {args.seats} arms...", flush=True)
     hub = Hub(
         seats=args.seats,
@@ -330,6 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         picture_hz=args.picture_rate,
         agent_models=tuple(m.strip() for m in args.agent_models.split(",") if m.strip()),
         agent_budget_usd=args.agent_budget,
+        feedback_repo=args.feedback_repo or None,
     )
     base = (args.public_url or f"http://{args.host}:{args.port}").rstrip("/")
     for line in startup_lines(
@@ -351,6 +380,15 @@ def main(argv: list[str] | None = None) -> int:
             local_host,
             args.port,
         )
+
+    if challenge is not None:  # every arm starts with it; students may post their own
+        for room in hub.rooms.values():
+            future = room.service.load_layout(challenge.layout(), client_id="challenge")
+            room.service.tick()
+            future.result(timeout=0)
+            room.naming_before, room.service.naming = room.service.naming, challenge.names
+            room.challenge = challenge
+        print(f"Every arm starts with the challenge {challenge.name}.", flush=True)
 
     hub.start()
     try:

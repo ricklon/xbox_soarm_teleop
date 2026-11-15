@@ -54,6 +54,16 @@ three bins onto it caused most of the failures below. The sorting desk:
   has one, so the single-box scene keeps its shared presets and its
   benchmarks still compare.
 
+**Movable boxes.** A `Bin` with `movable=True` goes in the recipe's `boxes`,
+not its `bins`: it is built as a free body (a floor and four walls), so a push
+slides it and whatever is inside rides along. To the twin it is an object like
+the cubes: parked out of sight unless a layout puts it out, hidden in
+no-coordinates mode, and marked `"box": true` in `observe`. Grading follows
+it: `in_bin` names the box wherever it has been pushed, turned or not. The
+sorting desk holds an orange box (9 cm across, 7 cm inside, 2.4 cm walls,
+80 g), out only in the `sort_colors_box` layout, so the other layouts, their
+names and their benchmarks are unchanged.
+
 A recipe with one bin is a goal-box scene: `observe` gives `scene.goal` and
 each object's `in_goal`. A recipe with several bins is a sorting scene:
 `observe` gives `scene.bins` and each object's `in_bin` (hidden in
@@ -171,7 +181,15 @@ the way real robots give a planner skills:
   With 1.5 cm aim error from far views, 0.5 cm from the wrist, and the
   overhead look on the tray half the time, it picked 9 of 9, each at the
   first attempt (`test_pick_beats_steering_by_hand`).
-- `place(bin)`: carry over the bin, lower, let go, lift 5 cm, go home.
+- `place(bin)`: carry over the bin, lower, let go, lift 5 cm, go home. A
+  movable box may have been pushed, so `place` looks where it is first.
+- `push(name or description, direction + distance_m, or dx_m/dy_m)`: close the
+  jaws, get behind the object, go low (jaw centre 1.2 cm over the table),
+  slide it slowly (3 cm/s), lift, look again, and push the rest, up to four
+  times, stopping within 1 cm. It never pushes back toward the base: coming
+  down in front of an object, the gripper's body hangs back onto it, so an
+  overshoot is reported, not corrected. Whatever is in the way is pushed too.
+  `pick` refuses a box and says to push it.
 
 They use only what the arm can know: its pointing model (or `observe` when
 coordinates are shown and there is no pointing model) and whether it holds
@@ -198,6 +216,9 @@ as look-alikes; 42 situations):
 | Clef, overhead | 57% | 4 of 5 |
 | Clef-flash, front | 95% | 21 of 21 |
 | Clef-flash, overhead | 38% | 4 of 13 |
+
+A movable box out on the table is one more option, graded against where it
+is now. How well Clef tells "in the box" from "beside it" is not measured yet.
 
 From overhead, at 78 cm, the cubes are small and both judges are often
 confidently wrong; from the front, every confident answer was right. So the

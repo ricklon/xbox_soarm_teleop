@@ -64,6 +64,11 @@ class Bin:
         rgba: Colour of its walls and floor.
         wall_m: Wall thickness.
         geom_prefix: Prefix of its MuJoCo geom names (default: ``name``).
+        movable: A box the arm can push about (a free body, with things in
+            it riding along), not furniture fixed to the table. Movable boxes
+            go in ``TableScene.boxes``; ``center_xy_m`` is then unused (a
+            layout says where each starts).
+        mass_kg: A movable box's mass.
     """
 
     name: str
@@ -73,6 +78,8 @@ class Bin:
     rgba: tuple[float, float, float, float] = GOAL_GREEN
     wall_m: float = 0.005
     geom_prefix: str | None = None
+    movable: bool = False
+    mass_kg: float = 0.08
 
     def base_center_m(self, table_top_z: float) -> tuple[float, float, float]:
         """Center of the floor plate (it sits 1 mm above the table)."""
@@ -103,6 +110,9 @@ class TableScene:
     ``views`` aims the named cameras (``front``, ``overhead``, ``side``) as
     lookat, distance, azimuth and elevation, like the shared presets in
     ``twin.cameras``. A scene without them uses those presets.
+
+    ``boxes`` are movable boxes: free bodies, parked out of sight unless a
+    layout puts them on the table, like the scene's other objects.
     """
 
     name: str
@@ -111,6 +121,7 @@ class TableScene:
     views: dict[str, dict] | None = None
     stat_center: tuple[float, float, float] = (0.2245, 0.04, 0.0779)
     stat_extent: float = 0.6128
+    boxes: tuple[Bin, ...] = ()
 
 
 RAISED_TABLE = Table(TABLE_CENTER_XY_M, TABLE_HALF_XY_M, TABLE_HEIGHT_M)
@@ -146,6 +157,12 @@ RED_BIN = _tray("red_bin", "red bin", 45.0, (0.80, 0.20, 0.18, 0.9))
 GREEN_BIN = _tray("green_bin", "green bin", 72.0, GOAL_GREEN)
 BLUE_BIN = _tray("blue_bin", "blue bin", -70.0, (0.20, 0.35, 0.85, 0.9))
 
+# A box that slides when pushed: 7 cm inside (a cube fits with room), low
+# walls like the trays', light enough to push with what is in it.
+ORANGE_BOX = Bin(
+    "orange_box", "orange box", (0.0, 0.0), (0.035, 0.035, 0.012), (0.95, 0.55, 0.12, 1.0), movable=True
+)
+
 DESK_VIEWS = {
     # Straight down over the whole ring; picture up is forward (+x).
     "overhead": {"lookat": (0.19, 0.0, 0.02), "distance": 0.78, "azimuth": 0.0, "elevation": -89.0},
@@ -166,6 +183,7 @@ TABLE_SCENES: dict[str, TableScene] = {
             views=DESK_VIEWS,
             stat_center=(0.17, 0.0, 0.1),
             stat_extent=0.7,
+            boxes=(ORANGE_BOX,),
         ),
     )
 }

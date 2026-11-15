@@ -55,6 +55,7 @@ uv pip install -e ".[dev]"
 |------|-----|
 | Run a workshop: drive the simulated arm, then let an AI agent drive it | [Workshop Guide](docs/workshop_guide.md) |
 | Host a remote workshop: one simulated arm per student, in a browser | [Hosting a Remote Workshop](docs/workshop_hosting.md) |
+| Sort cubes with an agent, then design your own challenges for it | [Try Sorting](docs/try_sorting.md), [Challenges](docs/challenges.md) |
 | Fastest preflight and pass/fail check | [Operator Checklist](docs/operator_checklist.md) |
 | Per-mode validation steps and failure patterns | [Mode Verification Guide](docs/mode_verification_guide.md) |
 | Split Joy-Con pairing, bring-up, and natural-motion testing | [Dual Joy-Con Test Guide](docs/dual_joycon_test_guide.md) |

@@ -46,6 +46,17 @@
   dialog#checks pre { white-space: pre-wrap; max-height: 60vh; overflow: auto; font-size: 12px;
     border: 1px solid var(--line); padding: 8px; }
   .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
+  #feedback { padding: 0 20px 28px; }
+  #feedback h2 { font-size: 17px; margin: 0 0 4px; }
+  #fbNote { color: var(--muted); margin: 0 0 10px; }
+  .fb { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; max-width: 900px; }
+  .fb.dropped { opacity: 0.55; } .fb.posted { border-color: var(--accent); }
+  .fb .meta { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+  .fb label { display: block; font-size: 13px; font-weight: 600; margin-top: 6px; }
+  .fb textarea { width: 100%; min-height: 2.6em; font: inherit; padding: 5px 7px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; resize: vertical; }
+  .fb pre { white-space: pre-wrap; font-size: 12px; max-height: 14em; overflow: auto; background: var(--bg); padding: 6px; border-radius: 6px; }
+  .fb .acts { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+  .keyless #feedback { display: none; }
 </style>
 </head>
 <body>
@@ -68,6 +79,12 @@
   <span id="enterError" role="alert"></span>
 </form>
 <div id="rooms"></div>
+<section id="feedback">
+  <h2>Student feedback</h2>
+  <p id="fbNote">Loading...</p>
+  <p><button id="fbDigest">Post all new as one issue</button> <span id="fbStatus" role="status"></span></p>
+  <div id="fbList"></div>
+</section>
 <dialog id="checks">
   <h2>Agent checks</h2>
   <p>Paste this into an AI agent connected to a spare arm. It runs 14 checks and reports a table.
@@ -209,6 +226,76 @@
   });
   document.getElementById("copyAll").addEventListener("click", () =>
     navigator.clipboard.writeText(rooms.map((r) => `${r.name}: ${link(r)}`).join("\n")));
+
+  // --- student feedback: review, edit, then post (nothing posts on its own) --
+  // Everything students wrote is set as text, never as HTML.
+  const tag = (name, cls, text) => {
+    const e = document.createElement(name);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+  const FB_FIELDS = [["worked", "What worked"], ["didnt", "What didn't work"], ["wish", "I wish it could"]];
+  let fbShown = "";
+  async function fbAct(path, body) {
+    const res = await fetch(`${base}/feedback${path}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}),
+    });
+    const reply = await res.json().catch(() => ({}));
+    document.getElementById("fbStatus").textContent = res.ok
+      ? (reply.url ? `Posted: ${reply.url}` : "Saved.") : (reply.error || `Refused (${res.status})`);
+    fbShown = ""; fbRefresh();
+  }
+  function fbCard(f, posting) {
+    const card = tag("div", `fb ${f.status}`);
+    card.append(tag("div", "meta", `${f.room}${f.name ? ", " + f.name : ""} · ${f.created} · ${f.status}`));
+    const boxes = {};
+    for (const [key, words] of FB_FIELDS) {
+      card.append(tag("label", "", words));
+      const box = tag("textarea"); box.value = f[key] || ""; box.disabled = f.status === "posted";
+      boxes[key] = box; card.append(box);
+    }
+    if (f.context && Object.keys(f.context).length) {
+      const details = tag("details"); details.append(tag("summary", "", "What they were doing"));
+      details.append(tag("pre", "", JSON.stringify(f.context, null, 2))); card.append(details);
+    }
+    const acts = tag("div", "acts");
+    if (f.status === "posted") {
+      const a = tag("a", "", f.url); a.href = f.url; a.target = "_blank"; a.rel = "noopener"; acts.append(a);
+    } else {
+      const save = tag("button", "", "Save edits");
+      save.addEventListener("click", () => fbAct(`/${f.id}`, { action: "edit",
+        ...Object.fromEntries(Object.entries(boxes).map(([k, b]) => [k, b.value])) }));
+      const post = tag("button", "", "Post as an issue"); post.disabled = !posting || f.status !== "new";
+      post.addEventListener("click", async () => {
+        await fbAct(`/${f.id}`, { action: "edit", ...Object.fromEntries(Object.entries(boxes).map(([k, b]) => [k, b.value])) });
+        fbAct(`/${f.id}`, { action: "post" });
+      });
+      const keep = tag("button", "", f.status === "dropped" ? "Restore" : "Drop");
+      keep.addEventListener("click", () => fbAct(`/${f.id}`, { action: f.status === "dropped" ? "restore" : "drop" }));
+      acts.append(save, post, keep);
+    }
+    card.append(acts);
+    return card;
+  }
+  async function fbRefresh() {
+    try {
+      const listing = await (await fetch(`${base}/feedback`, { cache: "no-store" })).json();
+      const stamp = JSON.stringify(listing.feedback.map((f) => [f.id, f.status]));
+      if (stamp === fbShown) return;  // do not wipe edits in progress
+      fbShown = stamp;
+      const waiting = listing.feedback.filter((f) => f.status === "new").length;
+      document.getElementById("fbNote").textContent = (listing.posting
+        ? `Posts go to github.com/${listing.repo} as issues, using this computer's gh login. `
+        : "Posting is off: start the hub with --feedback-repo OWNER/NAME to post. ")
+        + `${waiting} waiting for review.`;
+      document.getElementById("fbDigest").disabled = !listing.posting || !waiting;
+      document.getElementById("fbList").replaceChildren(...listing.feedback.slice().reverse().map((f) => fbCard(f, listing.posting)));
+    } catch (err) { /* shown by refresh */ }
+  }
+  document.getElementById("fbDigest").addEventListener("click", () => fbAct("/digest"));
+  setInterval(fbRefresh, 5000);
+  fbRefresh();
 
   setInterval(refresh, 1000);
   refresh(); thumb();

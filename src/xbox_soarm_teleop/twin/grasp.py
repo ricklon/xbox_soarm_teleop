@@ -127,12 +127,26 @@ class _FreeObject:
     soft: bool
 
 
+def _body_extent(model: mujoco.MjModel, body_id: int) -> np.ndarray:
+    """Full extents of a body's box geoms, together, along its own axes (one
+    geom: its size; a movable box: its floor and walls)."""
+    first, count = int(model.body_geomadr[body_id]), int(model.body_geomnum[body_id])
+    if count == 1:
+        return 2.0 * model.geom_size[first].copy()
+    low = np.full(3, np.inf)
+    high = np.full(3, -np.inf)
+    for geom in range(first, first + count):
+        low = np.minimum(low, model.geom_pos[geom] - model.geom_size[geom])
+        high = np.maximum(high, model.geom_pos[geom] + model.geom_size[geom])
+    return high - low
+
+
 class AssistedGrasp:
     """Attach the nearest free object when the jaws close to fit it.
 
     Args:
         model: MuJoCo model; every body with a free joint is graspable. Its
-            size is read from its first geom, and it is soft if the robot
+            size spans its geoms (a box's floor and walls), and it is soft if the robot
             does not collide with that geom.
         data: MuJoCo data.
         settings: The numbers to run on (:class:`GraspSettings`).
@@ -162,7 +176,7 @@ class AssistedGrasp:
                     body_id,
                     int(model.jnt_qposadr[jnt]),
                     int(model.jnt_dofadr[jnt]),
-                    size_m=2.0 * model.geom_size[geom].copy(),
+                    size_m=_body_extent(model, body_id),
                     soft=not (int(model.geom_contype[geom]) & 1),
                 )
         self.parked: tuple[str, ...] = ()

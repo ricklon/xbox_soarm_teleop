@@ -69,6 +69,7 @@ from xbox_soarm_teleop.control.step import CartesianStepConfig, cartesian_step
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
 from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 from xbox_soarm_teleop.sim.table_scenes import (
+    BIN_FLOOR_M,
     GOAL_BOX,
     TABLE_HEIGHT_M,
     TABLE_SCENES,
@@ -843,6 +844,26 @@ def _add_pick_place_scene(
             geom.pos = (np.array(bin_.base_center_m(top)) + np.array(offset, dtype=float)).tolist()
             geom.size = list(size)
             geom.rgba = list(bin_.rgba)
+            geom.contype = 1
+            geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
+    # Movable boxes: free bodies (graspable objects to the twin), parked beyond
+    # the distractors until a layout puts them out. The body's origin is the
+    # middle of the floor plate.
+    for index, box in enumerate(recipe.boxes, start=len(DISTRACTOR_OBJECTS)):
+        body = spec.worldbody.add_body()
+        body.name = box.name
+        body.pos = [DISTRACTOR_REST_XY[0] + 0.3 * index, DISTRACTOR_REST_XY[1], BIN_FLOOR_M + 0.0005]
+        body.add_freejoint()
+        parts = box.parts()
+        for name, offset, size in parts:
+            geom = body.add_geom()
+            geom.name = name
+            geom.type = mujoco.mjtGeom.mjGEOM_BOX
+            geom.pos = list(offset)
+            geom.size = list(size)
+            geom.rgba = list(box.rgba)
+            geom.mass = box.mass_kg / len(parts)
+            geom.friction = [0.6, 0.02, 0.001]  # slides on the table when pushed
             geom.contype = 1
             geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
     for view, aim in (recipe.views or {}).items():

@@ -258,11 +258,14 @@ def test_starts_leave_room_for_an_agents_grasp(layout):
     objects = LAYOUTS[layout].objects
     half = {name: sim_cli.PICK_PLACE_CUBE_HALF_EXTENT for name in objects}
     half.update({name: h[0] for name, h, _, _ in sim_cli.DISTRACTOR_OBJECTS if name in objects})
+    boxes = {box.name: box for box in TABLE_SCENES["sort_bins"].boxes if box.name in objects}
+    half.update({name: box.inner_half_m[0] + 2 * box.wall_m for name, box in boxes.items()})
     for name, (x, y, _z, yaw) in objects.items():
         assert desk.contains(x, y, margin=half[name] + EDGE_GAP_M), (name, "edge")
         assert RING_M[0] <= math.hypot(x, y) <= RING_M[1], (name, "ring")
         assert abs(math.degrees(math.atan2(y, x))) <= MAX_ANGLE_DEG, (name, "pick area")
-        assert yaw == pytest.approx(math.atan2(y, x)), (name, "faces the base")
+        if name not in boxes:  # a box sits square to the desk; only what is picked faces the arm
+            assert yaw == pytest.approx(math.atan2(y, x)), (name, "faces the base")
         for bin_ in TABLE_SCENES["sort_bins"].bins:
             reach = [bin_.inner_half_m[i] + bin_.wall_m + half[name] for i in (0, 1)]
             gap = max(abs(x - bin_.center_xy_m[0]) - reach[0], abs(y - bin_.center_xy_m[1]) - reach[1])

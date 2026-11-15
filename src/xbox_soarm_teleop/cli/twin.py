@@ -34,7 +34,7 @@ DISTRACTOR_SCENES = (
     "distractors_clutter",
 )
 # The colour-sort scenes (twin.layouts, on the sort_bins table scene).
-SORT_SCENES = ("sort_colors", "sort_colors_decoy")
+SORT_SCENES = ("sort_colors", "sort_colors_decoy", "sort_colors_box")
 # The object an agent trial picks in each scene (--start moves it).
 START_TARGETS = {"pick_place_basic": "pick_cube", "pick_place_easy": "bean_bag"}
 SCENES = (
@@ -123,6 +123,13 @@ def build_parser() -> argparse.ArgumentParser:
         "instead of its usual spot (agent trials from random starts)",
     )
     parser.add_argument(
+        "--challenge",
+        default=None,
+        metavar="FILE",
+        help="Set the desk up as a challenge file says (twin/challenges.py): its objects, "
+        "and the names agents are shown (overrides --scene and --names)",
+    )
+    parser.add_argument(
         "--max-seconds", type=float, default=None, help="Exit after this long (automation)"
     )
     return parser
@@ -149,6 +156,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: port {args.port} is in use (another twin running?). Use --port.", flush=True)
         return 2
 
+    challenge = None
+    if args.challenge:
+        from xbox_soarm_teleop.twin.challenges import ChallengeError, check, load_challenge
+
+        try:
+            challenge = load_challenge(Path(args.challenge))
+        except (ChallengeError, OSError) as exc:
+            print(f"ERROR: --challenge: {exc}", flush=True)
+            return 2
+        if args.start:
+            print("ERROR: --challenge sets every object's start; leave out --start", flush=True)
+            return 2
+        args.scene, args.names = challenge.scene, challenge.names
+
     log_path = None
     if not args.no_log:
         log_path = Path(args.log_dir) / f"twin-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.jsonl"
@@ -164,6 +185,13 @@ def main(argv: list[str] | None = None) -> int:
         judge=make_judge(args.judge),
         naming=args.names,
     )
+    if challenge is not None:
+        future = service.load_layout(challenge.layout(), client_id="challenge")
+        service.tick()
+        future.result(timeout=0)
+        print(f"Challenge: {challenge.name}", flush=True)
+        for warning in check(challenge):
+            print(f"  note: {warning}", flush=True)
     if args.start:
         from xbox_soarm_teleop.twin.layouts import layouts_for
         from xbox_soarm_teleop.twin.scenarios import parse_start, place_start

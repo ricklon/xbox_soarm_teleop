@@ -25,6 +25,8 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import sys
+import threading
 from contextvars import ContextVar
 from importlib import resources
 from typing import Any
@@ -38,13 +40,17 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from xbox_soarm_teleop.twin.cameras import MAX_SIZE, VIEWS
 from xbox_soarm_teleop.twin.hub import Hub, Room
-from xbox_soarm_teleop.twin.layouts import BINS
+from xbox_soarm_teleop.twin.layouts import BINS, MOVABLE_BOXES
 from xbox_soarm_teleop.twin.mcp_server import _client_id, build_mcp_server, rename_objects
 from xbox_soarm_teleop.twin.service import TwinService
 from xbox_soarm_teleop.twin.status import status_text
 
 RENDER_TIMEOUT_S = 3.0
 MAX_PAD_BYTES = 2048
+MAX_CHALLENGE_BYTES = 20_000  # a challenge file: a few dozen lines
+CHALLENGE_CLIENT = "challenge"  # who the session log says set a challenge up
+PROVE_AIM_RUNS = 2  # the page's "Can the arm do it?": a few seconds each
+PROVE_TIMEOUT_S = 120.0
 DEFAULT_PICTURE_HZ = 10.0  # camera pictures a second each student page asks for
 PICTURE_HZ_RANGE = (1.0, 30.0)
 AGENT_THREADS = 200  # agents block a worker thread while a move finishes
@@ -116,7 +122,11 @@ jaws, grasps, checks it holds it and retries after a miss); pick(description=
 and says what it is holding. When a request describes objects by how they
 look (colour, shape), pick and check them by description, not by their names:
 names can be wrong. place(bin)
-puts what it holds into a bin, lifts clear and goes home. Prefer them to
+puts what it holds into a bin, lifts clear and goes home.
+push(name or description, direction="left", distance_m=0.05) slides an object
+along the table without lifting it (directions as seen from the arm's base:
+forward/away, back/toward, left, right; or dx_m, dy_m); it pushes whatever is
+in its way too, so one object can push another. Prefer them to
 steering the jaws step by step: decide what goes where, and let the arm do
 the moving.
 
@@ -245,6 +255,8 @@ def where_each_object_is(service: TwinService) -> dict[str, str]:
     scene = service.observe_truth()["scene"]
     labels = {box["name"]: box.get("label") or box["name"] for box in scene.get("bins", [])}
     names = service.shown_names or {}
+    for box in MOVABLE_BOXES.get(service.sim.scene, ()):  # in the name the agent is shown
+        labels[box.name] = names.get(box.name, box.label).replace("_", " ")
     where = {}
     for name, entry in scene["objects"].items():
         if entry.get("attached"):
@@ -316,6 +328,8 @@ def build_hub_app(
     agent_models: tuple[str, ...] | None = None,
     agent_budget_usd: float | None = None,
     agent_post=None,
+    feedback_repo: str | None = None,
+    feedback_post=None,
 ):
     """Build the ASGI app serving ``hub``.
 
@@ -333,6 +347,9 @@ def build_hub_app(
             (``twin.hub_agent``); an empty tuple turns the panel off.
         agent_budget_usd: Each arm's budget for the panel's agent model.
         agent_post: Sends requests to OpenRouter (tests pass a scripted model).
+        feedback_repo: GitHub repository (OWNER/NAME) the instructor posts
+            student feedback to (``twin.feedback``); None: posting is off.
+        feedback_post: Opens an issue (tests pass a stand-in for ``gh``).
     """
     picture_ms = round(1000 / min(max(picture_hz, PICTURE_HZ_RANGE[0]), PICTURE_HZ_RANGE[1]))
 
@@ -435,7 +452,14 @@ def build_hub_app(
         room = room_of(request)
         if room is None:
             return not_found
-        prompts = (
+        if room.challenge is not None:  # the challenge's own request first
+            first = [
+                {"title": f"Challenge: {room.challenge.name}", "text": text}
+                for text in room.challenge.requests
+            ]
+        else:
+            first = []
+        prompts = first + list(
             SORTING_PROMPTS
             if BINS.get(room.service.sim.scene) and len(BINS[room.service.sim.scene]) > 1
             else STARTER_PROMPTS
@@ -486,6 +510,153 @@ def build_hub_app(
             return not_found
         return JSONResponse({"ok": True, "stopped": desk.stop(room)}, headers=PAGE_HEADERS)
 
+    # --- challenges a student designs (twin/challenges.py) -------------------
+    # The room's link is its key, as for the page; a challenge resets the arm.
+
+    @server.custom_route("/r/{token}/challenge", methods=["GET"])
+    async def challenge_get(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        current = room.challenge.summary() if room.challenge is not None else None
+        return JSONResponse({"challenge": current}, headers=PAGE_HEADERS)
+
+    async def posted_challenge(request: Request):
+        """The challenge in a request's body (JSON or YAML), or an error response."""
+        from xbox_soarm_teleop.twin.challenges import ChallengeError, load_challenge
+
+        body = await request.body()
+        if len(body) > MAX_CHALLENGE_BYTES:
+            return JSONResponse({"error": "that challenge is too long"}, status_code=400)
+        try:
+            text = body.decode("utf-8")
+            spec = json.loads(text) if text.lstrip().startswith("{") else text
+            return load_challenge(spec if isinstance(spec, dict) else str(spec) + "\n")
+        except (ChallengeError, UnicodeDecodeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400, headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/challenge/examples", methods=["GET"])
+    async def challenge_examples(request: Request) -> Response:
+        from xbox_soarm_teleop.twin.challenges import examples
+
+        if room_of(request) is None:
+            return not_found
+        listed = [{"name": name, "text": text} for name, text in examples().items()]
+        return JSONResponse({"examples": listed}, headers=PAGE_HEADERS)
+
+    proving = threading.Lock()  # one proof at a time: each runs a twin of its own
+
+    @server.custom_route("/r/{token}/challenge/prove", methods=["POST"])
+    async def challenge_prove(request: Request) -> Response:
+        if room_of(request) is None:
+            return not_found
+        challenge = await posted_challenge(request)
+        if isinstance(challenge, Response):
+            return challenge
+        if not proving.acquire(blocking=False):
+            return JSONResponse(
+                {"error": "another arm's challenge is being proved; try again in a few seconds"},
+                status_code=429,
+                headers=PAGE_HEADERS,
+            )
+        try:
+            # In a process of its own: a proof runs its own twin flat out, and
+            # in this one it would slow every student's arm.
+            child = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "xbox_soarm_teleop.cli.challenge",
+                "prove",
+                "-",
+                "--aim-runs",
+                str(PROVE_AIM_RUNS),
+                "--json",
+                "-",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            spec = json.dumps(challenge.summary()).encode()
+            out, _ = await asyncio.wait_for(child.communicate(spec), PROVE_TIMEOUT_S)
+            proof = json.loads(out.decode().strip().splitlines()[-1])
+        except (asyncio.TimeoutError, ValueError, IndexError, OSError) as exc:
+            if "child" in locals() and child.returncode is None:
+                child.kill()
+            return JSONResponse(
+                {"error": f"the check did not finish ({type(exc).__name__})"},
+                status_code=500,
+                headers=PAGE_HEADERS,
+            )
+        finally:
+            proving.release()
+
+        def run_summary(run):
+            if run is None:
+                return None
+            return {k: run.get(k) for k in ("done", "in_bin", "off_table")}
+
+        return JSONResponse(
+            {
+                "verdict": proof["verdict"],
+                "why": proof["why"],
+                "hidden": proof.get("hidden") or [],
+                "true_run": run_summary(proof.get("true_run")),
+                "aim_runs": [run_summary(run) for run in proof.get("aim_runs") or []],
+            },
+            headers=PAGE_HEADERS,
+        )
+
+    @server.custom_route("/r/{token}/challenge", methods=["POST"])
+    async def challenge_post(request: Request) -> Response:
+        from xbox_soarm_teleop.twin.challenges import check
+
+        room = room_of(request)
+        if room is None:
+            return not_found
+        challenge = await posted_challenge(request)
+        if isinstance(challenge, Response):
+            return challenge
+        if desk.state(room)["running"]:
+            return JSONResponse(
+                {"error": "an agent is running on this arm: stop it first"}, status_code=409
+            )
+        try:
+            await asyncio.wrap_future(
+                room.service.load_layout(challenge.layout(), client_id=CHALLENGE_CLIENT)
+            )
+        except Exception as exc:  # noqa: BLE001 - refused (someone is driving): say why
+            return JSONResponse(
+                {"error": f"the arm could not be set up: {exc}"}, status_code=409, headers=PAGE_HEADERS
+            )
+        if room.challenge is None:
+            room.naming_before = room.service.naming
+        room.service.naming = challenge.names
+        room.challenge = challenge
+        return JSONResponse(
+            {"ok": True, "challenge": challenge.summary(), "warnings": check(challenge)},
+            headers=PAGE_HEADERS,
+        )
+
+    @server.custom_route("/r/{token}/challenge", methods=["DELETE"])
+    async def challenge_clear(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        if room.challenge is not None:
+            try:
+                await asyncio.wrap_future(
+                    room.service.load_scene(hub.scene, client_id=CHALLENGE_CLIENT)
+                )
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    {"error": f"the arm could not be reset: {exc}"},
+                    status_code=409,
+                    headers=PAGE_HEADERS,
+                )
+            room.service.naming = room.naming_before or room.service.naming
+            room.challenge = None
+        return JSONResponse({"ok": True}, headers=PAGE_HEADERS)
+
     @server.custom_route("/r/{token}/scores", methods=["GET"])
     async def scores(request: Request) -> Response:
         # The answer key for the room's own notebook: each guess against the
@@ -506,6 +677,14 @@ def build_hub_app(
         names = room.service.shown_names
         if names:  # in the names the student (and their agent) sees
             key = rename_objects(key, names)
+        layout = room.service.layout
+        if room.challenge is not None and layout is not None and layout.name == "challenge":
+            # In the designer's own names, whatever the agent sees; not once
+            # another scene has been picked.
+            from xbox_soarm_teleop.twin.challenges import grade_challenge
+
+            in_bin = {n: thing.get("in_bin") for n, thing in truth["scene"]["objects"].items()}
+            key["challenge"] = grade_challenge(room.challenge, in_bin)
         return JSONResponse(key, headers=PAGE_HEADERS)
 
     @server.custom_route("/r/{token}/tools", methods=["GET"])
@@ -598,6 +777,155 @@ def build_hub_app(
         for room in hub.rooms.values():
             room.service.release_stop(by="instructor")
         return done()
+
+    # --- feedback: students send, the instructor reviews and posts ------------
+    from xbox_soarm_teleop.twin.feedback import (
+        FIELDS,
+        MAX_FIELD_CHARS,
+        FeedbackBox,
+        digest_text,
+        gh_post,
+        issue_text,
+        labels_for,
+        scrub,
+    )
+
+    logged = next((room.log_path for room in hub.rooms.values() if room.log_path), None)
+    feedback = FeedbackBox(logged.parent / "feedback.json" if logged else None)
+    post_issue = feedback_post or gh_post
+    hub.feedback = feedback
+
+    def keys() -> list[str]:
+        return [hub.admin_token, *hub.rooms]
+
+    def what_they_were_doing(room: Room) -> dict:
+        context: dict[str, Any] = {
+            "scene": room.service.observe()["scene"]["name"],
+            "names": room.service.naming,
+        }
+        if room.challenge is not None:
+            context["challenge"] = room.challenge.summary()
+            layout = room.service.layout
+            if layout is not None and layout.name == "challenge":
+                from xbox_soarm_teleop.twin.challenges import grade_challenge
+
+                truth = room.service.observe_truth()["scene"]["objects"]
+                in_bin = {n: thing.get("in_bin") for n, thing in truth.items()}
+                context["challenge_result"] = grade_challenge(room.challenge, in_bin)
+        run = desk.state(room).get("run")
+        if run:
+            calls = [
+                f"{call['name']}({(call.get('arguments') or '')[:100]}) {'ok' if call.get('ok') else 'FAILED'}"
+                for step in run.get("steps", [])
+                for call in step.get("calls") or []
+            ]
+            context["agent_run"] = {
+                "task": run.get("task"),
+                "model": run.get("model"),
+                "sees": run.get("sees"),
+                "stop_reason": run.get("stop_reason"),
+                "steps": len(run.get("steps", [])),
+                "calls": calls[-25:],
+                "final_text": (run.get("final_text") or "")[:1500],
+            }
+        return context
+
+    @server.custom_route("/r/{token}/feedback", methods=["GET"])
+    async def feedback_mine(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        return JSONResponse({"feedback": feedback.for_room(room.name)}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/feedback", methods=["POST"])
+    async def feedback_send(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        body = await request.body()
+        try:
+            sent = json.loads(body or b"{}") if len(body) <= 4 * MAX_FIELD_CHARS + 2000 else None
+        except ValueError:
+            sent = None
+        if not isinstance(sent, dict):
+            return JSONResponse({"error": "too long, or not a JSON object"}, status_code=400)
+        fields = {f: str(sent.get(f) or "").strip() for f in FIELDS}
+        if not any(fields.values()):
+            return JSONResponse({"error": "write at least one of the three"}, status_code=400)
+        if any(len(text) > MAX_FIELD_CHARS for text in fields.values()):
+            return JSONResponse(
+                {"error": f"each box takes up to {MAX_FIELD_CHARS} characters"}, status_code=400
+            )
+        context = what_they_were_doing(room) if sent.get("attach") else {}
+        item = feedback.add(
+            room=room.name,
+            name=scrub(str(sent.get("name") or "").strip()[:80], keys()),
+            context=scrub(context, keys()),
+            **scrub(fields, keys()),
+        )
+        return JSONResponse({"ok": True, "id": item.id}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/admin/{token}/feedback", methods=["GET"])
+    async def feedback_review(request: Request) -> Response:
+        if not is_admin(request):
+            return not_found
+        listing = {"feedback": feedback.all(), "repo": feedback_repo, "posting": bool(feedback_repo)}
+        return JSONResponse(listing, headers=PAGE_HEADERS)
+
+    async def post_items(items, title: str, body: str) -> Response:
+        if not feedback_repo:
+            return JSONResponse(
+                {"error": "posting is off: start the hub with --feedback-repo OWNER/NAME"},
+                status_code=409,
+                headers=PAGE_HEADERS,
+            )
+        try:
+            url = await asyncio.to_thread(post_issue, feedback_repo, title, body, labels_for(items))
+        except Exception as exc:  # noqa: BLE001 - gh missing, not logged in, offline: say so
+            return JSONResponse({"error": f"not posted: {exc}"}, status_code=502, headers=PAGE_HEADERS)
+        for item in items:
+            feedback.update(item, status="posted", url=url)
+        return JSONResponse({"ok": True, "url": url}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/admin/{token}/feedback/digest", methods=["POST"])
+    async def feedback_digest(request: Request) -> Response:
+        if not is_admin(request):
+            return not_found
+        items = [item for item in feedback.items if item.status == "new"]
+        if not items:
+            return JSONResponse({"error": "nothing new to post"}, status_code=409, headers=PAGE_HEADERS)
+        return await post_items(items, *digest_text(items))
+
+    @server.custom_route("/admin/{token}/feedback/{item_id:int}", methods=["POST"])
+    async def feedback_act(request: Request) -> Response:
+        if not is_admin(request):
+            return not_found
+        item = feedback.get(request.path_params["item_id"])
+        if item is None:
+            return not_found
+        try:
+            asked = json.loads(await request.body() or b"{}")
+        except ValueError:
+            asked = None
+        if not isinstance(asked, dict):
+            return JSONResponse({"error": "expected a JSON object"}, status_code=400)
+        action = asked.get("action")
+        if item.status == "posted":
+            return JSONResponse(
+                {"error": "already posted", "url": item.url}, status_code=409, headers=PAGE_HEADERS
+            )
+        if action == "drop":
+            feedback.update(item, status="dropped")
+        elif action == "restore":
+            feedback.update(item, status="new")
+        elif action == "edit":
+            changes = {f: str(asked[f])[:MAX_FIELD_CHARS] for f in (*FIELDS, "name") if f in asked}
+            feedback.update(item, **scrub(changes, keys()))
+        elif action == "post":
+            return await post_items([item], *issue_text(item))
+        else:
+            return JSONResponse({"error": "action: edit, drop, restore or post"}, status_code=400)
+        return JSONResponse({"ok": True}, headers=PAGE_HEADERS)
 
     hosts = [f"127.0.0.1:{port}", f"localhost:{port}", f"{host}:{port}"]
     origins = [f"http://127.0.0.1:{port}", f"http://localhost:{port}"]

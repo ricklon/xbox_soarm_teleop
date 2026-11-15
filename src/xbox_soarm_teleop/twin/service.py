@@ -68,8 +68,10 @@ from xbox_soarm_teleop.twin.grasp import AssistedGrasp
 from xbox_soarm_teleop.twin.layouts import (
     BINS,
     GOALS,
+    MOVABLE_BOXES,
     Layout,
     layouts_for,
+    live_box,
     object_description,
 )
 from xbox_soarm_teleop.twin.pointing import Pointer, PointRequest, mask_secrets
@@ -341,6 +343,36 @@ class TwinService:
             )
         )
 
+    def load_layout(self, layout, *, client_id: str = "agent") -> Future:
+        """Set the desk up as ``layout`` says (a challenge's own arrangement,
+        ``twin.challenges``): home the arm, swap the objects. Reset restores it.
+
+        Resolves to the layout's summary; refused if ``layout`` is for another
+        compiled scene.
+        """
+        return self.call(
+            self._logged(
+                "load_layout",
+                client_id,
+                {"objects": {name: list(pose) for name, pose in layout.objects.items()}},
+                lambda: self._load_layout(layout, client_id),
+            )
+        )
+
+    def _load_layout(self, layout, client_id: str) -> dict[str, Any]:
+        if self.stop_latched_by is not None:
+            raise ActionRejected(ReasonCode.STOPPED, f"latched by {self.stop_latched_by}")
+        if layout.model_scene != self.sim.scene:
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST,
+                f"that arrangement is for the {layout.model_scene} scene, this arm has {self.sim.scene}",
+            )
+        self._ensure_owner(client_id)
+        self.layout = layout
+        self._reset_scene()
+        self._event("layout loaded")
+        return {**self.layout.summary(), "current": True}
+
     def list_scenes(self) -> list[dict[str, Any]]:
         """The scenes ``load_scene`` accepts, easiest first, marking the current one."""
         layouts = layouts_for(self.sim.scene)
@@ -464,6 +496,29 @@ class TwinService:
         result = skills.place(self, bin_name, client_id=client_id)
         # The result has its own "bin": the log line names the request's target_bin.
         self._log("skill_result", client_id=client_id, skill="place", target_bin=bin_name, **result)
+        return result
+
+    def push(
+        self,
+        name: str | None = None,
+        *,
+        description: str | None = None,
+        direction: str | None = None,
+        distance_m: float | None = None,
+        dx_m: float | None = None,
+        dy_m: float | None = None,
+        client_id: str = "agent",
+    ) -> dict[str, Any]:
+        """Slide an object along the table (``twin.skills.push``). Blocks; call it
+        from a client thread."""
+        from xbox_soarm_teleop.twin import skills
+
+        asked = {"direction": direction, "distance_m": distance_m, "dx_m": dx_m, "dy_m": dy_m}
+        self._log(
+            "request", client_id=client_id, type="push", name=name, description=description, **asked
+        )
+        result = skills.push(self, name, description=description, client_id=client_id, **asked)
+        self._log("skill_result", client_id=client_id, skill="push", target=name, **result)
         return result
 
     def check_success(
@@ -591,6 +646,10 @@ class TwinService:
                 "detail": "this twin has no success judge (start it with --judge)",
             }
         boxes = [(box.name, box.label or box.name) for box in BINS[self.sim.scene]]
+        out = self.observe()["scene"]["objects"]  # and any movable box out on the table
+        boxes += [
+            (box.name, box.label) for box in MOVABLE_BOXES.get(self.sim.scene, ()) if box.name in out
+        ]
         if bin_name is not None and bin_name not in dict(boxes):
             known = ", ".join(name_ for name_, _ in boxes)
             return {
@@ -1484,6 +1543,14 @@ class TwinService:
         goal = GOALS.get(self.sim.scene)
         # A scene with several bins (a sorting scene) says which bin each object is in.
         bins = BINS.get(self.sim.scene, ()) if goal is None else ()
+        loose = self.grasp.positions()
+        movable = {}  # movable boxes out on the table, where they are now
+        for box in MOVABLE_BOXES.get(self.sim.scene, ()):
+            if box.name in loose:
+                turn = self.grasp._rotation(box.name)  # noqa: SLF001 - the twin's own grasp
+                yaw = math.atan2(float(turn[1, 0]), float(turn[0, 0]))
+                movable[box.name] = live_box(box, loose[box.name], yaw)
+        bins = tuple(bins) + tuple(movable.values())
         opening = self.grasp.settings.jaw_opening_m(self.state.gripper_pos)
         jaw_center = self.grasp.jaw_center(opening)
         objects = {}
@@ -1504,9 +1571,15 @@ class TwinService:
             if bins:
                 half = self.grasp.half_extents_world(name)
                 entry["in_bin"] = next(
-                    (box.name for box in bins if name != self.grasp.attached and box.holds(xyz, half)),
+                    (
+                        box.name
+                        for box in bins
+                        if box.name != name and name != self.grasp.attached and box.holds(xyz, half)
+                    ),
                     None,
                 )
+            if name in movable:
+                entry["box"] = True  # an open box: things go in it; push it to move it
             objects[name] = entry
         scene = {
             "name": self.layout.name if self.layout is not None else self.sim.scene,

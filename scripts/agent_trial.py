@@ -278,14 +278,34 @@ def grade_task(log_path: Path, task) -> dict:
     return {**common, **grade_sort(task, in_bin)}
 
 
-def prompt_for(args, run: int) -> str:
-    """What the agent is asked: a sort task's request (the next wording each
-    run), or the single-object pick and place."""
-    task_name = getattr(args, "task", None)
-    if task_name:
+def apply_challenge(args) -> None:
+    """--challenge FILE: run in its scene, with the names it chose for the agent."""
+    from xbox_soarm_teleop.twin.challenges import load_challenge
+
+    challenge = load_challenge(Path(args.challenge))
+    args.scene = challenge.scene
+    args.names = challenge.names
+
+
+def task_of(args):
+    """The sort task a run is graded against: --task, or --challenge's (None: pick and place)."""
+    if getattr(args, "challenge", None):
+        from xbox_soarm_teleop.twin.challenges import load_challenge
+
+        return load_challenge(Path(args.challenge)).task()
+    if getattr(args, "task", None):
         from xbox_soarm_teleop.twin.tasks import TASKS
 
-        requests = TASKS[task_name].requests
+        return TASKS[args.task]
+    return None
+
+
+def prompt_for(args, run: int) -> str:
+    """What the agent is asked: a sort task's or challenge's request (the next
+    wording each run), or the single-object pick and place."""
+    task = task_of(args)
+    if task is not None:
+        requests = task.requests
         prompt = SORT_PROMPT.format(request=requests[run % len(requests)])
         if getattr(args, "require_check", False):
             prompt += "\n" + SORT_REQUIRE_CHECK
@@ -425,15 +445,12 @@ def twin_command(args, port: int, logs: Path, run: int) -> list[str]:
         *(["--judge", args.judge] if args.judge else []),
         *(["--start", f"{start[0]:.4f},{start[1]:.4f}"] if start else []),
         *(["--names", args.names] if getattr(args, "names", "as_is") != "as_is" else []),
+        *(["--challenge", str(args.challenge)] if getattr(args, "challenge", None) else []),
     ]
 
 
 def run_once(args, run: int) -> dict:
-    task = None
-    if getattr(args, "task", None):
-        from xbox_soarm_teleop.twin.tasks import TASKS
-
-        task = TASKS[args.task]
+    task = task_of(args)
     port = free_port()
     work = Path(tempfile.mkdtemp(prefix="agent_trial_"))
     logs = work / "logs"
@@ -469,6 +486,8 @@ def run_once(args, run: int) -> dict:
     }
     if task is not None:
         result["request"] = task.requests[run % len(task.requests)]
+    if getattr(args, "challenge", None):
+        result["challenge_file"] = str(args.challenge)
     variant = ("judge" if args.judge else "no_judge") + ("+required" if args.require_check else "")
     final_text = outcome.pop("agent_final", "")
     stopped = outcome.pop("stopped", False)
@@ -587,6 +606,13 @@ def main(argv: list[str] | None = None) -> int:
         "wording, graded against what was asked",
     )
     parser.add_argument(
+        "--challenge",
+        default=None,
+        metavar="FILE",
+        help="A challenge file (twin/challenges.py, examples in challenges/): its desk, "
+        "request and names for the agent, graded against what it expects",
+    )
+    parser.add_argument(
         "--random-start",
         action="store_true",
         help="Start the object at a random table spot per run (the same for run i in every "
@@ -610,6 +636,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.random_start:
             parser.error("--task runs without --random-start")
         args.scene = TASKS[args.task].scene
+    if args.challenge:
+        from xbox_soarm_teleop.twin.challenges import ChallengeError
+
+        if args.task or args.random_start:
+            parser.error("--challenge runs without --task and --random-start")
+        try:
+            apply_challenge(args)
+        except (ChallengeError, OSError) as exc:
+            parser.error(f"--challenge: {exc}")
     if args.judge and not judge_answers(args.judge):
         return 2
     uses_openrouter = args.harness == "loop" or str(args.pointer).startswith("openrouter")
@@ -624,7 +659,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result), flush=True)
         with out.open("a") as handle:
             handle.write(json.dumps(result) + "\n")
-    what = f"task {args.task} done" if args.task else "in the goal box"
+    task = task_of(args)
+    what = f"task {task.name} done" if task is not None else "in the goal box"
     print(
         f"{args.model} ({args.harness}) {args.scene} pointer={args.pointer}: "
         f"{successes}/{args.runs} {what}"

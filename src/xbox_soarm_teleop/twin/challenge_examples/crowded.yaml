@@ -1,0 +1,11 @@
+# The cubes closer together than the standard desk allows (7 cm, not 10).
+# Expected weak spot: grasping one pushes its neighbour.
+name: crowded
+scene: sort_colors
+objects:
+  red_cube:   {x: 0.26, y: -0.05}
+  blue_cube:  {x: 0.27, y: 0.02}
+  green_cube: {x: 0.31, y: 0.08}
+names: truthful
+request: Sort the cubes by colour into the bins.
+expect: {red_cube: red_bin, blue_cube: blue_bin, green_cube: green_bin}

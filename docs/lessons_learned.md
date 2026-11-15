@@ -198,6 +198,26 @@ and take over. Benchmark each layer at its own job.
 26. **Costs per call:** Gemini 3.5 Flash $0.004, Gemma 4 31B $0.0002, Clef
     $0.0002. A whole sort run with skills: about 1 to 2 cents.
 
+## Pushing and movable boxes
+
+27. **Agents do not know how to push.** Asked to push a cube 10 cm, one
+    lowered the jaws onto the cube's own spot and slid off it; asked to push
+    cubes into each other, another picked and placed instead. Pushing is a
+    skill like picking: get behind, go low, slide, look again.
+28. **Push slowly, and stop short.** The simulated arm moves kinematically:
+    at full speed it kicks an object rather than pushes it, so it flew on,
+    and sideways off the narrow closed jaws (asked 6 cm, it went 7 to 12 cm,
+    and up to 5 cm sideways). At 3 cm/s it goes straight. The jaws' face also
+    leads the point the arm steers by (about 2.5 cm, measured), so each push
+    stops that much short and the next one finishes it.
+29. **Never push toward the base.** To push an object back toward the arm,
+    the gripper must come down in front of it, and its body, which hangs
+    back toward the base, lands on the object. Corrections that tried it made
+    things worse; now an overshoot is reported, not corrected.
+30. **A container must be graded where it is now.** Bins were furniture
+    with fixed positions; a box that is pushed needs its live position and
+    turn, or a cube that rode along in it stops counting as "in" it.
+
 ## What we have not solved yet
 
 - The plan-first step (agent states what it sees and intends before moving)
@@ -205,7 +225,7 @@ and take over. Benchmark each layer at its own job.
 - Agents believe names without looking (lesson 23). Working by description
   (lesson 24) answers it for colour sorting; `observe` still lists names,
   and requests that need more than colour and shape are untested.
-- The 8 of 9 `pick` rate uses simulated aim errors; real pointer behaviour
+- The 9 of 9 `pick` rate uses simulated aim errors; real pointer behaviour
   differs (lesson 16).
 - Nothing yet compares with a learned policy or with a person on the pad on
   the same cell and tasks.

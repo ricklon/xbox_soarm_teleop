@@ -48,7 +48,7 @@ RESULT_PREVIEW_CHARS = 400  # of each tool's answer, kept in the step for a tran
 # Skills move the arm and look several times in one call: a pick with a
 # hosted pointing model takes 20 to 90 s. Cutting one short would leave it
 # running in the twin while the model, told "timeout", sends other moves.
-SKILL_TIMEOUTS_S = {"pick": 240.0, "place": 120.0}
+SKILL_TIMEOUTS_S = {"pick": 240.0, "place": 120.0, "push": 240.0}
 
 
 def tool_timeout(name: str) -> float:
