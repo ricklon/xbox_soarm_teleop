@@ -68,6 +68,12 @@ from xbox_soarm_teleop.control.safety import make_workspace_clipper
 from xbox_soarm_teleop.control.step import CartesianStepConfig, cartesian_step
 from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
 from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
+from xbox_soarm_teleop.sim.table_scenes import (
+    GOAL_BOX,
+    TABLE_HEIGHT_M,
+    TABLE_SCENES,
+    is_table_scene,
+)
 from xbox_soarm_teleop.sim.world import DEFAULT_WORLD, WORLD_NAMES, apply_world
 
 # Project paths
@@ -129,7 +135,7 @@ STACK_COLORS = [
     (0.65, 0.65, 0.12, 1.0),
     (0.12, 0.12, 0.65, 1.0),
 ]
-PICK_PLACE_TABLE_HEIGHT = 0.12
+PICK_PLACE_TABLE_HEIGHT = TABLE_HEIGHT_M
 PICK_PLACE_TABLE_CENTER = np.array([0.31, 0.04, PICK_PLACE_TABLE_HEIGHT / 2.0], dtype=float)
 PICK_PLACE_TABLE_HALF_EXTENTS = np.array([0.16, 0.14, PICK_PLACE_TABLE_HEIGHT / 2.0], dtype=float)
 PICK_PLACE_CUBE_HALF_EXTENT = 0.02
@@ -137,9 +143,10 @@ PICK_PLACE_CUBE_MASS = 0.04
 PICK_PLACE_CUBE_START = np.array(
     [0.34, -0.03, PICK_PLACE_TABLE_HEIGHT + PICK_PLACE_CUBE_HALF_EXTENT], dtype=float
 )
-PICK_PLACE_GOAL_CENTER = np.array([0.29, 0.13, PICK_PLACE_TABLE_HEIGHT + 0.001], dtype=float)
-PICK_PLACE_GOAL_INNER_HALF_EXTENTS = np.array([0.045, 0.045, 0.03], dtype=float)
-PICK_PLACE_GOAL_WALL_THICKNESS = 0.005
+# The single-box scene's goal box (a bin recipe; see sim/table_scenes.py).
+PICK_PLACE_GOAL_CENTER = np.array(GOAL_BOX.base_center_m(TABLE_HEIGHT_M), dtype=float)
+PICK_PLACE_GOAL_INNER_HALF_EXTENTS = np.array(GOAL_BOX.inner_half_m, dtype=float)
+PICK_PLACE_GOAL_WALL_THICKNESS = GOAL_BOX.wall_m
 # A soft object for first grasps. It is a rigid box to the physics, but the arm
 # passes through it instead of pushing it (see ``SOFT_OBJECT_COLLISION_BIT``),
 # the way a real bean bag gives way to a jaw.
@@ -152,6 +159,26 @@ BEAN_BAG_START = np.array(
 # Soft objects collide only with geoms that carry this bit: the table, the goal
 # box and the floor, but not the robot (whose geoms keep MuJoCo's default bit 1).
 SOFT_OBJECT_COLLISION_BIT = 2
+# Objects for the twin's distractor scenes (twin.layouts): rigid boxes that
+# look like the red cube in one way or another. Name, half extents (m), colour,
+# mass (kg). They rest on the floor far from the table, out of every view,
+# until a scene puts them on it.
+DISTRACTOR_OBJECTS = (
+    # 3 cm tall at least: the jaw center stops 1.5 cm over the table (lower, the
+    # jaw tips hit it), so a 2.4 cm object's center is below the pads.
+    ("red_cube_small", (0.015, 0.015, 0.015), (0.85, 0.25, 0.20, 1.0), 0.02),
+    ("blue_cube", (0.02, 0.02, 0.02), (0.20, 0.40, 0.85, 1.0), PICK_PLACE_CUBE_MASS),
+    ("red_bar", (0.015, 0.035, 0.015), (0.85, 0.25, 0.20, 1.0), 0.035),
+    ("green_cube", (0.015, 0.015, 0.015), (0.20, 0.70, 0.30, 1.0), 0.02),
+    ("yellow_cube", (0.015, 0.015, 0.015), (0.95, 0.78, 0.15, 1.0), 0.02),
+)
+DISTRACTOR_REST_XY = (8.0, 8.0)  # first object's spot on the floor; the rest 0.3 m apart
+# The scene's size as MuJoCo would compute it without the resting distractors.
+# Left to MuJoCo, objects 8 m away grow it to 9 m, and with it every camera's
+# near clipping plane (0.01 x extent): 9 cm, which cut away a held object in
+# the wrist camera.
+PICK_PLACE_STAT_CENTER = (0.2245, 0.04, 0.0779)
+PICK_PLACE_STAT_EXTENT = 0.6128
 
 
 class StackChallenge:
@@ -338,7 +365,7 @@ class MuJoCoSimulator:
             model = load_model_with_cameras(urdf_path, scene=scene, world=world)
         self.model = model
         self.data = mujoco.MjData(self.model)
-        self.physics_scene_active = scene in {"stack", "pick_place_basic"}
+        self.physics_scene_active = scene == "stack" or is_table_scene(scene)
 
         # Get joint indices
         self.joint_ids = {}
@@ -362,7 +389,7 @@ class MuJoCoSimulator:
         self.go_home()
         if scene == "stack":
             self._settle_stack_scene()
-        elif scene == "pick_place_basic":
+        elif is_table_scene(scene):
             self._bind_pick_place_scene()
 
     def go_home(self) -> None:
@@ -460,7 +487,8 @@ class MuJoCoSimulator:
         return self.scene == "stack"
 
     def has_pick_place_scene(self) -> bool:
-        return self.scene == "pick_place_basic"
+        """The table, with objects and bins (``pick_place_basic`` or another table scene)."""
+        return is_table_scene(self.scene)
 
     def _settle_stack_scene(self, steps: int = 200) -> None:
         """Let the stack fall onto the plane and record resting positions."""
@@ -688,25 +716,32 @@ def _add_gripper_collision_boxes(spec: mujoco.MjSpec) -> None:
     finger.mass = 0.0
 
 
-# Wrist camera on gripper_link (local frame: -z points along the gripper toward
-# the tool, +x is "up" when the gripper is level). Mounted beside and above the
-# fixed jaw and tilted down so the jaws, tool point and object are in view.
-WRIST_CAMERA_POS = (0.05, 0.035, -0.06)
-WRIST_CAMERA_TILT_DEG = 55.0
-WRIST_CAMERA_FOVY_DEG = 80.0
+# Wrist camera on gripper_link, where the real arm's Seeed Studio camera sits
+# (RGB USB camera, OV9732, 1280x720, 100 degrees): on a post 50 mm out from the
+# gripper's side (+y in this frame; the body reaches 24 mm), 7 mm from the jaw
+# line toward the moving jaw (about a held object's center) and 20 mm along
+# the fingers, tilted 40 degrees in toward them. The jaws close along +x, so
+# both jaw tips come in from the picture's left and right with the object
+# between them. gripper_link frame: -z runs along the fingers toward the tips,
+# +x is the way the moving jaw opens. FOVY assumes the 100 degrees is the
+# diagonal of a 16:9 picture (92 across, 61 high); render it at 16:9
+# (twin.cameras.WRIST_SIZE).
+WRIST_CAMERA_POS = (0.007, 0.074, -0.02)
+WRIST_CAMERA_TILT_DEG = 40.0
+WRIST_CAMERA_FOVY_DEG = 61.0
 
 
 def _add_wrist_camera(spec: mujoco.MjSpec) -> None:
     """Add the ``wrist`` camera that moves with the gripper."""
     tilt = np.deg2rad(WRIST_CAMERA_TILT_DEG)
-    forward = np.array([0.0, 0.0, -1.0])
-    up = np.array([1.0, 0.0, 0.0])
-    right = np.array([0.0, -1.0, 0.0])
+    right = np.array([1.0, 0.0, 0.0])  # toward the moving jaw
+    # Picture up: away from the gripper, tipped back from the fingers by the tilt.
+    up = np.array([0.0, np.cos(tilt), -np.sin(tilt)])
     camera = spec.body("gripper_link").add_camera()
     camera.name = "wrist"
     camera.pos = WRIST_CAMERA_POS
     camera.alt.type = mujoco.mjtOrientation.mjORIENTATION_XYAXES
-    camera.alt.xyaxes = np.concatenate([right, up * np.cos(tilt) + forward * np.sin(tilt)])
+    camera.alt.xyaxes = np.concatenate([right, up])
     camera.fovy = WRIST_CAMERA_FOVY_DEG
 
 
@@ -735,8 +770,11 @@ def _add_stack_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
         geom.friction = [1.1, 0.02, 0.001]
 
 
-def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
-    """Add table, cube and goal box (and a grey ground plane if the world has none)."""
+def _add_pick_place_scene(
+    spec: mujoco.MjSpec, *, add_floor: bool, scene: str = "pick_place_basic"
+) -> None:
+    """Add the table, its objects and the scene's bins (and a grey ground plane if
+    the world has none). ``scene`` names the recipe in ``TABLE_SCENES``."""
     if add_floor:
         floor = spec.worldbody.add_geom()
         floor.name = "pick_place_floor"
@@ -745,12 +783,14 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
         floor.pos = [0.2, 0.0, 0.0]
         floor.rgba = [0.45, 0.45, 0.45, 1.0]
 
+    recipe = TABLE_SCENES[scene]
+    top = recipe.table.top_z
     table = spec.worldbody.add_geom()
     table.name = "pick_place_table"
     table.type = mujoco.mjtGeom.mjGEOM_BOX
-    table.size = PICK_PLACE_TABLE_HALF_EXTENTS.tolist()
-    table.pos = PICK_PLACE_TABLE_CENTER.tolist()
-    table.rgba = [0.60, 0.60, 0.60, 1.0]
+    table.size = [*recipe.table.half_xy_m, top / 2.0]
+    table.pos = [*recipe.table.center_xy_m, top / 2.0]
+    table.rgba = list(recipe.table.rgba)
     table.friction = [1.1, 0.02, 0.001]
     table.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
 
@@ -780,70 +820,48 @@ def _add_pick_place_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
     bag_geom.contype = SOFT_OBJECT_COLLISION_BIT
     bag_geom.conaffinity = SOFT_OBJECT_COLLISION_BIT
 
-    goal_parts = [
-        ("goal_base", [0.0, 0.0, 0.0], [*PICK_PLACE_GOAL_INNER_HALF_EXTENTS[:2], 0.004]),
-        (
-            "goal_wall_left",
-            [
-                -(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS),
-                0.0,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-            [
-                PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1],
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-        ),
-        (
-            "goal_wall_right",
-            [
-                (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS),
-                0.0,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-            [
-                PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1],
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-        ),
-        (
-            "goal_wall_back",
-            [
-                0.0,
-                -(PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS),
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-            [
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-        ),
-        (
-            "goal_wall_front",
-            [
-                0.0,
-                (PICK_PLACE_GOAL_INNER_HALF_EXTENTS[1] + PICK_PLACE_GOAL_WALL_THICKNESS),
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-            [
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[0] + PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_WALL_THICKNESS,
-                PICK_PLACE_GOAL_INNER_HALF_EXTENTS[2],
-            ],
-        ),
-    ]
-    for name, offset, size in goal_parts:
-        geom = spec.worldbody.add_geom()
-        geom.name = name
+    spec.stat.center = list(recipe.stat_center)
+    spec.stat.extent = recipe.stat_extent
+    for index, (name, half, rgba, mass) in enumerate(DISTRACTOR_OBJECTS):
+        body = spec.worldbody.add_body()
+        body.name = name
+        body.pos = [DISTRACTOR_REST_XY[0] + 0.3 * index, DISTRACTOR_REST_XY[1], half[2]]
+        body.add_freejoint()
+        geom = body.add_geom()
+        geom.name = f"{name}_geom"
         geom.type = mujoco.mjtGeom.mjGEOM_BOX
-        geom.pos = (PICK_PLACE_GOAL_CENTER + np.array(offset, dtype=float)).tolist()
-        geom.size = size
-        geom.rgba = [0.10, 0.65, 0.35, 0.85]
-        geom.contype = 1
-        geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
+        geom.size = list(half)
+        geom.mass = mass
+        geom.rgba = list(rgba)
+        geom.friction = [1.1, 0.02, 0.001]
+
+    for bin_ in recipe.bins:
+        for name, offset, size in bin_.parts():
+            geom = spec.worldbody.add_geom()
+            geom.name = name
+            geom.type = mujoco.mjtGeom.mjGEOM_BOX
+            geom.pos = (np.array(bin_.base_center_m(top)) + np.array(offset, dtype=float)).tolist()
+            geom.size = list(size)
+            geom.rgba = list(bin_.rgba)
+            geom.contype = 1
+            geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
+    for view, aim in (recipe.views or {}).items():
+        _add_view_camera(spec, view, aim)
+
+
+def _add_view_camera(spec: mujoco.MjSpec, name: str, aim: dict) -> None:
+    """A fixed camera aimed like a free-camera preset (lookat, distance, azimuth,
+    elevation), with the model's global field of view: what the presets draw."""
+    az, el = np.deg2rad(aim["azimuth"]), np.deg2rad(aim["elevation"])
+    forward = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
+    up = np.array([-np.sin(el) * np.cos(az), -np.sin(el) * np.sin(az), np.cos(el)])
+    right = np.cross(forward, up)
+    camera = spec.worldbody.add_camera()
+    camera.name = name
+    camera.pos = (np.asarray(aim["lookat"], dtype=float) - aim["distance"] * forward).tolist()
+    camera.alt.type = mujoco.mjtOrientation.mjORIENTATION_XYAXES
+    camera.alt.xyaxes = [*right.tolist(), *up.tolist()]
+    camera.fovy = float(spec.visual.global_.fovy)
 
 
 def build_stack_scene_model(urdf_path: str, world: str = "plain") -> mujoco.MjModel:
@@ -866,7 +884,8 @@ def load_model_with_cameras(
 
     Args:
         urdf_path: Robot URDF.
-        scene: ``"default"``, ``"stack"`` or ``"pick_place_basic"``.
+        scene: ``"default"``, ``"stack"``, or a table scene (``"pick_place_basic"``,
+            ``"sort_bins"``; see ``sim/table_scenes.py``).
         world: Lighting/sky/floor preset from ``xbox_soarm_teleop.sim.world``.
         mesh_cell_mm: Above 0, use meshes simplified on a grid this fine
             (``xbox_soarm_teleop.sim.mesh_detail``): the same robot with far
@@ -876,8 +895,8 @@ def load_model_with_cameras(
     world_has_floor = apply_world(spec, world)
     if scene == "stack":
         _add_stack_scene(spec, add_floor=not world_has_floor)
-    elif scene == "pick_place_basic":
-        _add_pick_place_scene(spec, add_floor=not world_has_floor)
+    elif is_table_scene(scene):
+        _add_pick_place_scene(spec, add_floor=not world_has_floor, scene=scene)
         for geom in spec.geoms:
             if geom.type == mujoco.mjtGeom.mjGEOM_PLANE:  # soft objects land on any floor
                 geom.conaffinity = int(geom.conaffinity) | SOFT_OBJECT_COLLISION_BIT

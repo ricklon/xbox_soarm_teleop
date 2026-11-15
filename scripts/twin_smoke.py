@@ -34,6 +34,8 @@ async def pick_and_place(tool, session, image_path: str | None) -> tuple[bool, s
     """Run the agent instructions' procedure once in the loaded scene."""
     await tool("reset_scene")
     observed = await tool("observe")
+    if observed["scene"].get("object_positions") == "hidden":
+        return False, "the twin hides object positions (--no-coordinates); this test needs them"
     # The topmost object: in a stack, the one that can be lifted off.
     thing, state = max(observed["scene"]["objects"].items(), key=lambda item: item[1]["xyz_m"][2])
     start = state["xyz_m"]

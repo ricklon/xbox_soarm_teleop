@@ -22,6 +22,39 @@ DEFAULT_NOTEBOOK = (
     "https://colab.research.google.com/github/ricklon/xbox_soarm_teleop/"
     "blob/main/notebooks/workshop_agent.ipynb"
 )
+SORTING_NOTEBOOK = (
+    "https://colab.research.google.com/github/ricklon/xbox_soarm_teleop/"
+    "blob/main/notebooks/workshop_sorting.ipynb"
+)
+
+
+# Whole sessions in one option; anything given explicitly still wins.
+PRESETS: dict[str, dict] = {
+    # The sorting desk, as students meet it: no coordinates, so agents must
+    # look (locate, with Gemma 4 31B: about 0.02 cents a look), and Clef to
+    # check which tray things ended up in (measured: docs/building_scenes.md).
+    "sorting": {
+        "scene": "sort_colors",
+        "no_coordinates": True,
+        "pointer": "openrouter:google/gemma-4-31b-it",
+        "judge": "clef",
+        # Names that say what each cube looks like ("red_cube"): the twin's own
+        # ("pick_cube") misled an agent. Neutral or misleading names are for
+        # exploring that lesson (--names).
+        "names": "truthful",
+        "notebook_url": SORTING_NOTEBOOK,
+    },
+}
+
+
+def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill in the preset's settings wherever the command line left the default."""
+    preset = PRESETS.get(getattr(args, "preset", None) or "", {})
+    defaults = build_parser().parse_args([])
+    for key, value in preset.items():
+        if getattr(args, key) == getattr(defaults, key):
+            setattr(args, key, value)
+    return args
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,12 +63,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seats", type=int, default=4, help="Number of students (arms)")
     parser.add_argument(
+        "--preset",
+        choices=sorted(PRESETS),
+        default=None,
+        help="A whole session in one option. sorting: the sorting desk, no coordinates, "
+        "locate with Gemma 4 31B (OPENROUTER_API_KEY), check_success with Clef "
+        "(CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID). Options you give still win",
+    )
+    parser.add_argument(
+        "--agent-models",
+        default="google/gemma-4-31b-it,z-ai/glm-5.3-flash,google/gemini-3.5-flash",
+        help="OpenRouter models the page's agent panel may use, comma-separated; empty turns "
+        "the panel off. It runs on this computer's OPENROUTER_API_KEY",
+    )
+    parser.add_argument(
+        "--agent-budget",
+        type=float,
+        default=0.50,
+        help="Each arm's budget (USD) for the agent panel's model, for the whole session",
+    )
+    parser.add_argument(
+        "--names",
+        default="as_is",
+        choices=("as_is", "truthful", "neutral", "misleading"),
+        help="The names agents are shown for objects: the twin's own, what each looks like "
+        "(red_cube), object_1 ..., or another object's colour (twin/naming.py)",
+    )
+    parser.add_argument(
         "--scene",
-        choices=("pick_place_easy", "pick_place_basic", "stack"),
+        choices=("pick_place_easy", "pick_place_basic", "sort_colors", "stack"),
         default="pick_place_easy",
         help="What every arm starts with. pick_place_easy: a soft bean bag (default). "
         "pick_place_basic: a rigid cube, harder to grasp. Students' agents can switch "
-        "between the two with load_scene.",
+        "between the two with load_scene. sort_colors: three cubes and a bin of each "
+        "colour, on a different table; agents switch only between the sort scenes there.",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Address to listen on")
     parser.add_argument("--port", type=int, default=8800)
@@ -46,6 +107,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--log-dir", default="twin_logs", help="Directory for per-arm session logs")
     parser.add_argument("--no-log", action="store_true", help="Do not write session logs")
+    parser.add_argument(
+        "--no-coordinates",
+        action="store_true",
+        help="Do not tell agents where objects are: observe leaves out their positions, so "
+        "agents must find them with the cameras (a perception benchmark). The session log "
+        "keeps the true positions, and report_estimate scores agents' guesses",
+    )
+    parser.add_argument(
+        "--judge",
+        default=None,
+        choices=("clef", "clef-flash", "none"),
+        help="Success judge behind the check_success tool: clef or clef-flash on Cloudflare "
+        "Workers AI (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID). Default: none",
+    )
+    parser.add_argument(
+        "--pointer",
+        default=None,
+        help="Pointing model behind the locate tool: oracle (the truth; for tests), "
+        "gemini[:model] (GEMINI_API_KEY), molmo[:url] (run scripts/molmo_server.py), "
+        "ollama[:model], openrouter[:model] (OPENROUTER_API_KEY). Default: none (no locate)",
+    )
     parser.add_argument(
         "--roster",
         default="twin_logs/hub_roster.json",
@@ -201,7 +283,7 @@ def _open_when_ready(
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = apply_preset(build_parser().parse_args(argv))
     if args.seats < 1:
         print("ERROR: --seats must be at least 1", flush=True)
         return 2
@@ -234,6 +316,10 @@ def main(argv: list[str] | None = None) -> int:
         log_dir=None if args.no_log else args.log_dir,
         roster_path=args.roster,
         mesh_cell_mm=max(args.mesh_detail_mm, 0.0),
+        hide_positions=args.no_coordinates,
+        pointer=args.pointer,
+        judge=args.judge,
+        naming=args.names,
     )
     app = build_hub_app(
         hub,
@@ -242,6 +328,8 @@ def main(argv: list[str] | None = None) -> int:
         public_url=args.public_url,
         notebook_url=args.notebook_url or None,
         picture_hz=args.picture_rate,
+        agent_models=tuple(m.strip() for m in args.agent_models.split(",") if m.strip()),
+        agent_budget_usd=args.agent_budget,
     )
     base = (args.public_url or f"http://{args.host}:{args.port}").rstrip("/")
     for line in startup_lines(

@@ -172,3 +172,86 @@ def test_rig_refuses_a_state_model_with_a_different_layout(twin):
     other = load_model_with_cameras(str(URDF_PATH), scene="stack")
     with pytest.raises(ValueError):
         CameraRig(other, state_model=twin.sim.model)
+
+
+def _segment(model, data, view, width, height):
+    import mujoco
+
+    from xbox_soarm_teleop.twin.cameras import point_camera
+
+    renderer = mujoco.Renderer(model, height, width)
+    renderer.enable_segmentation_rendering()
+    camera = mujoco.MjvCamera()
+    point_camera(camera, model, view)
+    renderer.update_scene(data, camera=camera)
+    seg = renderer.render()
+    renderer.close()
+    return seg
+
+
+def test_wrist_camera_sees_both_jaws_and_the_object_it_grips():
+    """Like the real arm's Seeed camera on its post: both jaw tips come in from
+    the picture's left and right, with the cube between them."""
+    import mujoco
+
+    from xbox_soarm_teleop.twin.cameras import WRIST_SIZE
+    from xbox_soarm_teleop.twin.grasp import GraspSettings
+    from xbox_soarm_teleop.twin.scenarios import run
+
+    assert WRIST_SIZE[0] * 9 == WRIST_SIZE[1] * 16  # 16:9, like the 1280x720 camera
+    service = build_twin(scene="pick_place_basic", with_controller=False)
+    service.tick()
+    model, data = service.sim.model, service.sim.data
+
+    def obj():
+        return service.observe_truth()["scene"]["objects"]["pick_cube"]
+
+    x, y, z = obj()["xyz_m"]
+    settings = GraspSettings()
+    run(service, {"type": "move_ee_to", "params": {"xyz_m": [x, y, z + 0.06]}})
+    run(service, {"type": "set_wrist_roll", "params": {"angle_rad": -1.5}})
+    width = obj()["grip_width_m"]
+    run(
+        service,
+        {"type": "set_gripper", "params": {"position": settings.gripper_for_opening(width + 0.05)}},
+    )
+    for _ in range(2):
+        jaw, at = service.observe_truth()["jaw_center_xyz_m"], obj()["xyz_m"]
+        run(
+            service, {"type": "move_ee_by", "params": {"dxyz_m": [at[0] - jaw[0], at[1] - jaw[1], 0.0]}}
+        )
+    drop = (
+        max(obj()["xyz_m"][2], service.workspace_bounds["z"][0] + 0.015)
+        - service.observe_truth()["jaw_center_xyz_m"][2]
+    )
+    run(service, {"type": "move_ee_by", "params": {"dxyz_m": [0.0, 0.0, drop]}})
+    run(service, {"type": "set_gripper", "params": {"position": settings.gripper_for_opening(width)}})
+    assert service.grasp.attached == "pick_cube"
+
+    seg = _segment(model, data, "wrist", *WRIST_SIZE)
+    geom = seg[..., 1] == mujoco.mjtObj.mjOBJ_GEOM
+
+    def columns(body_name):
+        body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+        mask = geom & np.isin(seg[..., 0], np.where(model.geom_bodyid == body)[0])
+        assert mask.sum() > 200, body_name  # in sight
+        return np.nonzero(mask)[1].mean()
+
+    fixed, moving, cube = (
+        columns("gripper_link"),
+        columns("moving_jaw_so101_v1_link"),
+        columns("pick_cube"),
+    )
+    # The jaws on either side of the picture, the cube between them.
+    assert min(fixed, moving) < cube < max(fixed, moving)
+    assert abs(fixed - moving) > WRIST_SIZE[0] * 0.25
+
+
+def test_cameras_see_things_close_to_the_lens():
+    """Parked objects far from the table must not push the near clipping plane
+    out: the wrist camera sees a held object a few centimetres away."""
+    from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
+
+    model = sim_cli.load_model_with_cameras(str(sim_cli.URDF_PATH), scene="pick_place_basic")
+    assert model.stat.extent * model.vis.map.znear < 0.01
+    assert model.stat.extent < 1.0

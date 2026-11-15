@@ -32,6 +32,8 @@ from typing import Any, Callable
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 from xbox_soarm_teleop.twin import TwinService, build_parts, build_twin
 from xbox_soarm_teleop.twin.cameras import CameraRig, encode
+from xbox_soarm_teleop.twin.judge import make_judge
+from xbox_soarm_teleop.twin.pointing import make_pointer
 from xbox_soarm_teleop.twin.service import RenderRequest, TwinClosed
 
 # One-shot buttons a page may press, and the controller button each stands for.
@@ -170,6 +172,14 @@ class Hub:
             pictures a second and they look the same.
         roster_path: JSON file holding the room and admin tokens. Reused when
             it exists, so the links handed to students survive a restart.
+        hide_positions: No-coordinates mode for every arm: agents are not told
+            where objects are and must find them with the cameras.
+        pointer: Pointing model spec for every arm's ``locate`` tool
+            (``twin.pointing.make_pointer``); None for no ``locate``.
+        judge: Success judge spec for every arm's ``check_success``
+            (``twin.judge.make_judge``); None for no checks.
+        naming: The names every arm's agents are shown for objects
+            (``twin.naming``).
     """
 
     def __init__(
@@ -182,6 +192,10 @@ class Hub:
         roster_path: str | Path | None = None,
         shadows: bool = False,
         mesh_cell_mm: float = DEFAULT_MESH_CELL_MM,
+        hide_positions: bool = False,
+        pointer: str | None = None,
+        judge: str | None = None,
+        naming: str = "as_is",
     ) -> None:
         if seats < 1:
             raise ValueError("seats must be at least 1")
@@ -212,7 +226,14 @@ class Hub:
             if log_dir is not None:
                 log_path = Path(log_dir) / f"hub-{stamp}" / f"arm-{index:02d}.jsonl"
             service = build_twin(
-                parts=self.parts, controller=controller, cameras=self.cameras, log_path=log_path
+                parts=self.parts,
+                controller=controller,
+                cameras=self.cameras,
+                log_path=log_path,
+                hide_positions=hide_positions,
+                pointer=make_pointer(pointer),
+                judge=make_judge(judge),
+                naming=naming,
             )
             controller.gripper_feedback = lambda service=service: float(service.state.gripper_pos)
             service.stop_release_hint = "press Release stop on the arm's web page"
@@ -378,6 +399,9 @@ class Hub:
         if self._closed:
             return
         self._closed = True
+        desk = getattr(self, "agent_desk", None)
+        if desk is not None:  # the page's agent runs (twin.hub_agent)
+            desk.close()
         if self._thread is not None:
             self._running.clear()
             self._thread.join(timeout=5.0)

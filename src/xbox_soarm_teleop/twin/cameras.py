@@ -2,8 +2,9 @@
 
 Views:
 
-- ``wrist``: on the gripper, looking past the fixed jaw toward the tool point;
-  moves with the gripper.
+- ``wrist``: on a post beside the gripper, like the real arm's camera: both
+  jaw tips come in from the left and right with the object between them;
+  moves with the gripper. 16:9 (``WRIST_SIZE``).
 - ``overhead``: straight down, like a map: robot base at the bottom, forward
   (+x) up the image, the robot's left (+y) on the image's left.
 - ``front``: from in front of the table looking back at the robot, so the
@@ -33,6 +34,17 @@ VIEWS = ("wrist", *FIXED_VIEWS)
 # What the viewer window can show: the same views, plus the mouse-driven camera.
 WINDOW_VIEWS = ("free", *VIEWS)
 DEFAULT_SIZE = (320, 240)
+# The wrist camera's own shape: 16:9, like the real arm's 1280x720 camera.
+# Drawn at 4:3 it shows the middle of the same view (same height, less width).
+WRIST_SIZE = (432, 243)
+WRIST_SIZE_LARGE = (640, 360)
+
+
+def default_size(view: str) -> tuple[int, int]:
+    """The picture size a view is drawn at when the caller does not say."""
+    return WRIST_SIZE if view == "wrist" else DEFAULT_SIZE
+
+
 MAX_SIZE = (640, 480)  # MuJoCo's default offscreen buffer
 FORMATS = {"jpeg": "JPEG", "png": "PNG"}
 
@@ -162,6 +174,12 @@ def point_camera(camera: mujoco.MjvCamera, model: mujoco.MjModel, view: str) -> 
         camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
         camera.fixedcamid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
         return
+    if view != "free":
+        own = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, view)
+        if own >= 0:  # the scene's own camera for this view (sim/table_scenes.py)
+            camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
+            camera.fixedcamid = own
+            return
     camera.type = mujoco.mjtCamera.mjCAMERA_FREE
     camera.fixedcamid = -1
     if view != "free":

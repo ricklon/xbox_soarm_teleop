@@ -3,7 +3,7 @@
 from xbox_soarm_teleop.twin.grasp import GraspSettings
 
 
-def jaws_around(run, observe, name: str, wrist: float = -1.5) -> None:
+def jaws_around(run, observe, name: str, wrist: float = -1.5, aim_error=(0.0, 0.0)) -> None:
     """Put the open jaws around an object the way the agent instructions say.
 
     The tool point is the fixed jaw's inner face, so line up the observed
@@ -16,6 +16,8 @@ def jaws_around(run, observe, name: str, wrist: float = -1.5) -> None:
         observe: Returns the current observation dict.
         name: The object to grasp.
         wrist: Wrist roll (rad); -1.5 or 1.5 puts the jaws side to side.
+        aim_error: (dx, dy) added to where the object is (m): an agent's aim is
+            this far off. Zero aims at the true center.
     """
 
     def obj():
@@ -31,9 +33,11 @@ def jaws_around(run, observe, name: str, wrist: float = -1.5) -> None:
             "params": {"position": GraspSettings().gripper_for_opening(width + 0.05)},
         }
     )
+    ex, ey = aim_error
     for _ in range(2):
         jaw, at = observe()["jaw_center_xyz_m"], obj()["xyz_m"]
-        run({"type": "move_ee_by", "params": {"dxyz_m": [at[0] - jaw[0], at[1] - jaw[1], 0.0]}})
+        dx, dy = at[0] + ex - jaw[0], at[1] + ey - jaw[1]
+        run({"type": "move_ee_by", "params": {"dxyz_m": [dx, dy, 0.0]}})
     lowest = observe()["workspace"]["z"][0] + 0.015
     drop = max(obj()["xyz_m"][2], lowest) - observe()["jaw_center_xyz_m"][2]
     run({"type": "move_ee_by", "params": {"dxyz_m": [0.0, 0.0, drop]}})

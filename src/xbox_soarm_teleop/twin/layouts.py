@@ -8,9 +8,11 @@ twin keeps the rest parked out of sight and out of reach.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass, field, replace
 
 from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
+from xbox_soarm_teleop.sim.table_scenes import TABLE_SCENES, Bin
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,11 @@ class Layout:
         difficulty: ``"easy"`` or ``"hard"``.
         description: One sentence for an agent choosing a scene.
         objects: Start position (m, base frame) of each object on the table.
+        target: The object a task in this scene is about, if there is one.
+        listed: Offered by ``list_scenes`` (the workshop's scene picker). Hidden
+            scenes still load by name.
+        descriptions: How objects are described in this scene, where the
+            usual words (``OBJECT_DESCRIPTIONS``) would be ambiguous.
     """
 
     name: str
@@ -30,6 +37,9 @@ class Layout:
     difficulty: str
     description: str
     objects: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+    target: str | None = None
+    listed: bool = True
+    descriptions: dict[str, str] = field(default_factory=dict)
 
     def summary(self) -> dict:
         return {
@@ -37,11 +47,39 @@ class Layout:
             "difficulty": self.difficulty,
             "description": self.description,
             "objects": list(self.objects),
+            "target": self.target,
         }
 
 
 _START_XY = tuple(float(v) for v in sim_cli.PICK_PLACE_CUBE_START[:2])
 _TABLE = float(sim_cli.PICK_PLACE_TABLE_HEIGHT)
+_HALF = {name: half for name, half, _, _ in sim_cli.DISTRACTOR_OBJECTS}
+_CUBE = tuple(float(v) for v in sim_cli.PICK_PLACE_CUBE_START)
+
+
+def _on_table(name: str, x: float, y: float) -> tuple[float, float, float]:
+    return (x, y, _TABLE + _HALF[name][2])
+
+
+def _on_desk(name: str, x: float, y: float) -> tuple[float, float, float, float]:
+    """On the sorting desk, turned to face the arm's base (so the jaws meet it square)."""
+    half = sim_cli.PICK_PLACE_CUBE_HALF_EXTENT if name == "pick_cube" else _HALF[name][2]
+    return (x, y, TABLE_SCENES["sort_bins"].table.top_z + half, math.atan2(y, x))
+
+
+def _distractors(name: str, description: str, others: dict, descriptions=None) -> "Layout":
+    """A hidden scene: the red cube at its usual start, among ``others``."""
+    return Layout(
+        name=name,
+        model_scene="pick_place_basic",
+        difficulty="hard",
+        description=description,
+        objects={"pick_cube": _CUBE, **{n: _on_table(n, *xy) for n, xy in others.items()}},
+        target="pick_cube",
+        listed=False,
+        descriptions=descriptions or {},
+    )
+
 
 LAYOUTS: dict[str, Layout] = {
     layout.name: layout
@@ -67,25 +105,89 @@ LAYOUTS: dict[str, Layout] = {
                 "if it touches it, so the approach has to keep clear until it closes."
             ),
             objects={"pick_cube": tuple(float(v) for v in sim_cli.PICK_PLACE_CUBE_START)},
+            target="pick_cube",
+        ),
+        _distractors(
+            "distractors_color",
+            "The red cube beside a blue cube and a green cube: find it by colour.",
+            # Clear of the arm's path from home, which brushes a 4 cm cube at (0.25, 0.04).
+            {"blue_cube": (0.42, 0.04), "green_cube": (0.25, -0.07)},
+        ),
+        _distractors(
+            "distractors_shape",
+            "The red cube beside a red bar: find it by shape.",
+            {"red_bar": (0.25, 0.04)},
+        ),
+        _distractors(
+            "distractors_size",
+            "The large red cube beside a small red cube: find it by size.",
+            {"red_cube_small": (0.25, -0.06)},
+            {"pick_cube": "large red cube"},
+        ),
+        _distractors(
+            "distractors_clutter",
+            "The large red cube among a small red cube, a red bar, a blue cube and a yellow cube.",
+            {
+                "red_cube_small": (0.25, -0.06),
+                "red_bar": (0.23, 0.05),
+                "blue_cube": (0.42, 0.04),
+                "yellow_cube": (0.43, -0.07),
+            },
+            {"pick_cube": "large red cube"},
+        ),
+        # The sorting desk (sim/table_scenes.py): items in front of the arm,
+        # trays at its sides. What goes where is up to the request
+        # (twin/tasks.py), not the layout. Each item faces the base, 10 cm or
+        # more from the next, off the strip straight ahead (the arm at home
+        # hides it from the overhead camera); tests/test_twin_sort.py checks.
+        Layout(
+            name="sort_colors",
+            model_scene="sort_bins",
+            difficulty="easy",
+            description="A red, a blue and a green cube, and a red, a blue and a green bin.",
+            objects={
+                "pick_cube": _on_desk("pick_cube", 0.275, -0.06),
+                "blue_cube": _on_desk("blue_cube", 0.23, -0.16),
+                "green_cube": _on_desk("green_cube", 0.30, 0.07),
+            },
+        ),
+        Layout(
+            name="sort_colors_decoy",
+            model_scene="sort_bins",
+            difficulty="hard",
+            description=(
+                "A red, a blue and a yellow cube, and a red, a blue and a green bin. "
+                "There is no yellow bin."
+            ),
+            objects={
+                "pick_cube": _on_desk("pick_cube", 0.275, -0.06),
+                "blue_cube": _on_desk("blue_cube", 0.23, -0.16),
+                "yellow_cube": _on_desk("yellow_cube", 0.30, 0.07),
+            },
         ),
     )
 }
+DISTRACTOR_LAYOUTS = tuple(name for name in LAYOUTS if name.startswith("distractors_"))
 
 
 @dataclass(frozen=True)
 class GoalBox:
-    """An open box objects are placed in (m, base frame)."""
+    """An open box objects are placed in (m, base frame): the goal box, or a bin."""
 
     name: str
     center_xyz_m: tuple[float, float, float]  # middle of its floor's top face
     inner_size_m: tuple[float, float, float]  # inside length, width and wall height
+    label: str = ""
 
     def summary(self) -> dict:
-        return {
+        summary = {
             "name": self.name,
             "center_xyz_m": [round(v, 4) for v in self.center_xyz_m],
             "inner_size_m": [round(v, 4) for v in self.inner_size_m],
         }
+        if self.label:
+            summary["label"] = self.label
+        return summary
 
     def holds(self, center, half_extents_world) -> bool:
         """An object with this center and half-extents (along x, y, z) lies inside."""
@@ -98,18 +200,48 @@ class GoalBox:
         return inside and resting
 
 
-_GOAL_FLOOR = float(sim_cli.PICK_PLACE_GOAL_CENTER[2]) + 0.004  # top of the box's floor plate
-GOALS: dict[str, GoalBox] = {
-    "pick_place_basic": GoalBox(
-        name="goal_box",
+def _box(bin_: Bin, table_top_z: float) -> GoalBox:
+    return GoalBox(
+        name=bin_.name,
         center_xyz_m=(
-            float(sim_cli.PICK_PLACE_GOAL_CENTER[0]),
-            float(sim_cli.PICK_PLACE_GOAL_CENTER[1]),
-            round(_GOAL_FLOOR, 4),
+            *(float(v) for v in bin_.center_xy_m),
+            round(bin_.floor_top_m(table_top_z), 4),
         ),
-        inner_size_m=tuple(float(2 * v) for v in sim_cli.PICK_PLACE_GOAL_INNER_HALF_EXTENTS),
+        inner_size_m=tuple(float(2 * v) for v in bin_.inner_half_m),
+        label=bin_.label,
     )
+
+
+# Every table scene's bins; a scene with exactly one is a goal-box scene, whose
+# box is also in GOALS (and in observe as scene.goal, and objects' in_goal).
+BINS: dict[str, tuple[GoalBox, ...]] = {
+    name: tuple(_box(bin_, scene.table.top_z) for bin_ in scene.bins)
+    for name, scene in TABLE_SCENES.items()
 }
+GOALS: dict[str, GoalBox] = {
+    name: replace(boxes[0], label="") for name, boxes in BINS.items() if len(boxes) == 1
+}
+
+
+# What each object looks like, in words a pointing model understands. Molmo2-ER
+# takes the category literally: shown the bean bag, it found a "blue bean bag"
+# in 1 of 9 pictures and a "blue object" in 9 of 9 (it is the only blue thing).
+OBJECT_DESCRIPTIONS: dict[str, str] = {
+    "pick_cube": "red cube",
+    sim_cli.BEAN_BAG_NAME: "blue object",
+    "red_cube_small": "small red cube",
+    "blue_cube": "blue cube",
+    "red_bar": "red bar",
+    "green_cube": "green cube",
+    "yellow_cube": "yellow cube",
+}
+
+
+def object_description(name: str, layout: "Layout | None" = None) -> str:
+    """An object's description for a pointing model ("red cube"), as ``layout`` words it."""
+    if layout is not None and name in layout.descriptions:
+        return layout.descriptions[name]
+    return OBJECT_DESCRIPTIONS.get(name, name.replace("_", " "))
 
 
 def model_scene(name: str) -> str:
@@ -118,6 +250,13 @@ def model_scene(name: str) -> str:
     return layout.model_scene if layout is not None else name
 
 
-def layouts_for(scene: str) -> list[Layout]:
-    """Layouts of a compiled scene, easiest first (empty if it has only one arrangement)."""
-    return [layout for layout in LAYOUTS.values() if layout.model_scene == scene]
+def layouts_for(scene: str, *, include_hidden: bool = False) -> list[Layout]:
+    """Layouts of a compiled scene, easiest first (empty if it has only one arrangement).
+
+    Hidden layouts (the distractor scenes) are left out unless asked for.
+    """
+    return [
+        layout
+        for layout in LAYOUTS.values()
+        if layout.model_scene == scene and (layout.listed or include_hidden)
+    ]

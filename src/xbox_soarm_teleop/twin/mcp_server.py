@@ -9,6 +9,8 @@ Clients are identified by their MCP session id.
 from __future__ import annotations
 
 import asyncio
+import functools
+import re
 import threading
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, Callable
@@ -16,6 +18,7 @@ from typing import Any, Callable
 from mcp.server.mcpserver import Context, Image, MCPServer
 
 from xbox_soarm_teleop.twin.actions import ActionRejected
+from xbox_soarm_teleop.twin.cameras import VIEWS, default_size
 from xbox_soarm_teleop.twin.service import TwinClosed, TwinService
 
 COMMAND_TIMEOUT_S = 2.0  # the loop resolves commands within one tick
@@ -64,8 +67,59 @@ with the gripper, so it may land on an edge and rock flat.
 
 `observe` also gives the goal box (`scene.goal`: the center of its floor and
 its inside size) and, for each object, `in_goal`. Release an object with the
-jaw center a few centimeters above the box floor, inside its walls, and check
-`in_goal`.
+jaw center a few centimeters above the box floor, inside its walls. Then lift
+straight up 5 cm with move_by(dx=0, dy=0, dz=0.05) before any other move: the
+open jaws still straddle the object, and homing from there drags it out of the
+box. Then check `in_goal`.
+
+Sorting scenes (sort_colors) have bins instead of a goal box: `scene.bins`
+gives each bin's name, label, floor center and inside size, and each object's
+`in_bin` says which bin it is in (null: none). Which object goes in which bin
+is up to the request you were given; if it leaves something open, say what
+you assumed. Release into a bin as into the goal box, then lift straight up
+5 cm before any other move. After the last move, check each object with
+check_success(description, bin), describing it in the request's words
+(description="red cube"), not by its name: a judge looks at a front picture,
+finds it by how it looks, and says whether it is in that bin.
+
+Skills: pick(name) picks an object up by itself (it looks, centres the
+jaws, grasps, checks it holds it and retries after a miss); pick(description=
+"red cube") does the same for whatever looks like that, whatever it is called,
+and says what it is holding. When a request describes objects by how they
+look (colour, shape), pick and check them by description, not by their names:
+names can be wrong. place(bin)
+puts what it holds into a bin, lifts clear and goes home. Prefer them to
+steering the jaws step by step: decide what goes where, and let the arm do
+the moving.
+
+No-coordinates mode: when `observe` says `scene.object_positions` is
+"hidden", the twin does not tell you where objects are, as on the real arm.
+Each object's `xyz_m`, `in_goal`, `in_bin` and `off_table` are left out, and a "missed"
+event says only that the jaws missed. You still get each object's `size_m`
+and `grip_width_m`, whether you hold it, the goal box, `ee` and
+`jaw_center_xyz_m`. Find an object with locate(name): a vision model looks
+at a camera view and the result's `xyz_m` is its estimate of the object's
+center, often a centimetre or so off; `jaw_move_m` is the move_by that puts
+the jaw center on that estimate. locate looks from the front view by default,
+which the arm does not block; if it answers not_found, try view="side" or
+view="overhead". To pick an object up: locate it; move_to 6 cm above its
+`xyz_m`; set_wrist_roll(angle_rad=-1.5); set_gripper(opening_m=grip_width_m
++ 0.05); locate again and move_by(dx, dy, dz=0) from `jaw_move_m`, twice
+(locate before each); locate once more and move_by(dx=0, dy=0, dz) with its
+`jaw_move_m.dz`; then set_gripper(opening_m=grip_width_m). Make one tool call
+at a time and wait for its result: two motion calls at once are refused as
+busy. A "missed" event means the estimate was off: open, lift 5 cm, locate
+again and repeat. After releasing, lift straight up 5 cm
+and home, then check the placement with check_success(name), after the last
+move: a judge looks at a front picture and says "done" (it is
+in the box), "retry" (it is not: locate it and pick again) or "look_again"
+(unsure: ask again or look with `camera`). Without a judge (reason no_judge),
+use locate(name, rest_z_m=the goal box floor z) or `camera`. Without locate
+(reason no_pointer), use `camera`: the overhead view is a map, so judge an
+object against things whose positions you know (the jaw center, the goal
+box). locate's answers are scored against the truth for a benchmark; when you
+work a position out yourself, call report_estimate(name, x, y, z) with its
+center. Neither tells you the true answer.
 
 Scenes differ in how forgiving their objects are. `list_scenes` shows them,
 easiest first, and `load_scene` switches (it homes the arm and swaps the
@@ -103,6 +157,31 @@ def _status_dict(status) -> dict[str, Any]:
     }
 
 
+# Tools whose ``name`` argument is an object (load_scene's is a scene).
+NAME_TAKING_TOOLS = {"locate", "pick", "report_estimate", "check_success"}
+# Tools whose answer carries the twin's own words for the object ("red cube").
+DESCRIBING_TOOLS = {"locate", "check_success"}
+
+
+def rename_objects(value: Any, names: dict[str, str]) -> Any:
+    """``value`` with every object name (as a key, a value or a word in text)
+    replaced by the name agents are shown."""
+    if isinstance(value, dict):
+        return {rename_objects(k, names): rename_objects(v, names) for k, v in value.items()}
+    if isinstance(value, list):
+        return [rename_objects(v, names) for v in value]
+    if isinstance(value, str):
+        pattern = _name_pattern(tuple(sorted(names)))
+        return pattern.sub(lambda match: names[match.group(0)], value)
+    return value
+
+
+@functools.lru_cache(maxsize=32)
+def _name_pattern(own_names: tuple[str, ...]) -> re.Pattern:
+    words = "|".join(re.escape(n) for n in sorted(own_names, key=len, reverse=True))
+    return re.compile(rf"(?<![A-Za-z0-9_])(?:{words})(?![A-Za-z0-9_])")
+
+
 def build_mcp_server(
     service: TwinService | Callable[[Context | None], TwinService],
     *,
@@ -125,6 +204,33 @@ def build_mcp_server(
 
     def twin(ctx: Context | None) -> TwinService:
         return service(ctx) if callable(service) else service
+
+    def tool(fn):
+        """Register ``fn`` as a tool that speaks in the names agents are shown
+        (``twin.naming``): object names in are mapped to the twin's own, and
+        everything out is mapped back."""
+
+        @functools.wraps(fn)
+        def named(*args, **kwargs):
+            names = twin(kwargs.get("ctx")).shown_names
+            if not names:
+                return fn(*args, **kwargs)
+            if fn.__name__ in NAME_TAKING_TOOLS and isinstance(kwargs.get("name"), str):
+                inverse = {shown: own for own, shown in names.items()}
+                given = kwargs["name"]
+                if given not in inverse:
+                    known = ", ".join(sorted(inverse))
+                    detail = f"Unknown object '{given}'. On the table: {known}"
+                    if fn.__name__ == "check_success" and " " in given:
+                        detail += f'; to ask by how it looks, use description="{given}"'
+                    return {"ok": False, "reason": "invalid_request", "detail": detail}
+                kwargs["name"] = inverse[given]
+            result = fn(*args, **kwargs)
+            if isinstance(result, dict) and fn.__name__ in DESCRIBING_TOOLS:
+                result = {k: v for k, v in result.items() if k != "description"}
+            return rename_objects(result, names)
+
+        return server.tool()(named)
 
     def run_command(future) -> tuple[bool, Any]:
         try:
@@ -162,14 +268,14 @@ def build_mcp_server(
             extra["timeout_s"] = timeout_s
         return extra
 
-    @server.tool()
+    @tool
     def observe(ctx: Context | None = None) -> dict[str, Any]:
         """Current state: tool pose, joints (deg), gripper (0 open..1 closed),
         objects and whether one is attached, workspace bounds, the current
         action, stop status and who is in control."""
         return twin(ctx).observe()
 
-    @server.tool()
+    @tool
     def move_to(
         x: float,
         y: float,
@@ -187,7 +293,7 @@ def build_mcp_server(
         request.update(speed_and_timeout(max_speed_m_s, timeout_s))
         return submit(request, ctx, wait, preempt)
 
-    @server.tool()
+    @tool
     def move_by(
         dx: float,
         dy: float,
@@ -203,7 +309,7 @@ def build_mcp_server(
         request.update(speed_and_timeout(max_speed_m_s, timeout_s))
         return submit(request, ctx, wait, preempt)
 
-    @server.tool()
+    @tool
     def set_gripper(
         position: float | None = None,
         opening_m: float | None = None,
@@ -224,19 +330,21 @@ def build_mcp_server(
             position = twin(ctx).grasp.settings.gripper_for_opening(opening_m)
         return submit({"type": "set_gripper", "params": {"position": position}}, ctx, wait)
 
-    @server.tool()
+    @tool
     def set_wrist_roll(
         angle_rad: float, wait: bool = True, ctx: Context | None = None
     ) -> dict[str, Any]:
         """Rotate the wrist to an absolute roll angle in radians (0 = level)."""
         return submit({"type": "set_wrist_roll", "params": {"angle_rad": angle_rad}}, ctx, wait)
 
-    @server.tool()
+    @tool
     def home(wait: bool = True, ctx: Context | None = None) -> dict[str, Any]:
-        """Return the arm to its home pose and open the gripper."""
+        """Return the arm to its home pose and open the gripper. Right after a
+        release, lift straight up 5 cm first: from low down, homing drags the
+        object the jaws still straddle."""
         return submit({"type": "home"}, ctx, wait)
 
-    @server.tool()
+    @tool
     def wait_for_action(
         action_id: str, timeout_s: float = 10.0, ctx: Context | None = None
     ) -> dict[str, Any]:
@@ -247,7 +355,7 @@ def build_mcp_server(
             return {"ok": False, "reason": "invalid_request", "detail": str(exc)}
         return {"ok": True, "action": _status_dict(status)}
 
-    @server.tool()
+    @tool
     def cancel_action(ctx: Context | None = None) -> dict[str, Any]:
         """Cancel your running action; the arm holds where it is."""
         ok, result = run_command(twin(ctx).cancel(client_id=client_of(ctx)))
@@ -255,53 +363,131 @@ def build_mcp_server(
             return result
         return {"ok": True, "action": _status_dict(result) if result else None}
 
-    @server.tool()
+    @tool
     def stop(ctx: Context | None = None) -> dict[str, Any]:
         """Latch the virtual emergency stop: cancels motion and refuses new
         motion until reset_stop. Always allowed."""
         twin(ctx).stop(by="agent", client_id=client_of(ctx))
         return {"ok": True, "stop_latched": True}
 
-    @server.tool()
+    @tool
     def reset_stop(confirm: bool = False, ctx: Context | None = None) -> dict[str, Any]:
         """Release a stop you latched. Requires confirm=true. A stop latched on
         the Xbox controller can only be released there (Menu button, also called Start)."""
         ok, result = run_command(twin(ctx).reset_stop(client_id=client_of(ctx), confirm=confirm))
         return {"ok": True, "released": bool(result)} if ok else result
 
-    @server.tool()
+    @tool
     def reset_scene(ctx: Context | None = None) -> dict[str, Any]:
         """Home the arm and put every object back where it started."""
         ok, result = run_command(twin(ctx).reset_scene(client_id=client_of(ctx)))
         return {"ok": True} if ok else result
 
-    @server.tool()
+    @tool
     def list_scenes(ctx: Context | None = None) -> dict[str, Any]:
         """Scenes you can load, easiest first: the objects in each, how hard
         they are to grasp, and which scene is current."""
         return {"ok": True, "scenes": twin(ctx).list_scenes()}
 
-    @server.tool()
+    @tool
     def load_scene(name: str, ctx: Context | None = None) -> dict[str, Any]:
         """Switch to another scene from list_scenes. Homes the arm, opens the
         gripper and replaces the objects on the table."""
         ok, result = run_command(twin(ctx).load_scene(name, client_id=client_of(ctx)))
         return {"ok": True, "scene": result} if ok else result
 
-    @server.tool()
+    @tool
+    def report_estimate(
+        name: str, x: float, y: float, z: float, ctx: Context | None = None
+    ) -> dict[str, Any]:
+        """Report where you think an object's center is (m, base frame). The
+        twin scores it against the true position for a perception benchmark;
+        the result only says it was recorded. Mainly for no-coordinates mode
+        (`scene.object_positions` is "hidden")."""
+        _, result = run_command(twin(ctx).report_estimate(name, [x, y, z], client_id=client_of(ctx)))
+        return result
+
+    @tool
+    def pick(
+        name: str | None = None, description: str | None = None, ctx: Context | None = None
+    ) -> dict[str, Any]:
+        """Pick an object up, by itself: the arm looks (overhead and from the front,
+        then close up through the wrist camera), centres its jaws, grasps, checks
+        it holds it, and retries after a miss, then lifts it to carrying height.
+        Uses only what the arm can see and feel. Give its name, or instead a
+        description in the request's words (description="red cube"): the arm
+        then looks for what matches, closes until it feels it, and says what it
+        is holding. Takes 20 to 60 seconds."""
+        return twin(ctx).pick(name, client_id=client_of(ctx), description=description)
+
+    @tool
+    def place(bin: str, ctx: Context | None = None) -> dict[str, Any]:
+        """Put what the gripper holds into a bin (a name from scene.bins, or the
+        goal box's), let go, lift clear and go home."""
+        return twin(ctx).place(bin, client_id=client_of(ctx))
+
+    @tool
+    def check_success(
+        name: str | None = None,
+        bin: str | None = None,
+        description: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Is the object where it should be? A judge model (Clef) looks at a front
+        picture. In the goal-box scenes: P(in the box) and a verdict, "done"
+        (0.9 or more), "retry" (0.1 or less: locate it and pick again) or
+        "look_again" (unsure: check again, or look with camera). In sorting
+        scenes, give bin (a name from scene.bins): P(in that bin) and the same
+        verdicts, plus where it most likely is. In sorting scenes you can name
+        the object by description instead of name (description="red cube", in
+        the request's words): the judge finds it by how it looks, whatever it is
+        called. Use it after the last move: no coordinates say where things
+        ended up."""
+        return twin(ctx).check_success(
+            name, bin_name=bin, description=description, client_id=client_of(ctx)
+        )
+
+    @tool
+    def locate(
+        name: str | None = None,
+        view: str = "front",
+        description: str | None = None,
+        rest_z_m: float | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Find an object by looking: a pointing model is shown a camera view and
+        points at the object; that pixel is turned into the object's center xyz
+        (m, base frame), assuming it rests on the table (or on rest_z_m, e.g.
+        the goal box floor). The answer is the model's estimate, not the truth:
+        it may be off by a centimetre or more. Views: front (default: the arm
+        does not block it), side, overhead, wrist. description overrides how the object is described to the
+        model (by default e.g. "red cube"); given without a name, it is what to
+        look for, whatever the objects are called. Keep the arm still while it looks."""
+        return twin(ctx).locate(
+            name, view=view, description=description, rest_z_m=rest_z_m, client_id=client_of(ctx)
+        )
+
+    @tool
     def release_control(ctx: Context | None = None) -> dict[str, Any]:
         """Give up control so another agent can drive the arm."""
         ok, result = run_command(twin(ctx).release_control(client_id=client_of(ctx)))
         return {"ok": True, "released": bool(result)} if ok else result
 
-    @server.tool()
+    @tool
     def camera(
-        view: str = "wrist", width: int = 320, height: int = 240, ctx: Context | None = None
+        view: str = "wrist",
+        width: int | None = None,
+        height: int | None = None,
+        ctx: Context | None = None,
     ) -> Image | dict[str, Any]:
-        """Look at the scene. Views: "wrist" (on the gripper, looking past the
-        jaw), "overhead" (map view: robot base at the bottom, forward up, robot's
-        left on the left), "front" (facing the robot, so its left is on your
-        right), "side" (from the robot's left). Max 640x480."""
+        """Look at the scene. Views: "wrist" (on a post beside the gripper: the
+        two jaw tips come in from the left and right with what they grip
+        between them; 432x243 by default), "overhead" (map view: robot base at
+        the bottom, forward up, robot's left on the left), "front" (facing the
+        robot, so its left is on your right), "side" (from the robot's left).
+        320x240 by default; max 640x480."""
+        if width is None or height is None:
+            width, height = default_size(view) if view in VIEWS else (320, 240)
         try:
             data = (
                 twin(ctx)

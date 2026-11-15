@@ -38,7 +38,8 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from xbox_soarm_teleop.twin.cameras import MAX_SIZE, VIEWS
 from xbox_soarm_teleop.twin.hub import Hub, Room
-from xbox_soarm_teleop.twin.mcp_server import _client_id, build_mcp_server
+from xbox_soarm_teleop.twin.layouts import BINS
+from xbox_soarm_teleop.twin.mcp_server import _client_id, build_mcp_server, rename_objects
 from xbox_soarm_teleop.twin.service import TwinService
 from xbox_soarm_teleop.twin.status import status_text
 
@@ -94,8 +95,59 @@ with the gripper, so it may land on an edge and rock flat.
 
 `observe` also gives the goal box (`scene.goal`: the center of its floor and
 its inside size) and, for each object, `in_goal`. Release an object with the
-jaw center a few centimeters above the box floor, inside its walls, and check
-`in_goal`.
+jaw center a few centimeters above the box floor, inside its walls. Then lift
+straight up 5 cm with move_by(dx=0, dy=0, dz=0.05) before any other move: the
+open jaws still straddle the object, and homing from there drags it out of the
+box. Then check `in_goal`.
+
+Sorting scenes (sort_colors) have bins instead of a goal box: `scene.bins`
+gives each bin's name, label, floor center and inside size, and each object's
+`in_bin` says which bin it is in (null: none). Which object goes in which bin
+is up to the request you were given; if it leaves something open, say what
+you assumed. Release into a bin as into the goal box, then lift straight up
+5 cm before any other move. After the last move, check each object with
+check_success(description, bin), describing it in the request's words
+(description="red cube"), not by its name: a judge looks at a front picture,
+finds it by how it looks, and says whether it is in that bin.
+
+Skills: pick(name) picks an object up by itself (it looks, centres the
+jaws, grasps, checks it holds it and retries after a miss); pick(description=
+"red cube") does the same for whatever looks like that, whatever it is called,
+and says what it is holding. When a request describes objects by how they
+look (colour, shape), pick and check them by description, not by their names:
+names can be wrong. place(bin)
+puts what it holds into a bin, lifts clear and goes home. Prefer them to
+steering the jaws step by step: decide what goes where, and let the arm do
+the moving.
+
+No-coordinates mode: when `observe` says `scene.object_positions` is
+"hidden", the twin does not tell you where objects are, as on the real arm.
+Each object's `xyz_m`, `in_goal`, `in_bin` and `off_table` are left out, and a "missed"
+event says only that the jaws missed. You still get each object's `size_m`
+and `grip_width_m`, whether you hold it, the goal box, `ee` and
+`jaw_center_xyz_m`. Find an object with locate(name): a vision model looks
+at a camera view and the result's `xyz_m` is its estimate of the object's
+center, often a centimetre or so off; `jaw_move_m` is the move_by that puts
+the jaw center on that estimate. locate looks from the front view by default,
+which the arm does not block; if it answers not_found, try view="side" or
+view="overhead". To pick an object up: locate it; move_to 6 cm above its
+`xyz_m`; set_wrist_roll(angle_rad=-1.5); set_gripper(opening_m=grip_width_m
++ 0.05); locate again and move_by(dx, dy, dz=0) from `jaw_move_m`, twice
+(locate before each); locate once more and move_by(dx=0, dy=0, dz) with its
+`jaw_move_m.dz`; then set_gripper(opening_m=grip_width_m). Make one tool call
+at a time and wait for its result: two motion calls at once are refused as
+busy. A "missed" event means the estimate was off: open, lift 5 cm, locate
+again and repeat. After releasing, lift straight up 5 cm
+and home, then check the placement with check_success(name), after the last
+move: a judge looks at a front picture and says "done" (it is
+in the box), "retry" (it is not: locate it and pick again) or "look_again"
+(unsure: ask again or look with `camera`). Without a judge (reason no_judge),
+use locate(name, rest_z_m=the goal box floor z) or `camera`. Without locate
+(reason no_pointer), use `camera`: the overhead view is a map, so judge an
+object against things whose positions you know (the jaw center, the goal
+box). locate's answers are scored against the truth for a benchmark; when you
+work a position out yourself, call report_estimate(name, x, y, z) with its
+center. Neither tells you the true answer.
 
 Scenes differ in how forgiving their objects are. `list_scenes` shows them,
 easiest first, and `load_scene` switches (it homes the arm and swaps the
@@ -139,6 +191,41 @@ STARTER_PROMPTS: list[dict[str, str]] = [
     },
 ]
 
+# On the sorting desk (sort_colors): what to ask an agent there, easiest first.
+SORTING_PROMPTS: list[dict[str, str]] = [
+    {
+        "title": "Look around",
+        "text": "Observe the arm and tell me what is on the desk and which bins there are. "
+        "Do not move anything yet.",
+    },
+    {
+        "title": "Sort by colour",
+        "text": "Sort the cubes by colour into the bins. Use pick and place. When you are "
+        "done, check each cube with check_success, describing it by colour, and tell me "
+        "what it said.",
+    },
+    {
+        "title": "Swap two",
+        "text": "Put the red cube in the blue bin and the blue cube in the red bin. Leave the "
+        "green cube where it is.",
+    },
+    {
+        "title": "Only one",
+        "text": "Put only the red cube away, in the red bin. Nothing else moves.",
+    },
+    {
+        "title": "The odd one out",
+        "text": "Load the sort_colors_decoy scene and put the cubes away by colour. Tell me "
+        "what you did with the cube that has no bin of its colour, and why.",
+    },
+    {
+        "title": "Check, don't trust",
+        "text": "Without moving anything, check where every cube is with check_success, "
+        "describing each by colour, and tell me whether the desk is sorted. Did anything "
+        "you were told disagree with what the check found?",
+    },
+]
+
 
 def _bearer(value: str | None) -> str | None:
     if not value:
@@ -149,6 +236,29 @@ def _bearer(value: str | None) -> str | None:
 
 def _page(name: str) -> str:
     return resources.files("xbox_soarm_teleop.twin").joinpath("web", name).read_text("utf-8")
+
+
+def where_each_object_is(service: TwinService) -> dict[str, str]:
+    """For the student's page: where each object is, in words, from the truth
+    (in the gripper, in a bin or the goal box, on the table, off the table),
+    under the names the student's agent is shown. No positions."""
+    scene = service.observe_truth()["scene"]
+    labels = {box["name"]: box.get("label") or box["name"] for box in scene.get("bins", [])}
+    names = service.shown_names or {}
+    where = {}
+    for name, entry in scene["objects"].items():
+        if entry.get("attached"):
+            words = "in the gripper"
+        elif entry.get("in_bin"):
+            words = f"in the {labels.get(entry['in_bin'], entry['in_bin'])}"
+        elif entry.get("in_goal"):
+            words = "in the goal box"
+        elif entry.get("off_table"):
+            words = "off the table"
+        else:
+            words = "on the table"
+        where[names.get(name, name)] = words
+    return where
 
 
 def room_summary(room: Room) -> dict[str, Any]:
@@ -163,6 +273,7 @@ def room_summary(room: Room) -> dict[str, Any]:
         "ee": observation["ee"]["xyz_m"],
         "gripper": observation["gripper"],
         "objects": observation["scene"]["objects"],
+        "where": where_each_object_is(room.service),
         "events": control["events"],
     }
 
@@ -202,6 +313,9 @@ def build_hub_app(
     public_url: str | None = None,
     notebook_url: str | None = None,
     picture_hz: float = DEFAULT_PICTURE_HZ,
+    agent_models: tuple[str, ...] | None = None,
+    agent_budget_usd: float | None = None,
+    agent_post=None,
 ):
     """Build the ASGI app serving ``hub``.
 
@@ -215,6 +329,10 @@ def build_hub_app(
         picture_hz: Camera pictures a second each student page asks for, at
             most (kept within 1 to 30). Each picture is about 17 kB, so 10 a
             second is roughly 1.3 Mbit/s of upload per student.
+        agent_models: OpenRouter models the page's agent panel may use
+            (``twin.hub_agent``); an empty tuple turns the panel off.
+        agent_budget_usd: Each arm's budget for the panel's agent model.
+        agent_post: Sends requests to OpenRouter (tests pass a scripted model).
     """
     picture_ms = round(1000 / min(max(picture_hz, PICTURE_HZ_RANGE[0]), PICTURE_HZ_RANGE[1]))
 
@@ -314,9 +432,81 @@ def build_hub_app(
 
     @server.custom_route("/r/{token}/prompts", methods=["GET"])
     async def prompts(request: Request) -> Response:
-        if room_of(request) is None:
+        room = room_of(request)
+        if room is None:
             return not_found
-        return JSONResponse({"prompts": STARTER_PROMPTS}, headers=PAGE_HEADERS)
+        prompts = (
+            SORTING_PROMPTS
+            if BINS.get(room.service.sim.scene) and len(BINS[room.service.sim.scene]) > 1
+            else STARTER_PROMPTS
+        )
+        return JSONResponse({"prompts": prompts}, headers=PAGE_HEADERS)
+
+    from xbox_soarm_teleop.twin.hub_agent import DEFAULT_BUDGET_USD, DEFAULT_MODELS, AgentDesk, Refused
+
+    desk = AgentDesk(
+        port=port,
+        models=DEFAULT_MODELS if agent_models is None else tuple(agent_models),
+        budget_usd=DEFAULT_BUDGET_USD if agent_budget_usd is None else agent_budget_usd,
+        post=agent_post,
+    )
+    hub.agent_desk = desk  # closed with the hub
+
+    @server.custom_route("/r/{token}/agent", methods=["GET"])
+    async def agent_state(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        return JSONResponse(desk.state(room), headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/agent/run", methods=["POST"])
+    async def agent_run(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        body = await request.body()
+        try:
+            asked = json.loads(body or b"{}") if len(body) <= 8000 else None
+        except ValueError:
+            asked = None
+        if not isinstance(asked, dict):
+            return JSONResponse({"error": "expected a small JSON object"}, status_code=400)
+        try:
+            run = desk.start(
+                room, str(asked.get("task", "")), str(asked.get("model", "")), bool(asked.get("sees"))
+            )
+        except Refused as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status, headers=PAGE_HEADERS)
+        return JSONResponse({"ok": True, "run_id": run.run_id}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/agent/stop", methods=["POST"])
+    async def agent_stop(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        return JSONResponse({"ok": True, "stopped": desk.stop(room)}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/scores", methods=["GET"])
+    async def scores(request: Request) -> Response:
+        # The answer key for the room's own notebook: each guess against the
+        # truth, and each success check against it. Deliberately not a tool,
+        # so an agent driving the arm is never told the truth.
+        room = room_of(request)
+        if room is None:
+            return not_found
+        truth = room.service.observe_truth()
+        key = {
+            "objects": {
+                name: {k: thing.get(k) for k in ("xyz_m", "in_goal", "in_bin", "off_table")}
+                for name, thing in truth["scene"]["objects"].items()
+            },
+            "estimates": room.service.estimate_scores(),
+            "success_checks": room.service.success_checks(),
+        }
+        names = room.service.shown_names
+        if names:  # in the names the student (and their agent) sees
+            key = rename_objects(key, names)
+        return JSONResponse(key, headers=PAGE_HEADERS)
 
     @server.custom_route("/r/{token}/tools", methods=["GET"])
     async def page_tools(request: Request) -> Response:

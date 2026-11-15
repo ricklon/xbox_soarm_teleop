@@ -25,7 +25,26 @@ import sys
 import time
 from pathlib import Path
 
-SCENES = ("pick_place_easy", "pick_place_basic", "stack", "default")
+# The distractor scenes are twin.layouts.DISTRACTOR_LAYOUTS, named here so
+# that --help does not load MuJoCo (tests keep the two in step).
+DISTRACTOR_SCENES = (
+    "distractors_color",
+    "distractors_shape",
+    "distractors_size",
+    "distractors_clutter",
+)
+# The colour-sort scenes (twin.layouts, on the sort_bins table scene).
+SORT_SCENES = ("sort_colors", "sort_colors_decoy")
+# The object an agent trial picks in each scene (--start moves it).
+START_TARGETS = {"pick_place_basic": "pick_cube", "pick_place_easy": "bean_bag"}
+SCENES = (
+    "pick_place_easy",
+    "pick_place_basic",
+    *DISTRACTOR_SCENES,
+    *SORT_SCENES,
+    "stack",
+    "default",
+)
 
 
 def _wait_for_port(host: str, port: int, timeout_s: float = 10.0) -> bool:
@@ -52,7 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=SCENES,
         default="pick_place_easy",
         help="pick_place_easy: a soft bean bag (default). pick_place_basic: a rigid cube, "
-        "harder to grasp. Agents can switch between the two with load_scene.",
+        "harder to grasp. Agents can switch between the two with load_scene. sort_colors: "
+        "three cubes and a bin of each colour (sort_colors_decoy adds a cube with no bin); "
+        "a different table, so load_scene switches only between the sort scenes there.",
     )
     parser.add_argument("--world", default=None, help="Lighting/floor preset (see simulate-mujoco)")
     parser.add_argument("--port", type=int, default=8765, help="MCP server port (localhost)")
@@ -65,6 +86,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--log-dir", default="twin_logs", help="Directory for the session JSONL log (one per run)"
     )
     parser.add_argument("--no-log", action="store_true", help="Do not write a session log")
+    parser.add_argument(
+        "--no-coordinates",
+        action="store_true",
+        help="Do not tell agents where objects are: observe leaves out their positions, so "
+        "agents must find them with the cameras (a perception benchmark). The session log "
+        "keeps the true positions, and report_estimate scores agents' guesses",
+    )
+    parser.add_argument(
+        "--judge",
+        default=None,
+        choices=("clef", "clef-flash", "none"),
+        help="Success judge behind the check_success tool: clef or clef-flash on Cloudflare "
+        "Workers AI (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID). Default: none",
+    )
+    parser.add_argument(
+        "--pointer",
+        default=None,
+        help="Pointing model behind the locate tool: oracle (the truth; for tests), "
+        "gemini[:model] (GEMINI_API_KEY), molmo[:url] (run scripts/molmo_server.py), "
+        "ollama[:model], openrouter[:model] (OPENROUTER_API_KEY). Default: none (no locate)",
+    )
+    parser.add_argument(
+        "--names",
+        default="as_is",
+        choices=("as_is", "truthful", "neutral", "misleading"),
+        help="The names agents are shown for objects: the twin's own, what each looks "
+        "like (red_cube), object_1 ..., or another object's colour (to test whether an "
+        "agent believes words or its eyes). Logs keep the twin's own names",
+    )
+    parser.add_argument(
+        "--start",
+        default=None,
+        metavar="X,Y",
+        help="Start the scene's target object flat on the table at X,Y (m, base frame) "
+        "instead of its usual spot (agent trials from random starts)",
+    )
     parser.add_argument(
         "--max-seconds", type=float, default=None, help="Exit after this long (automation)"
     )
@@ -82,7 +139,9 @@ def main(argv: list[str] | None = None) -> int:
     import mujoco.viewer
 
     from xbox_soarm_teleop.twin import build_twin
+    from xbox_soarm_teleop.twin.judge import make_judge
     from xbox_soarm_teleop.twin.mcp_server import McpThread, build_mcp_server
+    from xbox_soarm_teleop.twin.pointing import make_pointer
     from xbox_soarm_teleop.twin.status import MENU_BUTTON
 
     host = "127.0.0.1"
@@ -100,7 +159,19 @@ def main(argv: list[str] | None = None) -> int:
         controller_backend=args.controller_backend,
         deadzone=args.deadzone,
         with_controller=not args.no_controller,
+        hide_positions=args.no_coordinates,
+        pointer=make_pointer(args.pointer),
+        judge=make_judge(args.judge),
+        naming=args.names,
     )
+    if args.start:
+        from xbox_soarm_teleop.twin.layouts import layouts_for
+        from xbox_soarm_teleop.twin.scenarios import parse_start, place_start
+
+        x, y = parse_start(args.start)
+        target = START_TARGETS.get(args.scene) or next(iter(layouts_for(args.scene, True))).target
+        place_start(service, target, x, y)
+        print(f"Start: {target} at ({x:.3f}, {y:.3f})", flush=True)
     if service.log is not None:
         print(f"Session log: {service.log.path}", flush=True)
     controller = service.controller
@@ -137,6 +208,12 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGINT, on_signal)
     print(f"Scene: {args.scene}. Close the window or press Ctrl+C to quit.", flush=True)
+    if args.no_coordinates:
+        print("No-coordinates mode: agents are not told where objects are.", flush=True)
+    if service.pointer is not None:
+        print(f"locate: pointing model {service.pointer.name}", flush=True)
+    if service.judge is not None:
+        print(f"check_success: judge {service.judge.model}", flush=True)
 
     shown_events: list[str] = []
     shown_status: tuple[str, str, str] | None = None

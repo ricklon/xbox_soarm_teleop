@@ -25,9 +25,10 @@ TABLE_CLEARANCE_M = 0.005
 
 def table_top_z(scene: str) -> float | None:
     """Height of the scene's table top, or None when objects rest on the ground."""
-    from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
+    from xbox_soarm_teleop.sim.table_scenes import TABLE_SCENES
 
-    return sim_cli.PICK_PLACE_TABLE_HEIGHT if scene == "pick_place_basic" else None
+    recipe = TABLE_SCENES.get(scene)
+    return recipe.table.top_z if recipe is not None else None
 
 
 def scene_workspace(scene: str) -> dict:
@@ -41,8 +42,12 @@ def scene_workspace(scene: str) -> dict:
     bounds = dict(sim_cli.SIM_WORKSPACE_BOUNDS)
     top = table_top_z(scene)
     if top is not None:
-        low, high = bounds["z"]
-        bounds["z"] = (max(low, top + TABLE_CLEARANCE_M), high)
+        # The table is the floor: the tool stops just over it, whether it is a
+        # raised table (above the configured floor) or a desk at the arm's
+        # base (below it: the configured 5 cm floor would keep the jaws off
+        # every object on the desk).
+        _, high = bounds["z"]
+        bounds["z"] = (top + TABLE_CLEARANCE_M, high)
     return bounds
 
 
@@ -124,6 +129,10 @@ def build_twin(
     parts: TwinParts | None = None,
     controller: Any = _NO_CONTROLLER,
     cameras: Any = None,
+    hide_positions: bool = False,
+    pointer: Any = None,
+    judge: Any = None,
+    naming: str = "as_is",
 ) -> TwinService:
     """Create a twin with the same kinematics, mapping and bounds as teleop.
 
@@ -142,6 +151,11 @@ def build_twin(
         controller: Use this controller object (anything with ``read()`` and
             ``is_connected``) in place of the Xbox pad; None for no controller.
         cameras: A camera rig shared between twins of the same model.
+        hide_positions: No-coordinates mode: agents are not told where objects
+            are (``TwinService``); they must look with the cameras.
+        pointer: Pointing model behind ``locate`` (``twin.pointing``).
+        judge: Success judge behind ``check_success`` (``twin.judge``).
+        naming: The names agents are shown for objects (``twin.naming``).
     """
     from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
     from xbox_soarm_teleop.control.safety import make_workspace_clipper
@@ -172,6 +186,7 @@ def build_twin(
                 "gripper_rate_per_s": runtime.gripper_rate,
                 "lease_timeout_s": twin_service.LEASE_TIMEOUT_S,
                 "human_idle_s": twin_service.HUMAN_IDLE_S,
+                "object_positions": "hidden" if hide_positions else "shown",
             },
         )
         log = SessionLog(log_path, header, dt=sim_cli.LOOP_PERIOD)
@@ -188,4 +203,8 @@ def build_twin(
         log=log,
         cameras=cameras,
         layout=parts.layout,
+        hide_positions=hide_positions,
+        pointer=pointer,
+        judge=judge,
+        naming=naming,
     )

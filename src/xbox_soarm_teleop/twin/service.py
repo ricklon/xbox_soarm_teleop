@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import math
 import queue
+import re
 import threading
+import time
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
@@ -63,7 +65,15 @@ from xbox_soarm_teleop.twin.actions import (
 )
 from xbox_soarm_teleop.twin.cameras import DEFAULT_SIZE, VIEWS, CameraRig, encode
 from xbox_soarm_teleop.twin.grasp import AssistedGrasp
-from xbox_soarm_teleop.twin.layouts import GOALS, Layout, layouts_for
+from xbox_soarm_teleop.twin.layouts import (
+    BINS,
+    GOALS,
+    Layout,
+    layouts_for,
+    object_description,
+)
+from xbox_soarm_teleop.twin.pointing import Pointer, PointRequest, mask_secrets
+from xbox_soarm_teleop.twin.projection import CameraGeometry, camera_geometry, pixel_to_xyz
 from xbox_soarm_teleop.twin.session_log import SessionLog
 
 ARM_JOINT_NAMES = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
@@ -73,6 +83,16 @@ GRIPPER_PICKUP_TOLERANCE = 0.05
 RECENT_EVENTS = 8
 OFF_TABLE_MARGIN_M = 0.01
 KEPT_ACTIONS = 200
+LOCATE_SIZE = (640, 480)  # pointing models do better on the largest picture
+LOCATE_TIMEOUT_S = 5.0
+# check_success: the judge's P(in the goal box) at or above DONE_AT says done, at
+# or below RETRY_AT says retry, and anything between says look again. Clef's
+# answers at 0.9 or more were right 93% of the time, at 0.1 or less always
+# (docs/vision_benchmark.md).
+DONE_AT = 0.9
+RETRY_AT = 0.1
+CHECK_SIZE = (640, 480)
+JAW_FLOOR_CLEARANCE_M = 0.015  # the jaw center no lower than this over the workspace floor  # for the loop to answer; the model itself may take longer
 
 
 class TwinClosed(RuntimeError):
@@ -119,6 +139,15 @@ class TwinService:
         layout: Which of the scene's objects start on the table
             (``twin.layouts``); ``load_scene`` changes it. None leaves every
             object where the model has it.
+        hide_positions: No-coordinates mode, for testing perception. ``observe``
+            (and so every agent tool) leaves out each object's position and
+            what follows from it (``xyz_m``, ``in_goal``, ``off_table``), and a
+            refused grasp's event no longer says how far to move. An agent has
+            to find objects with the cameras, as on the real arm. The truth is
+            kept: in the session log, in :meth:`observe_truth`, and as the
+            grader of :meth:`report_estimate`.
+        pointer: The pointing model behind :meth:`locate` (``twin.pointing``).
+        judge: The success judge behind :meth:`check_success` (``twin.judge.ClefJudge``).
     """
 
     def __init__(
@@ -138,8 +167,22 @@ class TwinService:
         log: SessionLog | None = None,
         cameras: CameraRig | None = None,
         layout: Layout | None = None,
+        hide_positions: bool = False,
+        pointer: Pointer | None = None,
+        judge: Any = None,
+        naming: str = "as_is",
     ) -> None:
         self.log = log
+        self.naming = naming
+        """The names agents are shown for objects (``twin.naming``)."""
+        self.hide_positions = hide_positions
+        self._estimates: list[dict[str, Any]] = []
+        self._shown: dict[str, Any] | None = None
+        self.pointer = pointer
+        """The pointing model ``locate`` asks (``twin.pointing``); None: no ``locate``."""
+        self.judge = judge
+        """The judge ``check_success`` asks (``twin.judge.ClefJudge``); None: no checks."""
+        self._success_checks: list[dict[str, Any]] = []
         self._shared_cameras = cameras is not None
         self._status_logged: tuple | None = None
         self._control_logged: tuple = (None, False)
@@ -234,6 +277,11 @@ class TwinService:
     def cancel(self, *, client_id: str = "agent") -> Future:
         """Cancel the running action, if the caller owns it."""
         return self.call(self._logged("cancel", client_id, {}, lambda: self._cancel(client_id)))
+
+    def abort_action(self, detail: str = "") -> Future:
+        """End the running action, whoever owns it, as a person taking over
+        does (for the page's agent Stop). The arm holds where it is."""
+        return self.call(lambda: self._end_action(ActionState.CANCELLED, ReasonCode.PREEMPTED, detail))
 
     def stop(self, *, by: str = "agent", client_id: str | None = None) -> None:
         """Latch the virtual stop. Takes effect before any queued command."""
@@ -339,8 +387,454 @@ class TwinService:
         return future
 
     def observe(self) -> dict[str, Any]:
-        """Latest ``soarm.observation/v1`` snapshot (do not mutate)."""
+        """Latest ``soarm.observation/v1`` snapshot (do not mutate).
+
+        In no-coordinates mode (``hide_positions``) object positions are left
+        out; :meth:`observe_truth` has them.
+        """
+        snapshot = self._snapshot
+        if not self.hide_positions:
+            return snapshot
+        shown = self._shown
+        if shown is None or shown["frame"] != snapshot["frame"]:
+            shown = self._shown = hide_object_positions(snapshot)
+        return shown
+
+    @property
+    def shown_names(self) -> dict[str, str] | None:
+        """The name agents see for each object on the table now (None: the
+        twin's own). Changes with the layout; see ``twin.naming``."""
+        from xbox_soarm_teleop.twin.naming import shown_names
+
+        objects = self.layout.objects if self.layout is not None else self.grasp.positions()
+        return shown_names(objects, self.naming)
+
+    def observe_truth(self) -> dict[str, Any]:
+        """The latest snapshot with every object's true position, whatever the mode.
+
+        For graders, the session log and the people running the twin; never
+        hand it to an agent in no-coordinates mode.
+        """
         return self._snapshot
+
+    def report_estimate(self, name: str, xyz_m, *, client_id: str = "agent") -> Future:
+        """Score a guess at an object's center (m, base frame) against the truth.
+
+        Resolves to what the agent may see (that it was recorded), never the
+        error: an agent told how far off it was could home in on the answer.
+        The score goes to :meth:`estimate_scores` and the session log
+        (``estimate`` lines). Unknown or parked objects are rejected.
+        """
+        payload = {"name": name, "xyz_m": list(xyz_m) if xyz_m is not None else None}
+        return self.call(
+            self._logged(
+                "report_estimate",
+                client_id,
+                payload,
+                lambda: self._report_estimate(name, xyz_m, client_id),
+            )
+        )
+
+    def estimate_scores(self) -> list[dict[str, Any]]:
+        """Every scored estimate so far, oldest first (copies)."""
+        return [dict(score) for score in self._estimates]
+
+    def success_checks(self) -> list[dict[str, Any]]:
+        """Every ``check_success`` so far, with the truth beside the judge's answer (copies)."""
+        return [dict(check) for check in self._success_checks]
+
+    def pick(
+        self, name: str | None = None, *, client_id: str = "agent", description: str | None = None
+    ) -> dict[str, Any]:
+        """Pick ``name`` up by itself (``twin.skills.pick``): look, centre, grasp,
+        check by feel, retry. Blocks; call it from a client thread."""
+        from xbox_soarm_teleop.twin import skills
+
+        self._log("request", client_id=client_id, type="pick", name=name)
+        result = skills.pick(self, name, client_id=client_id, description=description)
+        self._log("skill_result", client_id=client_id, skill="pick", target=name, **result)
+        return result
+
+    def place(self, bin_name: str, *, client_id: str = "agent") -> dict[str, Any]:
+        """Put what the gripper holds in ``bin_name`` (``twin.skills.place``), lift
+        clear and go home. Blocks; call it from a client thread."""
+        from xbox_soarm_teleop.twin import skills
+
+        self._log("request", client_id=client_id, type="place", target_bin=bin_name)
+        result = skills.place(self, bin_name, client_id=client_id)
+        # The result has its own "bin": the log line names the request's target_bin.
+        self._log("skill_result", client_id=client_id, skill="place", target_bin=bin_name, **result)
+        return result
+
+    def check_success(
+        self,
+        name: str | None = None,
+        *,
+        bin_name: str | None = None,
+        description: str | None = None,
+        client_id: str = "agent",
+        timeout_s: float = LOCATE_TIMEOUT_S,
+    ) -> dict[str, Any]:
+        """Is ``name`` in the goal box (or, in a sorting scene, in ``bin_name``)?
+        Ask the judge about a front picture.
+
+        Returns the judge's probabilities and a verdict: ``done`` at
+        ``DONE_AT`` or more, ``retry`` at ``RETRY_AT`` or less, ``look_again``
+        between. The twin's truth is logged beside the answer (``success_check``
+        lines, :meth:`success_checks`) and never returned. Blocks while the
+        judge answers; call it from a client thread.
+        """
+        if name is None and not description:
+            return {
+                "ok": False,
+                "reason": "invalid_request",
+                "detail": "say which object: its name, or (in sorting scenes) a description "
+                'in the request\'s words, like description="red cube"',
+            }
+        if GOALS.get(self.sim.scene) is None and BINS.get(self.sim.scene):
+            return self._check_trays(name, bin_name, client_id, timeout_s, description)
+        if name is None:
+            return {
+                "ok": False,
+                "reason": "invalid_request",
+                "detail": "checking by description works in sorting scenes; give the name",
+            }
+        judge = self.judge
+        if judge is None:
+            return {
+                "ok": False,
+                "reason": "no_judge",
+                "detail": "this twin has no success judge (start it with --judge)",
+            }
+        try:
+            self._log("request", client_id=client_id, type="check_success", name=name)
+            setup = self.call(lambda: self._check_setup(name)).result(timeout=timeout_s)
+            picture = self.render(
+                "front", width=CHECK_SIZE[0], height=CHECK_SIZE[1], fmt="png", client_id=client_id
+            ).result(timeout=timeout_s)
+        except ActionRejected as exc:
+            return {"ok": False, "reason": exc.reason.value, "detail": exc.detail}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"ok": False, "reason": "error", "detail": str(exc)}
+        started = time.monotonic()
+        try:
+            answer = judge.judge(
+                [picture], setup["description"], views=["front"], others=setup["others"]
+            )
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            detail = mask_secrets(str(exc))
+            self._log("success_check", client_id=client_id, ok=False, name=name, detail=detail)
+            return {"ok": False, "reason": "judge_error", "detail": detail}
+        seconds = round(time.monotonic() - started, 3)
+        p_in_goal = float(answer["in_goal"])
+        verdict = verdict_for(p_in_goal)
+        where = max(answer["where"], key=answer["where"].get)
+        result = {
+            "ok": True,
+            "name": name,
+            "description": setup["description"],
+            "verdict": verdict,
+            "p_in_goal": round(p_in_goal, 4),
+            "p_held": round(float(answer["held"]), 4),
+            "p_tipped": round(float(answer["tipped"]), 4),
+            "where": where,
+            "judge": getattr(judge, "model", "judge"),
+            "seconds": seconds,
+            "cost_usd": answer.get("cost_usd"),
+        }
+        truth = setup["truth"]
+        record = {
+            **result,
+            "client_id": client_id,
+            "sim_time_s": round(self.now_s, 3),  # not "t": the log line has its own
+            "truth": truth,
+            # A verdict is right when "done" means in the box and "retry" means not;
+            # "look again" claims nothing.
+            "correct": None
+            if verdict == "look_again"
+            else (verdict == "done") == bool(truth["in_goal"]),
+        }
+        self._success_checks.append(record)
+        self._log(
+            "success_check",
+            client_id=client_id,
+            **{k: v for k, v in record.items() if k != "client_id"},
+        )
+        return result
+
+    def _check_trays(
+        self,
+        name: str | None,
+        bin_name: str | None,
+        client_id: str,
+        timeout_s: float,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """check_success in a sorting scene: which tray is ``name`` in?
+
+        Asked by ``description`` instead ("red cube", the request's words),
+        Clef finds the object by how it looks, so a name that misleads the
+        agent cannot mislead the check (lesson 24 in docs/lessons_learned.md).
+        The twin works out which object matches, for grading only.
+
+        Clef answers from the front picture with the cell's bins as options
+        (measured on the sorting desk: 95% right, and every answer of 0.9 or
+        more right; overhead was far worse, scripts/tray_judge_benchmark.py).
+        """
+        from xbox_soarm_teleop.twin.judge import tray_truth
+
+        judge = self.judge
+        if judge is None:
+            return {
+                "ok": False,
+                "reason": "no_judge",
+                "detail": "this twin has no success judge (start it with --judge)",
+            }
+        boxes = [(box.name, box.label or box.name) for box in BINS[self.sim.scene]]
+        if bin_name is not None and bin_name not in dict(boxes):
+            known = ", ".join(name_ for name_, _ in boxes)
+            return {
+                "ok": False,
+                "reason": "invalid_request",
+                "detail": f"Unknown bin '{bin_name}'. Here: {known}",
+            }
+        try:
+            self._log(
+                "request",
+                client_id=client_id,
+                type="check_success",
+                name=name,
+                description=description,
+            )
+            if name is not None:
+                setup = self.call(lambda: self._check_setup(name, tray_truth)).result(timeout=timeout_s)
+                setup["matched"] = name
+            else:
+                setup = self.call(lambda: self._describe_setup(description)).result(timeout=timeout_s)
+            picture = self.render(
+                "front", width=CHECK_SIZE[0], height=CHECK_SIZE[1], fmt="png", client_id=client_id
+            ).result(timeout=timeout_s)
+        except ActionRejected as exc:
+            return {"ok": False, "reason": exc.reason.value, "detail": exc.detail}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"ok": False, "reason": "error", "detail": str(exc)}
+        started = time.monotonic()
+        try:
+            answer = judge.judge_trays(
+                [picture], setup["description"], boxes, views=["front"], others=setup["others"]
+            )
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            detail = mask_secrets(str(exc))
+            self._log("success_check", client_id=client_id, ok=False, name=name, detail=detail)
+            return {"ok": False, "reason": "judge_error", "detail": detail}
+        probabilities = {k: round(float(v), 4) for k, v in answer["where"].items()}
+        where = max(probabilities, key=probabilities.get)
+        result = {
+            "ok": True,
+            **({"name": name} if name is not None else {}),
+            "description": setup["description"],
+            "where": where,
+            "p_where": probabilities,
+            "judge": getattr(judge, "model", "judge"),
+            "seconds": round(time.monotonic() - started, 3),
+            "cost_usd": answer.get("cost_usd"),
+        }
+        truth = setup["truth"]
+        if bin_name is not None:
+            p_in_bin = probabilities.get(bin_name, 0.0)
+            verdict = verdict_for(p_in_bin)
+            result.update(bin=bin_name, p_in_bin=p_in_bin, verdict=verdict)
+            correct = (
+                None
+                if verdict == "look_again" or truth is None
+                else (verdict == "done") == (truth == bin_name)
+            )
+        else:
+            correct = None if truth is None else where == truth
+        record = {
+            **result,
+            "client_id": client_id,
+            "sim_time_s": round(self.now_s, 3),
+            "matched": setup["matched"],
+            "truth": None
+            if truth is None
+            else {"where": truth, "in_goal": truth == bin_name if bin_name else None},
+            "correct": correct,
+        }
+        self._success_checks.append(record)
+        self._log(
+            "success_check",
+            client_id=client_id,
+            **{k: v for k, v in record.items() if k != "client_id"},
+        )
+        return result
+
+    def _describe_setup(self, description: str) -> dict[str, Any]:
+        """On the loop thread: which object a description means (for grading
+        only), the others on the desk, and where the matching one is."""
+        from xbox_soarm_teleop.twin.judge import tray_truth
+
+        positions = self.grasp.positions()
+        wanted = description.strip().lower()
+        matched = next(
+            (n for n in positions if object_description(n, self.layout).lower() == wanted), None
+        )
+        return {
+            "description": description.strip(),
+            "others": [object_description(o, self.layout) for o in positions if o != matched],
+            "matched": matched,
+            "truth": tray_truth(self, matched) if matched is not None else None,
+        }
+
+    def _check_setup(self, name: str, truth_of=None) -> dict[str, Any]:
+        """On the loop thread: check the name, word the question, read the truth."""
+        from xbox_soarm_teleop.twin.judge import truth_labels
+
+        positions = self.grasp.positions()
+        if name not in positions:
+            known = ", ".join(positions) or "none"
+            hint = f'; to ask by how it looks, use description="{name}"' if " " in name else ""
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, f"Unknown object '{name}'. On the table: {known}{hint}"
+            )
+        return {
+            "description": object_description(name, self.layout),
+            "others": [object_description(other, self.layout) for other in positions if other != name],
+            "truth": (truth_of or truth_labels)(self, name),
+        }
+
+    def locate(
+        self,
+        name: str | None = None,
+        *,
+        view: str = "front",
+        description: str | None = None,
+        rest_z_m: float | None = None,
+        client_id: str = "agent",
+        width: int = LOCATE_SIZE[0],
+        height: int = LOCATE_SIZE[1],
+        timeout_s: float = LOCATE_TIMEOUT_S,
+    ) -> dict[str, Any]:
+        """Find an object by looking: ask the pointer for its pixel, return xyz.
+
+        Takes a picture from ``view``, asks :attr:`pointer` where ``description``
+        (by default the object's own, e.g. "red cube") is, and follows that
+        pixel's ray down to the plane the object's center sits at when it
+        rests on ``rest_z_m`` (default: the table top). The guess is scored
+        like :meth:`report_estimate` (``source`` = ``locate:<backend>:<view>``),
+        and the answer, which is only the model's estimate, goes back to the
+        caller.
+
+        Blocks while the model answers, so call it from a client thread, not
+        the loop thread. Keep the arm still: the wrist view's pose is read
+        just before the picture is taken.
+
+        Returns ``{"ok": True, "xyz_m": [...], "pixel": [u, v], ...}`` or
+        ``{"ok": False, "reason": ..., "detail": ...}``.
+
+        Without ``name``, ``description`` alone says what to look for (the
+        request's words: "red cube"). The guess is then scored against the
+        object that matches it, if one does; nothing is returned about which.
+        """
+        pointer = self.pointer
+        if pointer is None:
+            return {
+                "ok": False,
+                "reason": "no_pointer",
+                "detail": "this twin has no pointing model (start it with --pointer)",
+            }
+        if name is None and not description:
+            return {
+                "ok": False,
+                "reason": "invalid_request",
+                "detail": 'say what to look for: a name, or description="red cube"',
+            }
+        try:
+            self._log(
+                "request",
+                client_id=client_id,
+                type="locate",
+                name=name,
+                description=description,
+                view=view,
+            )
+            setup = self.call(
+                lambda: self._locate_setup(name, view, description, rest_z_m, width, height)
+            ).result(timeout=timeout_s)
+            image = self.render(
+                view, width=width, height=height, fmt="png", client_id=client_id
+            ).result(timeout=timeout_s)
+        except ActionRejected as exc:
+            return {"ok": False, "reason": exc.reason.value, "detail": exc.detail}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            return {"ok": False, "reason": "error", "detail": str(exc)}
+
+        geometry: CameraGeometry = setup["geometry"]
+        request = PointRequest(
+            image=image,
+            mime="image/png",
+            width=width,
+            height=height,
+            description=setup["description"],
+            truth_uv=setup["truth_uv"],
+        )
+        started = time.monotonic()
+        try:
+            point = pointer.point(request)
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            detail = mask_secrets(str(exc))
+            self._log(
+                "locate_result", client_id=client_id, ok=False, backend=pointer.name, detail=detail
+            )
+            return {"ok": False, "reason": "pointer_error", "detail": detail}
+        seconds = round(time.monotonic() - started, 3)
+        answer = {
+            **({"name": name} if name is not None else {}),
+            "view": view,
+            "description": setup["description"],
+            "backend": pointer.name,
+            "seconds": seconds,
+        }
+        if point is None:
+            self._log("locate_result", client_id=client_id, ok=False, **answer)
+            return {
+                "ok": False,
+                "reason": "not_found",
+                "detail": f"the {pointer.name} model did not find the {setup['description']} "
+                f"in the {view} view; try another view",
+                **answer,
+            }
+        xyz = pixel_to_xyz(geometry, point.u, point.v, setup["plane_z_m"])
+        answer.update(pixel=[round(point.u, 1), round(point.v, 1)], image_size=[width, height])
+        if xyz is None:
+            self._log("locate_result", client_id=client_id, ok=False, **answer)
+            return {
+                "ok": False,
+                "reason": "not_found",
+                "detail": "the pixel it pointed at does not look down at the table",
+                **answer,
+            }
+        source = f"locate:{pointer.name}:{view}"
+        scored = setup["matched"]
+        if scored is not None:
+            try:
+                self.call(
+                    lambda: self._report_estimate(scored, xyz.tolist(), client_id, source)
+                ).result(timeout=timeout_s)
+            except Exception:  # noqa: BLE001 - the object vanished meanwhile: still answer
+                pass
+        answer.update(xyz_m=[round(float(v), 4) for v in xyz], plane_z_m=round(setup["plane_z_m"], 4))
+        if setup["jaw_center"] is not None:
+            answer["jaw_move_m"] = self._jaw_move(np.asarray(setup["jaw_center"], dtype=float), xyz)
+        self._log(
+            "locate_result",
+            client_id=client_id,
+            ok=True,
+            raw=point.raw[:300],
+            usage=getattr(pointer, "last_usage", None),
+            **answer,
+        )
+        return {"ok": True, **answer}
 
     def wait(self, action_id: str, timeout_s: float) -> ActionStatus:
         """Block until an action ends or ``timeout_s`` elapses; return its status."""
@@ -565,7 +1059,8 @@ class TwinService:
         )
 
     def _event(self, text: str) -> None:
-        self.events.append(text)
+        """Tell agents about something; the log always gets the full text."""
+        self.events.append(hide_event_position(text) if self.hide_positions else text)
         self._log("event", text=text)
 
     def _drain_commands(self) -> None:
@@ -728,7 +1223,7 @@ class TwinService:
     def _load_scene(self, name: str, client_id: str) -> dict[str, Any]:
         if self.stop_latched_by is not None:
             raise ActionRejected(ReasonCode.STOPPED, f"latched by {self.stop_latched_by}")
-        layouts = {layout.name: layout for layout in layouts_for(self.sim.scene)}
+        layouts = {layout.name: layout for layout in layouts_for(self.sim.scene, include_hidden=True)}
         if name not in layouts:
             known = ", ".join(scene["name"] for scene in self.list_scenes())
             raise ActionRejected(ReasonCode.INVALID_REQUEST, f"Unknown scene '{name}'. Known: {known}")
@@ -738,12 +1233,138 @@ class TwinService:
         self._event(f"scene loaded: {name}")
         return {**self.layout.summary(), "current": True}
 
+    def _report_estimate(
+        self, name: str, xyz_m, client_id: str, source: str = "agent"
+    ) -> dict[str, Any]:
+        positions = self.grasp.positions()  # parked objects are left out
+        if name not in positions:
+            known = ", ".join(positions) or "none"
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, f"Unknown object '{name}'. On the table: {known}"
+            )
+        try:
+            guess = np.asarray(xyz_m, dtype=float).reshape(3)
+        except (TypeError, ValueError) as exc:
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, "xyz_m must be three numbers (m, base frame)"
+            ) from exc
+        if not np.all(np.isfinite(guess)):
+            raise ActionRejected(ReasonCode.INVALID_REQUEST, "xyz_m must be finite")
+        truth = np.asarray(positions[name], dtype=float)
+        error = guess - truth
+        score = {
+            "t": round(self.now_s, 6),
+            "frame": self.frame,
+            "client_id": client_id,
+            "name": name,
+            "source": source,
+            "estimate_xyz_m": [float(v) for v in guess],
+            "truth_xyz_m": [round(float(v), 5) for v in truth],
+            "error_cm": round(float(np.linalg.norm(error)) * 100.0, 3),
+            "error_xy_cm": round(float(np.linalg.norm(error[:2])) * 100.0, 3),
+            "error_z_cm": round(float(error[2]) * 100.0, 3),
+            "attached": name == self.grasp.attached,
+            "positions_hidden": self.hide_positions,
+        }
+        self._estimates.append(score)
+        self._log(
+            "estimate",
+            client_id=client_id,
+            **{k: v for k, v in score.items() if k not in ("t", "frame", "client_id")},
+        )
+        return {"ok": True, "name": name, "recorded": len(self._estimates)}
+
+    def _jaw_move(self, jaw: np.ndarray, xyz: np.ndarray) -> dict[str, float]:
+        """The move_by that puts the jaw center on an estimate (from the estimate, not the truth).
+
+        Down only as far as ``JAW_FLOOR_CLEARANCE_M`` above the workspace floor,
+        where the jaw tips would touch the table.
+        """
+        floor = float(self.workspace_bounds["z"][0]) + JAW_FLOOR_CLEARANCE_M
+        dx, dy = (float(v) for v in (xyz[:2] - jaw[:2]))
+        dz = max(float(xyz[2]), floor) - float(jaw[2])
+        return {"dx": round(dx, 4) + 0.0, "dy": round(dy, 4) + 0.0, "dz": round(dz, 4) + 0.0}
+
+    def _locate_setup(
+        self,
+        name: str | None,
+        view: str,
+        description: str | None,
+        rest_z_m: float | None,
+        width: int,
+        height: int,
+    ) -> dict[str, Any]:
+        """On the loop thread: check the request, read the camera and the truth."""
+        positions = self.grasp.positions()
+        if name is None:
+            return self._locate_by_description(positions, view, description, rest_z_m, width, height)
+        if name not in positions:
+            known = ", ".join(positions) or "none"
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, f"Unknown object '{name}'. On the table: {known}"
+            )
+        if view not in VIEWS:
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, f"Unknown view '{view}'. Known: {', '.join(VIEWS)}"
+            )
+        if name == self.grasp.attached:
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST,
+                f"{name} is held: it rides between the jaws, at jaw_center_xyz_m",
+            )
+        if rest_z_m is None:
+            rest_z_m = self.table_top_z if self.table_top_z is not None else 0.0
+        plane_z = float(rest_z_m) + float(self.grasp.half_extents_world(name)[2])
+        mujoco.mj_kinematics(self.sim.model, self.sim.data)
+        mujoco.mj_camlight(self.sim.model, self.sim.data)
+        geometry = camera_geometry(self.sim.model, self.sim.data, view, width, height)
+        return {
+            "description": description or object_description(name, self.layout),
+            "plane_z_m": plane_z,
+            "geometry": geometry,
+            "truth_uv": geometry.project(positions[name]),
+            "jaw_center": self._snapshot.get("jaw_center_xyz_m"),
+            "matched": name,
+        }
+
+    def _locate_by_description(
+        self, positions, view: str, description: str, rest_z_m, width: int, height: int
+    ) -> dict[str, Any]:
+        """Setup for looking by description only. The object that matches it is
+        found for scoring and for the oracle pointer only; the plane it rests on
+        is guessed from the typical height of what is on the table, since the
+        arm does not know which object the words mean."""
+        if view not in VIEWS:
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, f"Unknown view '{view}'. Known: {', '.join(VIEWS)}"
+            )
+        loose = [n for n in positions if n != self.grasp.attached]
+        wanted = description.strip().lower()
+        matched = next((n for n in loose if object_description(n, self.layout).lower() == wanted), None)
+        if rest_z_m is None:
+            rest_z_m = self.table_top_z if self.table_top_z is not None else 0.0
+        halves = [float(self.grasp.half_extents_world(n)[2]) for n in loose] or [0.02]
+        plane_z = float(rest_z_m) + float(np.median(halves))
+        mujoco.mj_kinematics(self.sim.model, self.sim.data)
+        mujoco.mj_camlight(self.sim.model, self.sim.data)
+        geometry = camera_geometry(self.sim.model, self.sim.data, view, width, height)
+        return {
+            "description": description.strip(),
+            "plane_z_m": plane_z,
+            "geometry": geometry,
+            "truth_uv": geometry.project(positions[matched]) if matched else None,
+            "jaw_center": self._snapshot.get("jaw_center_xyz_m"),
+            "matched": matched,
+        }
+
     def _arrange_objects(self) -> None:
         """Put the layout's objects at their starts and park the others."""
         if self.layout is None:
             return
-        for name, xyz in self.layout.objects.items():
-            self.grasp.place(name, np.asarray(xyz, dtype=float))
+        for name, pose in self.layout.objects.items():
+            # (x, y, z), or (x, y, z, yaw) for an object that starts turned.
+            yaw = float(pose[3]) if len(pose) > 3 else 0.0
+            self.grasp.place(name, np.asarray(pose[:3], dtype=float), yaw)
         self.grasp.park(name for name in self.grasp.objects if name not in self.layout.objects)
         mujoco.mj_forward(self.sim.model, self.sim.data)
 
@@ -861,6 +1482,8 @@ class TwinService:
         ik = getattr(self.kinematics, "last_ik_result", None)
         step = self.last_step
         goal = GOALS.get(self.sim.scene)
+        # A scene with several bins (a sorting scene) says which bin each object is in.
+        bins = BINS.get(self.sim.scene, ()) if goal is None else ()
         opening = self.grasp.settings.jaw_opening_m(self.state.gripper_pos)
         jaw_center = self.grasp.jaw_center(opening)
         objects = {}
@@ -878,13 +1501,22 @@ class TwinService:
                 entry["in_goal"] = name != self.grasp.attached and goal.holds(
                     xyz, self.grasp.half_extents_world(name)
                 )
+            if bins:
+                half = self.grasp.half_extents_world(name)
+                entry["in_bin"] = next(
+                    (box.name for box in bins if name != self.grasp.attached and box.holds(xyz, half)),
+                    None,
+                )
             objects[name] = entry
         scene = {
             "name": self.layout.name if self.layout is not None else self.sim.scene,
+            "object_positions": "hidden" if self.hide_positions else "shown",
             "objects": objects,
         }
         if goal is not None:
             scene["goal"] = goal.summary()
+        if bins:  # where each object should go is the request's business, not the scene's
+            scene["bins"] = [box.summary() for box in bins]
         observation = Observation(
             frame=self.frame,
             sim_time_s=round(self.now_s, 6),
@@ -918,3 +1550,53 @@ class TwinService:
             ),
         )
         return observation.to_dict()
+
+
+# ------------------------------------------------- no-coordinates mode helpers
+# Object fields that give away where it is (or follow from where it is).
+POSITION_FIELDS = ("xyz_m", "in_goal", "in_bin", "off_table")
+
+_MISSED = re.compile(r"^(?P<name>\S+) missed(?: \(\d+ cm away\))?: ")
+
+
+def verdict_for(p_in_goal: float) -> str:
+    """``done``, ``look_again`` or ``retry`` for the judge's P(in the goal box)."""
+    if p_in_goal >= DONE_AT:
+        return "done"
+    if p_in_goal <= RETRY_AT:
+        return "retry"
+    return "look_again"
+
+
+def hide_object_positions(observation: dict[str, Any]) -> dict[str, Any]:
+    """A copy of an observation without object positions (no-coordinates mode).
+
+    Sizes, ``grip_width_m`` and ``attached`` stay: the arm knows what it was
+    told to pick up and can feel whether it holds something. The goal box,
+    the arm's own pose and the jaw center stay too.
+    """
+    scene = observation["scene"]
+    objects = {
+        name: {k: v for k, v in entry.items() if k not in POSITION_FIELDS}
+        for name, entry in scene["objects"].items()
+    }
+    return {
+        **observation,
+        "scene": {**scene, "object_positions": "hidden", "objects": objects},
+    }
+
+
+def hide_event_position(text: str) -> str:
+    """An event as an agent may see it when positions are hidden.
+
+    A refused grasp's "missed" event says exactly how far to move, which with
+    the jaw center gives the object's position away; this keeps only the fact.
+    """
+    match = _MISSED.match(text)
+    if match is None:
+        return text
+    return (
+        f"{match['name']} missed: it is not between the jaw pads. Open wider, lift the jaws "
+        "clear (move_by dz=0.05), locate it again (or look with camera), move the jaws by the "
+        "result's jaw_move_m across, then straight down"
+    )
