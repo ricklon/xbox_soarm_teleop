@@ -223,3 +223,28 @@ def test_skills_log_on_a_twin_that_keeps_a_session_log(tmp_path):
         service.close()
     kinds = [line for line in read_session_log(tmp_path / "s.jsonl") if line["kind"] == "skill_result"]
     assert [line["data"]["skill"] for line in kinds] == ["place", "pick"]
+
+
+def test_pick_by_description_finds_it_by_looking_and_closes_by_feel(running):
+    """The request's words, not a name: the arm looks for "the red cube",
+    closes until it feels something, and says what it is holding."""
+    service = running
+    _reset(service)
+    result = service.pick(description="red cube", client_id="test")
+    assert result["ok"] is True and result["holding"] == "pick_cube"
+    assert service.observe()["scene"]["objects"]["pick_cube"]["attached"] is True
+    placed = service.place("red_bin", client_id="test")
+    assert placed["ok"] is True
+    time.sleep(0.5)
+    assert service.observe_truth()["scene"]["objects"]["pick_cube"]["in_bin"] == "red_bin"
+
+
+def test_locate_by_description(running):
+    service = running
+    _reset(service)
+    found = service.locate(None, description="green cube", client_id="test")
+    assert found["ok"] is True and "name" not in found
+    assert service.estimate_scores()[-1]["name"] == "green_cube"  # scored against what matches
+    nothing = service.locate(None, description="purple cube", client_id="test")
+    assert nothing["ok"] is False and nothing["reason"] == "not_found"
+    assert service.pick(client_id="test")["reason"] == "invalid_request"

@@ -143,3 +143,19 @@ def test_the_agent_sees_only_the_shown_names(served):
     # The twin itself, its log and its grading keep their own names.
     assert "pick_cube" in service.observe()["scene"]["objects"]
     assert service.estimate_scores()[-1]["name"] == "pick_cube"
+
+
+def test_pick_by_description_sees_past_a_misleading_name(served):
+    """Under misleading names the red cube is called something else; asked
+    for "the red cube", the arm picks the red one and names it as shown."""
+    service, url = served
+    names = service.shown_names
+    picked, released = _calls(
+        url, [("pick", {"description": "red cube"}), ("place", {"bin": "red_bin"})]
+    )
+    assert picked["ok"] is True and picked["holding"] == names["pick_cube"]
+    assert released["ok"] is True
+    import time as _time
+
+    _time.sleep(0.5)
+    assert service.observe_truth()["scene"]["objects"]["pick_cube"]["in_bin"] == "red_bin"

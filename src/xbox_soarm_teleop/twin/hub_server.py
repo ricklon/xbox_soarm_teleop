@@ -111,7 +111,11 @@ check_success(description, bin), describing it in the request's words
 finds it by how it looks, and says whether it is in that bin.
 
 Skills: pick(name) picks an object up by itself (it looks, centres the
-jaws, grasps, checks it holds it and retries after a miss) and place(bin)
+jaws, grasps, checks it holds it and retries after a miss); pick(description=
+"red cube") does the same for whatever looks like that, whatever it is called,
+and says what it is holding. When a request describes objects by how they
+look (colour, shape), pick and check them by description, not by their names:
+names can be wrong. place(bin)
 puts what it holds into a bin, lifts clear and goes home. Prefer them to
 steering the jaws step by step: decide what goes where, and let the arm do
 the moving.

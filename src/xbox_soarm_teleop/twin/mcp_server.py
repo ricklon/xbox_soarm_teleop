@@ -83,7 +83,11 @@ check_success(description, bin), describing it in the request's words
 finds it by how it looks, and says whether it is in that bin.
 
 Skills: pick(name) picks an object up by itself (it looks, centres the
-jaws, grasps, checks it holds it and retries after a miss) and place(bin)
+jaws, grasps, checks it holds it and retries after a miss); pick(description=
+"red cube") does the same for whatever looks like that, whatever it is called,
+and says what it is holding. When a request describes objects by how they
+look (colour, shape), pick and check them by description, not by their names:
+names can be wrong. place(bin)
 puts what it holds into a bin, lifts clear and goes home. Prefer them to
 steering the jaws step by step: decide what goes where, and let the arm do
 the moving.
@@ -404,12 +408,16 @@ def build_mcp_server(
         return result
 
     @tool
-    def pick(name: str, description: str | None = None, ctx: Context | None = None) -> dict[str, Any]:
-        """Pick an object up, by itself: the arm looks (overhead, then close up
-        through the wrist camera), centres its jaws, grasps, checks it holds it,
-        and retries after a miss, then lifts it to carrying height. Uses only what
-        the arm can see and feel. description overrides how the object is
-        described to the pointing model. Takes 20 to 60 seconds."""
+    def pick(
+        name: str | None = None, description: str | None = None, ctx: Context | None = None
+    ) -> dict[str, Any]:
+        """Pick an object up, by itself: the arm looks (overhead and from the front,
+        then close up through the wrist camera), centres its jaws, grasps, checks
+        it holds it, and retries after a miss, then lifts it to carrying height.
+        Uses only what the arm can see and feel. Give its name, or instead a
+        description in the request's words (description="red cube"): the arm
+        then looks for what matches, closes until it feels it, and says what it
+        is holding. Takes 20 to 60 seconds."""
         return twin(ctx).pick(name, client_id=client_of(ctx), description=description)
 
     @tool
@@ -441,7 +449,7 @@ def build_mcp_server(
 
     @tool
     def locate(
-        name: str,
+        name: str | None = None,
         view: str = "front",
         description: str | None = None,
         rest_z_m: float | None = None,
@@ -453,7 +461,8 @@ def build_mcp_server(
         the goal box floor). The answer is the model's estimate, not the truth:
         it may be off by a centimetre or more. Views: front (default: the arm
         does not block it), side, overhead, wrist. description overrides how the object is described to the
-        model (by default e.g. "red cube"). Keep the arm still while it looks."""
+        model (by default e.g. "red cube"); given without a name, it is what to
+        look for, whatever the objects are called. Keep the arm still while it looks."""
         return twin(ctx).locate(
             name, view=view, description=description, rest_z_m=rest_z_m, client_id=client_of(ctx)
         )

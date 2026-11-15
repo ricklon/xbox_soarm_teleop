@@ -40,6 +40,9 @@ CARRY_ABOVE_TABLE_M = 0.20  # the jaw center's height while carrying
 RELEASE_ABOVE_FLOOR_M = 0.02  # an object's bottom over a bin floor when let go
 LIFT_M = 0.05  # straight up after letting go, before anything else
 ATTEMPTS = 3
+OPEN_UNKNOWN_M = 0.09  # open this wide for an object of unknown size
+CLOSE_STEP_M = 0.005  # closing by feel: less than the twin's 6 mm squeeze margin
+CLOSE_FLOOR_M = 0.015  # nothing narrower than this is picked up
 AGREE_M = 0.03  # two views that put an object this close agree on where it is
 TRAY_MARGIN_M = 0.01  # an estimate this far inside a bin's walls counts as in it
 ACTION_TIMEOUT_S = 30.0
@@ -157,15 +160,50 @@ def _first_look(service, name, description, client_id, looks):
     return over
 
 
+def _held(service) -> str | None:
+    """The object the gripper holds, if any (on the real arm: it stopped short of closed)."""
+    return next((n for n, entry in _objects(service).items() if entry["attached"]), None)
+
+
+def _close_by_feel(service, client_id: str) -> str | None:
+    """Close in small steps until the gripper holds something, as a gripper that
+    feels contact does: an object of unknown size is never squeezed out (each
+    step is smaller than the twin's squeeze margin). Returns what it holds."""
+    opening = OPEN_UNKNOWN_M
+    while opening > CLOSE_FLOOR_M:
+        opening -= CLOSE_STEP_M
+        _grip(service, opening, client_id)
+        held = _held(service)
+        if held is not None:
+            return held
+    return None
+
+
+def _shown_match(service, description: str) -> str | None:
+    """With coordinates shown and no pointing model: the object a description
+    means (a simulation convenience; with a pointing model the arm looks)."""
+    from xbox_soarm_teleop.twin.layouts import object_description
+
+    wanted = description.strip().lower()
+    return next(
+        (n for n in _objects(service) if object_description(n, service.layout).lower() == wanted),
+        None,
+    )
+
+
 def pick(
     service,
-    name: str,
+    name: str | None = None,
     *,
     client_id: str = "agent",
     description: str | None = None,
     attempts: int = ATTEMPTS,
 ) -> dict[str, Any]:
-    """Pick ``name`` up and lift it to carrying height.
+    """Pick an object up and lift it to carrying height.
+
+    By ``name``; or by ``description`` alone, in the request's words ("red
+    cube"): the arm looks for what matches, opens wide, closes by feel, and
+    says what it is holding. A name that misleads the agent cannot mislead it.
 
     Returns ``{"ok": True, "holding": name, "attempts": n, "looks": n}``, or
     ``{"ok": False, "reason": ..., "detail": ...}``: ``invalid_request`` (no
@@ -176,38 +214,53 @@ def pick(
     tried = 0
     try:
         objects = _objects(service)
-        if name not in objects:
+        if name is None and not description:
+            raise SkillFailed("invalid_request", 'say what to pick: a name, or description="red cube"')
+        if name is not None and name not in objects:
             known = ", ".join(objects) or "none"
             raise SkillFailed("invalid_request", f"Unknown object '{name}'. On the table: {known}")
-        if objects[name]["attached"]:
+        if name is not None and objects[name]["attached"]:
             return {"ok": True, "holding": name, "attempts": 0, "looks": 0}
-        if any(entry["attached"] for entry in objects.values()):
+        if _held(service) is not None:
             raise SkillFailed("busy", "already holding something: place it first")
         if service.pointer is None and service.hide_positions:  # before moving at all
             raise SkillFailed("no_pointer", "no pointing model, and positions are hidden")
+        target = name
+        if name is None and service.pointer is None:
+            target = _shown_match(service, description)
+            if target is None:
+                raise SkillFailed("not_found", f"nothing on the table matches '{description}'")
+            description = None
+        by_feel = target is None  # by description: its size is not known until it is held
 
         # Turn the jaws first, while the arm is high: from home the gripper is
         # tilted, and turning it later swung the jaws down to the table.
         _act(service, {"type": "set_wrist_roll", "params": {"angle_rad": -1.5}}, client_id)
-        _xyz, move = _first_look(service, name, description, client_id, looks)
+        _xyz, move = _first_look(service, target, description, client_id, looks)
         _move_by(service, move["dx"], move["dy"], move["dz"] + HOVER_M, client_id)
-        width = float(_objects(service)[name]["grip_width_m"])
-        _grip(service, width + OPEN_EXTRA_M, client_id)
+        width = None if by_feel else float(_objects(service)[target]["grip_width_m"])
+        wide = OPEN_UNKNOWN_M if by_feel else width + OPEN_EXTRA_M
+        _grip(service, wide, client_id)
         for tried in range(1, attempts + 1):
             for _ in range(2):  # centre the jaws on what the wrist camera sees
                 _xyz, move = _look_anywhere(
-                    service, name, ("wrist", "overhead"), description, client_id, looks
+                    service, target, ("wrist", "overhead"), description, client_id, looks
                 )
                 _move_by(service, move["dx"], move["dy"], 0.0, client_id)
             _move_by(service, 0.0, 0.0, move["dz"], client_id)
-            _grip(service, width, client_id)
-            if _objects(service)[name]["attached"]:
+            if by_feel:
+                held = _close_by_feel(service, client_id)
+            else:
+                _grip(service, width, client_id)
+                held = _held(service)
+            if held is not None:
                 carry = (service.table_top_z or 0.0) + CARRY_ABOVE_TABLE_M
                 _move_by(service, 0.0, 0.0, carry - _jaw(service)[2], client_id)
-                return {"ok": True, "holding": name, "attempts": tried, "looks": looks[0]}
-            _grip(service, width + OPEN_EXTRA_M, client_id)  # missed: open, up, look again
+                return {"ok": True, "holding": held, "attempts": tried, "looks": looks[0]}
+            _grip(service, wide, client_id)  # missed: open, up, look again
             _move_by(service, 0.0, 0.0, HOVER_M, client_id)
-        raise SkillFailed("missed", f"{name} was not between the jaws after {attempts} attempts")
+        what = target or f"the {description}"
+        raise SkillFailed("missed", f"{what} was not between the jaws after {attempts} attempts")
     except SkillFailed as exc:
         return {
             "ok": False,

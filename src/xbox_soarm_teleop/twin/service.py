@@ -444,7 +444,7 @@ class TwinService:
         return [dict(check) for check in self._success_checks]
 
     def pick(
-        self, name: str, *, client_id: str = "agent", description: str | None = None
+        self, name: str | None = None, *, client_id: str = "agent", description: str | None = None
     ) -> dict[str, Any]:
         """Pick ``name`` up by itself (``twin.skills.pick``): look, centre, grasp,
         check by feel, retry. Blocks; call it from a client thread."""
@@ -705,7 +705,7 @@ class TwinService:
 
     def locate(
         self,
-        name: str,
+        name: str | None = None,
         *,
         view: str = "front",
         description: str | None = None,
@@ -731,6 +731,10 @@ class TwinService:
 
         Returns ``{"ok": True, "xyz_m": [...], "pixel": [u, v], ...}`` or
         ``{"ok": False, "reason": ..., "detail": ...}``.
+
+        Without ``name``, ``description`` alone says what to look for (the
+        request's words: "red cube"). The guess is then scored against the
+        object that matches it, if one does; nothing is returned about which.
         """
         pointer = self.pointer
         if pointer is None:
@@ -739,8 +743,21 @@ class TwinService:
                 "reason": "no_pointer",
                 "detail": "this twin has no pointing model (start it with --pointer)",
             }
+        if name is None and not description:
+            return {
+                "ok": False,
+                "reason": "invalid_request",
+                "detail": 'say what to look for: a name, or description="red cube"',
+            }
         try:
-            self._log("request", client_id=client_id, type="locate", name=name, view=view)
+            self._log(
+                "request",
+                client_id=client_id,
+                type="locate",
+                name=name,
+                description=description,
+                view=view,
+            )
             setup = self.call(
                 lambda: self._locate_setup(name, view, description, rest_z_m, width, height)
             ).result(timeout=timeout_s)
@@ -772,7 +789,7 @@ class TwinService:
             return {"ok": False, "reason": "pointer_error", "detail": detail}
         seconds = round(time.monotonic() - started, 3)
         answer = {
-            "name": name,
+            **({"name": name} if name is not None else {}),
             "view": view,
             "description": setup["description"],
             "backend": pointer.name,
@@ -798,12 +815,14 @@ class TwinService:
                 **answer,
             }
         source = f"locate:{pointer.name}:{view}"
-        try:
-            self.call(lambda: self._report_estimate(name, xyz.tolist(), client_id, source)).result(
-                timeout=timeout_s
-            )
-        except Exception:  # noqa: BLE001 - the object vanished meanwhile: still answer
-            pass
+        scored = setup["matched"]
+        if scored is not None:
+            try:
+                self.call(
+                    lambda: self._report_estimate(scored, xyz.tolist(), client_id, source)
+                ).result(timeout=timeout_s)
+            except Exception:  # noqa: BLE001 - the object vanished meanwhile: still answer
+                pass
         answer.update(xyz_m=[round(float(v), 4) for v in xyz], plane_z_m=round(setup["plane_z_m"], 4))
         if setup["jaw_center"] is not None:
             answer["jaw_move_m"] = self._jaw_move(np.asarray(setup["jaw_center"], dtype=float), xyz)
@@ -1268,7 +1287,7 @@ class TwinService:
 
     def _locate_setup(
         self,
-        name: str,
+        name: str | None,
         view: str,
         description: str | None,
         rest_z_m: float | None,
@@ -1277,6 +1296,8 @@ class TwinService:
     ) -> dict[str, Any]:
         """On the loop thread: check the request, read the camera and the truth."""
         positions = self.grasp.positions()
+        if name is None:
+            return self._locate_by_description(positions, view, description, rest_z_m, width, height)
         if name not in positions:
             known = ", ".join(positions) or "none"
             raise ActionRejected(
@@ -1303,6 +1324,37 @@ class TwinService:
             "geometry": geometry,
             "truth_uv": geometry.project(positions[name]),
             "jaw_center": self._snapshot.get("jaw_center_xyz_m"),
+            "matched": name,
+        }
+
+    def _locate_by_description(
+        self, positions, view: str, description: str, rest_z_m, width: int, height: int
+    ) -> dict[str, Any]:
+        """Setup for looking by description only. The object that matches it is
+        found for scoring and for the oracle pointer only; the plane it rests on
+        is guessed from the typical height of what is on the table, since the
+        arm does not know which object the words mean."""
+        if view not in VIEWS:
+            raise ActionRejected(
+                ReasonCode.INVALID_REQUEST, f"Unknown view '{view}'. Known: {', '.join(VIEWS)}"
+            )
+        loose = [n for n in positions if n != self.grasp.attached]
+        wanted = description.strip().lower()
+        matched = next((n for n in loose if object_description(n, self.layout).lower() == wanted), None)
+        if rest_z_m is None:
+            rest_z_m = self.table_top_z if self.table_top_z is not None else 0.0
+        halves = [float(self.grasp.half_extents_world(n)[2]) for n in loose] or [0.02]
+        plane_z = float(rest_z_m) + float(np.median(halves))
+        mujoco.mj_kinematics(self.sim.model, self.sim.data)
+        mujoco.mj_camlight(self.sim.model, self.sim.data)
+        geometry = camera_geometry(self.sim.model, self.sim.data, view, width, height)
+        return {
+            "description": description.strip(),
+            "plane_z_m": plane_z,
+            "geometry": geometry,
+            "truth_uv": geometry.project(positions[matched]) if matched else None,
+            "jaw_center": self._snapshot.get("jaw_center_xyz_m"),
+            "matched": matched,
         }
 
     def _arrange_objects(self) -> None:
