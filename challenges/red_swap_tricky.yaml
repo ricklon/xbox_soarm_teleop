@@ -1,0 +1,14 @@
+# Swap two cubes, leave a third alone, and tell the agent the wrong names.
+# Expected weak spot: an agent that believes names over its eyes (lesson 23).
+name: red-swap-tricky
+scene: sort_colors_decoy
+objects:
+  red_cube:    {x: 0.275, y: -0.06}
+  blue_cube:   {x: 0.23, y: -0.16}
+  yellow_cube: {x: 0.30, y: 0.07, turn_deg: 30}
+names: misleading
+request:
+  - Put the red cube in the blue bin and the blue cube in the red bin. Leave the yellow cube alone.
+  - "Swap them: red cube into the blue bin, blue cube into the red bin. Don't touch the yellow one."
+expect: {red_cube: blue_bin, blue_cube: red_bin, yellow_cube: null}
+notes: The yellow cube is turned 30 degrees, but it should not be picked at all.

@@ -258,7 +258,13 @@ def load_challenge(source: str | Path | dict) -> Challenge:
     requests = spec.get("request", spec.get("requests"))
     if isinstance(requests, str):
         requests = [requests]
-    requests = tuple(str(r).strip() for r in (requests or []) if str(r).strip())
+    for r in requests or []:
+        if not isinstance(r, str):
+            raise ChallengeError(
+                f"request: {r!r} is not plain text. In YAML, put a request that contains "
+                'a colon in quotes: "Swap them: red into blue."'
+            )
+    requests = tuple(r.strip() for r in (requests or []) if r.strip())
     if not requests:
         raise ChallengeError("request: say what the agent is asked, in a person's words")
 

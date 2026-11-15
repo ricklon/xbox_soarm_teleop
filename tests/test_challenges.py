@@ -95,6 +95,7 @@ def test_yaml_text_loads_too_and_objects_left_out_of_expect_stay_out_of_the_bins
         ),
         ({"objects": {"red_cube": {"x": 0.1909, "y": 0.1909}}}, "red_bin"),  # inside a tray
         ({"scene": "pick_place_basic"}, "scene"),
+        ({"request": [{"Swap them": "red into blue"}]}, "colon"),  # YAML read "a: b" as a mapping
     ],
 )
 def test_what_cannot_be_set_up_is_refused_with_a_reason(change, says):

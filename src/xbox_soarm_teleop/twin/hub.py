@@ -153,6 +153,10 @@ class Room:
     service: TwinService
     controller: WebController
     log_path: Path | None = None
+    challenge: Any = None
+    """The challenge set up on this arm (``twin.challenges.Challenge``), if any."""
+    naming_before: str | None = None
+    """The names agents were shown before the challenge chose its own."""
 
 
 class Hub:

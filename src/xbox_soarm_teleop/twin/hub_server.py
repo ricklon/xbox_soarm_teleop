@@ -45,6 +45,8 @@ from xbox_soarm_teleop.twin.status import status_text
 
 RENDER_TIMEOUT_S = 3.0
 MAX_PAD_BYTES = 2048
+MAX_CHALLENGE_BYTES = 20_000  # a challenge file: a few dozen lines
+CHALLENGE_CLIENT = "challenge"  # who the session log says set a challenge up
 DEFAULT_PICTURE_HZ = 10.0  # camera pictures a second each student page asks for
 PICTURE_HZ_RANGE = (1.0, 30.0)
 AGENT_THREADS = 200  # agents block a worker thread while a move finishes
@@ -435,7 +437,14 @@ def build_hub_app(
         room = room_of(request)
         if room is None:
             return not_found
-        prompts = (
+        if room.challenge is not None:  # the challenge's own request first
+            first = [
+                {"title": f"Challenge: {room.challenge.name}", "text": text}
+                for text in room.challenge.requests
+            ]
+        else:
+            first = []
+        prompts = first + list(
             SORTING_PROMPTS
             if BINS.get(room.service.sim.scene) and len(BINS[room.service.sim.scene]) > 1
             else STARTER_PROMPTS
@@ -486,6 +495,74 @@ def build_hub_app(
             return not_found
         return JSONResponse({"ok": True, "stopped": desk.stop(room)}, headers=PAGE_HEADERS)
 
+    # --- challenges a student designs (twin/challenges.py) -------------------
+    # The room's link is its key, as for the page; a challenge resets the arm.
+
+    @server.custom_route("/r/{token}/challenge", methods=["GET"])
+    async def challenge_get(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        current = room.challenge.summary() if room.challenge is not None else None
+        return JSONResponse({"challenge": current}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/challenge", methods=["POST"])
+    async def challenge_post(request: Request) -> Response:
+        from xbox_soarm_teleop.twin.challenges import ChallengeError, check, load_challenge
+
+        room = room_of(request)
+        if room is None:
+            return not_found
+        body = await request.body()
+        if len(body) > MAX_CHALLENGE_BYTES:
+            return JSONResponse({"error": "that challenge is too long"}, status_code=400)
+        try:
+            text = body.decode("utf-8")
+            spec = json.loads(text) if text.lstrip().startswith("{") else text
+            challenge = load_challenge(spec if isinstance(spec, dict) else str(spec) + "\n")
+        except (ChallengeError, UnicodeDecodeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400, headers=PAGE_HEADERS)
+        if desk.state(room)["running"]:
+            return JSONResponse(
+                {"error": "an agent is running on this arm: stop it first"}, status_code=409
+            )
+        try:
+            await asyncio.wrap_future(
+                room.service.load_layout(challenge.layout(), client_id=CHALLENGE_CLIENT)
+            )
+        except Exception as exc:  # noqa: BLE001 - refused (someone is driving): say why
+            return JSONResponse(
+                {"error": f"the arm could not be set up: {exc}"}, status_code=409, headers=PAGE_HEADERS
+            )
+        if room.challenge is None:
+            room.naming_before = room.service.naming
+        room.service.naming = challenge.names
+        room.challenge = challenge
+        return JSONResponse(
+            {"ok": True, "challenge": challenge.summary(), "warnings": check(challenge)},
+            headers=PAGE_HEADERS,
+        )
+
+    @server.custom_route("/r/{token}/challenge", methods=["DELETE"])
+    async def challenge_clear(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        if room.challenge is not None:
+            try:
+                await asyncio.wrap_future(
+                    room.service.load_scene(hub.scene, client_id=CHALLENGE_CLIENT)
+                )
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    {"error": f"the arm could not be reset: {exc}"},
+                    status_code=409,
+                    headers=PAGE_HEADERS,
+                )
+            room.service.naming = room.naming_before or room.service.naming
+            room.challenge = None
+        return JSONResponse({"ok": True}, headers=PAGE_HEADERS)
+
     @server.custom_route("/r/{token}/scores", methods=["GET"])
     async def scores(request: Request) -> Response:
         # The answer key for the room's own notebook: each guess against the
@@ -506,6 +583,11 @@ def build_hub_app(
         names = room.service.shown_names
         if names:  # in the names the student (and their agent) sees
             key = rename_objects(key, names)
+        if room.challenge is not None:  # in the designer's own names, whatever the agent sees
+            from xbox_soarm_teleop.twin.challenges import grade_challenge
+
+            in_bin = {n: thing.get("in_bin") for n, thing in truth["scene"]["objects"].items()}
+            key["challenge"] = grade_challenge(room.challenge, in_bin)
         return JSONResponse(key, headers=PAGE_HEADERS)
 
     @server.custom_route("/r/{token}/tools", methods=["GET"])
