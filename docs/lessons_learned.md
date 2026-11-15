@@ -142,9 +142,6 @@ and take over. Benchmark each layer at its own job.
 
 ## What we have not solved yet
 
-- `pick` turns the wrist after hovering, which swings the jaws down to the
-  table, and it trusts one overhead look, which can be a tray. Both cost a
-  wasted first attempt on most cubes in the skills trial.
 - `check_success` judges only the goal box, not bins.
 - The plan-first step (agent states what it sees and intends before moving)
   is designed and its tests written, but not built.

@@ -32,6 +32,11 @@ logging.getLogger("xbox_soarm_teleop").setLevel(logging.ERROR)
 # a centimetre or two; the wrist camera, close up, by about half a centimetre.
 FAR_ERROR_M = 0.015
 WRIST_ERROR_M = 0.005
+# From overhead a cube and the floor of the tray of its colour are both
+# squares of that colour: in the skills trial the pointer chose the tray. Here
+# it does so half the time.
+TRAY_MIXUP_RATE = 0.5
+TRAY_OF = {"pick_cube": "red_bin", "blue_cube": "blue_bin", "green_cube": "green_bin"}
 
 
 def _free_port() -> int:
@@ -56,6 +61,10 @@ def running():
             return answer
         spread = WRIST_ERROR_M if kwargs.get("view") == "wrist" else FAR_ERROR_M
         dx, dy = rng.uniform(-spread, spread, size=2)
+        if kwargs.get("view") == "overhead" and name in TRAY_OF and rng.random() < TRAY_MIXUP_RATE:
+            bins = {b["name"]: b for b in service.observe()["scene"]["bins"]}
+            cx, cy, _ = bins[TRAY_OF[name]]["center_xyz_m"]
+            dx, dy = cx - answer["xyz_m"][0], cy - answer["xyz_m"][1]  # it pointed at the tray
         answer["xyz_m"] = [answer["xyz_m"][0] + dx, answer["xyz_m"][1] + dy, answer["xyz_m"][2]]
         if "jaw_move_m" in answer:
             answer["jaw_move_m"] = {
@@ -90,7 +99,7 @@ def _reset(service):
 
 def test_pick_beats_steering_by_hand(running):
     service = running
-    picked = tries = 0
+    picked = tries = attempts = 0
     for _ in range(3):
         _reset(service)
         for name in ("pick_cube", "blue_cube", "green_cube"):
@@ -98,6 +107,7 @@ def test_pick_beats_steering_by_hand(running):
             tries += 1
             if result["ok"]:
                 picked += 1
+                attempts += result["attempts"]
                 assert service.observe()["scene"]["objects"][name]["attached"] is True
                 # Nothing about where things are: only what the arm itself knows.
                 assert "xyz" not in str(result) and "error" not in str(result)
@@ -105,8 +115,14 @@ def test_pick_beats_steering_by_hand(running):
                 time.sleep(0.5)
                 service.submit({"type": "home"}, client_id="test")
                 time.sleep(3.0)
-    print(f"\npick: {picked} of {tries} with distant aim off by up to 1.5 cm")
+    print(
+        f"\npick: {picked} of {tries}, {attempts} grasp attempts, with distant aim off by up "
+        f"to 1.5 cm and the overhead look on the tray half the time"
+    )
     assert picked >= 8  # steering by hand with the same aim: 3 of 9
+    # Most picks close on the cube the first time: the first look is checked
+    # against a second view, so a tray does not pass for a cube.
+    assert attempts <= picked + 2
 
 
 def test_place_puts_what_it_holds_in_the_tray(running):

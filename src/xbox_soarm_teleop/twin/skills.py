@@ -14,8 +14,9 @@ motion in a tight loop. These skills use only what the arm itself can know:
 They never read the twin's truth, so they work in no-coordinates mode and
 their answers give nothing away.
 
-``pick``: look from overhead (no depth confusion), hover over the estimate
-with the jaws turned and open, look again through the wrist camera (close up,
+``pick``: turn the jaws while the arm is high; look from overhead and from
+the front and check they agree (a same-coloured tray can pass for a cube from
+overhead); hover over the estimate with the jaws open, look again through the wrist camera (close up,
 about half a centimetre off instead of one or two) and centre the jaws, twice;
 go down, close, and check by feel. After a miss: open, lift, look again and
 retry. ``place``: carry over a bin, lower, open, lift clear, go home.
@@ -39,6 +40,8 @@ CARRY_ABOVE_TABLE_M = 0.20  # the jaw center's height while carrying
 RELEASE_ABOVE_FLOOR_M = 0.02  # an object's bottom over a bin floor when let go
 LIFT_M = 0.05  # straight up after letting go, before anything else
 ATTEMPTS = 3
+AGREE_M = 0.03  # two views that put an object this close agree on where it is
+TRAY_MARGIN_M = 0.01  # an estimate this far inside a bin's walls counts as in it
 ACTION_TIMEOUT_S = 30.0
 
 
@@ -56,6 +59,8 @@ def _act(service, request: dict, client_id: str) -> None:
         status = service.submit(request, client_id=client_id).result(timeout=ACTION_TIMEOUT_S)
     except ActionRejected as exc:
         raise SkillFailed(exc.reason.value, exc.detail) from exc
+    except TimeoutError as exc:
+        raise SkillFailed("timeout", f"{request['type']}: the twin's loop did not answer") from exc
     while True:
         status = service.wait(status.id, ACTION_TIMEOUT_S)
         if status.state.terminal:
@@ -107,6 +112,51 @@ def _look_anywhere(service, name, views, description, client_id, looks):
     raise SkillFailed("not_found", f"could not find {name} from {', '.join(views)}")
 
 
+def _in_a_bin(service, xyz) -> bool:
+    """The estimate falls inside one of the cell's bins (the robot knows its
+    own furniture: ``scene.bins`` and ``scene.goal``)."""
+    scene = service.observe()["scene"]
+    boxes = list(scene.get("bins", [])) + ([scene["goal"]] if "goal" in scene else [])
+    for box in boxes:
+        cx, cy, _ = box["center_xyz_m"]
+        lx, ly, _ = box["inner_size_m"]
+        if abs(xyz[0] - cx) <= lx / 2 + TRAY_MARGIN_M and abs(xyz[1] - cy) <= ly / 2 + TRAY_MARGIN_M:
+            return True
+    return False
+
+
+def _first_look(service, name, description, client_id, looks):
+    """Where the object is, checked across views.
+
+    From overhead a cube and a tray's floor of the same colour are both
+    squares, and a pointing model can take one for the other; from the front a
+    cube stands up and a tray lies flat. So look from both: if they agree, use
+    overhead (no depth confusion); if one says inside a bin and the other does
+    not, believe the other; otherwise ask the side view which it agrees with.
+    """
+    seen = {}
+    for view in ("overhead", "front"):
+        looks[0] += 1
+        found = _look(service, name, view, description, client_id)
+        if found is not None:
+            seen[view] = found
+    if not seen:
+        raise SkillFailed("not_found", f"could not find {name} from overhead or the front")
+    if len(seen) == 1:
+        return next(iter(seen.values()))
+    over, front = seen["overhead"], seen["front"]
+    if np.linalg.norm(over[0][:2] - front[0][:2]) <= AGREE_M:
+        return over
+    over_in, front_in = _in_a_bin(service, over[0]), _in_a_bin(service, front[0])
+    if over_in != front_in:
+        return front if over_in else over
+    looks[0] += 1
+    side = _look(service, name, "side", description, client_id)
+    if side is not None:
+        return min((over, front), key=lambda seen_: np.linalg.norm(seen_[0][:2] - side[0][:2]))
+    return over
+
+
 def pick(
     service,
     name: str,
@@ -133,10 +183,14 @@ def pick(
             return {"ok": True, "holding": name, "attempts": 0, "looks": 0}
         if any(entry["attached"] for entry in objects.values()):
             raise SkillFailed("busy", "already holding something: place it first")
+        if service.pointer is None and service.hide_positions:  # before moving at all
+            raise SkillFailed("no_pointer", "no pointing model, and positions are hidden")
 
-        _xyz, move = _look_anywhere(service, name, ("overhead", "front"), description, client_id, looks)
-        _move_by(service, move["dx"], move["dy"], move["dz"] + HOVER_M, client_id)
+        # Turn the jaws first, while the arm is high: from home the gripper is
+        # tilted, and turning it later swung the jaws down to the table.
         _act(service, {"type": "set_wrist_roll", "params": {"angle_rad": -1.5}}, client_id)
+        _xyz, move = _first_look(service, name, description, client_id, looks)
+        _move_by(service, move["dx"], move["dy"], move["dz"] + HOVER_M, client_id)
         width = float(_objects(service)[name]["grip_width_m"])
         _grip(service, width + OPEN_EXTRA_M, client_id)
         for tried in range(1, attempts + 1):

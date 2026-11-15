@@ -159,13 +159,18 @@ estimates a centimetre or two off, misses most grasps: 6 of 9 with the aim
 off by up to 1.5 cm. The arm offers two skills instead (`twin/skills.py`),
 the way real robots give a planner skills:
 
-- `pick(name)`: a coarse look from overhead, a hover over the estimate with
-  the jaws turned and open, a close look through the wrist camera (about
-  half a centimetre off, from the vision benchmark) to centre the jaws,
-  twice; down, close, and a check by feel (`attached`). After a miss it
-  opens, lifts, looks again and retries, up to three times. With the same
-  1.5 cm aim error from overhead and 0.5 cm from the wrist, it picked 8 of 9
-  (`test_pick_beats_steering_by_hand`).
+- `pick(name)`: turn the jaws while the arm is high (turning them later,
+  from home, swung them down to the table); look from overhead and from the
+  front and check the two agree (from overhead a cube and the floor of a tray
+  of its colour are both coloured squares, and the pointer chose the tray in
+  the first skills trial; if one view says inside a bin and the other does
+  not, believe the other, otherwise ask the side view); hover with the jaws
+  open; centre them with a close look through the wrist camera (about half a
+  centimetre off), twice; down, close, and a check by feel (`attached`).
+  After a miss it opens, lifts, looks again and retries, up to three times.
+  With 1.5 cm aim error from far views, 0.5 cm from the wrist, and the
+  overhead look on the tray half the time, it picked 9 of 9, each at the
+  first attempt (`test_pick_beats_steering_by_hand`).
 - `place(bin)`: carry over the bin, lower, let go, lift 5 cm, go home.
 
 They use only what the arm can know: its pointing model (or `observe` when
