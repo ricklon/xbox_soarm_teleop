@@ -399,6 +399,9 @@ class Hub:
         if self._closed:
             return
         self._closed = True
+        desk = getattr(self, "agent_desk", None)
+        if desk is not None:  # the page's agent runs (twin.hub_agent)
+            desk.close()
         if self._thread is not None:
             self._running.clear()
             self._thread.join(timeout=5.0)

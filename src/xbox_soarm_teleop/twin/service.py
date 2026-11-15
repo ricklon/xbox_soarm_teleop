@@ -278,6 +278,11 @@ class TwinService:
         """Cancel the running action, if the caller owns it."""
         return self.call(self._logged("cancel", client_id, {}, lambda: self._cancel(client_id)))
 
+    def abort_action(self, detail: str = "") -> Future:
+        """End the running action, whoever owns it, as a person taking over
+        does (for the page's agent Stop). The arm holds where it is."""
+        return self.call(lambda: self._end_action(ActionState.CANCELLED, ReasonCode.PREEMPTED, detail))
+
     def stop(self, *, by: str = "agent", client_id: str | None = None) -> None:
         """Latch the virtual stop. Takes effect before any queued command."""
         self._stop_by = by
@@ -688,8 +693,9 @@ class TwinService:
         positions = self.grasp.positions()
         if name not in positions:
             known = ", ".join(positions) or "none"
+            hint = f'; to ask by how it looks, use description="{name}"' if " " in name else ""
             raise ActionRejected(
-                ReasonCode.INVALID_REQUEST, f"Unknown object '{name}'. On the table: {known}"
+                ReasonCode.INVALID_REQUEST, f"Unknown object '{name}'. On the table: {known}{hint}"
             )
         return {
             "description": object_description(name, self.layout),

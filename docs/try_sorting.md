@@ -38,9 +38,24 @@ the gripper, in which tray, on the table), under the names your agent sees.
 You can always take over (hold a drive button) or stop the arm; an agent
 cannot release a stop you latched.
 
-## 3. Connect your agent
+## 3. Ask an agent
 
-Your agent drives the same arm through the arm's tools. Any of these:
+The quickest way: the page's **Ask an agent** panel. Type a request (or click
+one of the suggested prompts to fill it in), pick a model, choose whether it
+may see camera pictures, and **Run the agent**. The hub runs the same agent
+loop the benchmarks use, on the instructor's OpenRouter key, and the panel
+shows what the model says, every tool it calls with a short result, and its
+final answer, with time and cost. **Stop the agent** ends the run and the
+arm's current move; the arm's own **STOP** works as always.
+
+Each arm has a budget for the panel's model (`--agent-budget`, default $0.50
+for the session) and the hub runs at most two panel agents at once. The
+instructor chooses the models (`--agent-models`; `--agent-models ""` turns the
+panel off). The pointing model and the judge that the arm's tools use cost a
+little more, on the instructor's keys too.
+
+Or connect your own agent: it drives the same arm through the same tools.
+Any of these:
 
 - **Claude Code.** The page's **Connect an AI agent** box shows the exact
   command, with your arm's key; click it to copy, run it in a terminal, then

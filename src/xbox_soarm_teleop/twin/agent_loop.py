@@ -44,6 +44,7 @@ DEFAULT_MAX_COST_USD = 0.50
 DEFAULT_TIMEOUT_S = 900.0
 MAX_TOOL_RESULT_CHARS = 12000  # a camera image's base64 never goes to a text model
 TOOL_TIMEOUT_S = 60.0
+RESULT_PREVIEW_CHARS = 400  # of each tool's answer, kept in the step for a transcript
 # Skills move the arm and look several times in one call: a pick with a
 # hosted pointing model takes 20 to 90 s. Cutting one short would leave it
 # running in the twin while the model, told "timeout", sends other moves.
@@ -67,7 +68,7 @@ class AgentRun:
     task: str
     stop_reason: str = ""
     """``answered`` (the model stopped calling tools), ``max_steps``, ``max_cost``,
-    ``timeout`` or ``error``."""
+    ``timeout``, ``stopped`` (asked to stop) or ``error``."""
     final_text: str = ""
     error: str | None = None
     steps: list[dict[str, Any]] = field(default_factory=list)
@@ -165,6 +166,7 @@ async def _run(
     timeout_s: float,
     on_step: Callable[[dict], None] | None,
     sees_images: bool = False,
+    should_stop: Callable[[], bool] | None = None,
 ) -> AgentRun:
     key = load_secret("OPENROUTER_API_KEY")
     if not key:
@@ -185,6 +187,9 @@ async def _run(
                     {"role": "user", "content": task},
                 ]
                 while True:
+                    if should_stop is not None and should_stop():
+                        run.stop_reason = "stopped"
+                        break
                     if totals["steps"] >= max_steps:
                         run.stop_reason = "max_steps"
                         break
@@ -296,7 +301,11 @@ async def _run(
                         }
                         run.tool_calls.append(record)
                         step["calls"].append(
-                            {**record, "arguments": function.get("arguments", "")[:500]}
+                            {
+                                **record,
+                                "arguments": function.get("arguments", "")[:500],
+                                "result": content[:RESULT_PREVIEW_CHARS],
+                            }
                         )
                         messages.append(
                             {"role": "tool", "tool_call_id": call.get("id", ""), "content": content}
@@ -343,6 +352,7 @@ def run_agent(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     on_step: Callable[[dict], None] | None = None,
     sees_images: bool = False,
+    should_stop: Callable[[], bool] | None = None,
 ) -> AgentRun:
     """Run one task with one OpenRouter model against the twin at ``url``.
 
@@ -359,6 +369,9 @@ def run_agent(
         on_step: Called with each step as it finishes (for live display).
         sees_images: Show the model the pictures tools return (``camera``), for
             models that take images; otherwise it is told a picture was taken.
+        should_stop: Asked before each model step; True ends the run
+            (``stop_reason`` "stopped"). It does not end an action the arm is
+            in the middle of: the caller does that (``TwinService.abort_action``).
 
     Raises:
         AgentError: no OpenRouter key.
@@ -377,5 +390,6 @@ def run_agent(
             timeout_s=timeout_s,
             on_step=on_step,
             sees_images=sees_images,
+            should_stop=should_stop,
         )
     )

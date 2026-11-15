@@ -217,6 +217,8 @@ def build_mcp_server(
                 if given not in inverse:
                     known = ", ".join(sorted(inverse))
                     detail = f"Unknown object '{given}'. On the table: {known}"
+                    if fn.__name__ == "check_success" and " " in given:
+                        detail += f'; to ask by how it looks, use description="{given}"'
                     return {"ok": False, "reason": "invalid_request", "detail": detail}
                 kwargs["name"] = inverse[given]
             result = fn(*args, **kwargs)

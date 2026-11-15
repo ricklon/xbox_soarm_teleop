@@ -71,6 +71,18 @@ def build_parser() -> argparse.ArgumentParser:
         "(CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID). Options you give still win",
     )
     parser.add_argument(
+        "--agent-models",
+        default="google/gemma-4-31b-it,z-ai/glm-5.3-flash,google/gemini-3.5-flash",
+        help="OpenRouter models the page's agent panel may use, comma-separated; empty turns "
+        "the panel off. It runs on this computer's OPENROUTER_API_KEY",
+    )
+    parser.add_argument(
+        "--agent-budget",
+        type=float,
+        default=0.50,
+        help="Each arm's budget (USD) for the agent panel's model, for the whole session",
+    )
+    parser.add_argument(
         "--names",
         default="as_is",
         choices=("as_is", "truthful", "neutral", "misleading"),
@@ -316,6 +328,8 @@ def main(argv: list[str] | None = None) -> int:
         public_url=args.public_url,
         notebook_url=args.notebook_url or None,
         picture_hz=args.picture_rate,
+        agent_models=tuple(m.strip() for m in args.agent_models.split(",") if m.strip()),
+        agent_budget_usd=args.agent_budget,
     )
     base = (args.public_url or f"http://{args.host}:{args.port}").rstrip("/")
     for line in startup_lines(

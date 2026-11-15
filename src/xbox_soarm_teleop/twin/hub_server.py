@@ -309,6 +309,9 @@ def build_hub_app(
     public_url: str | None = None,
     notebook_url: str | None = None,
     picture_hz: float = DEFAULT_PICTURE_HZ,
+    agent_models: tuple[str, ...] | None = None,
+    agent_budget_usd: float | None = None,
+    agent_post=None,
 ):
     """Build the ASGI app serving ``hub``.
 
@@ -322,6 +325,10 @@ def build_hub_app(
         picture_hz: Camera pictures a second each student page asks for, at
             most (kept within 1 to 30). Each picture is about 17 kB, so 10 a
             second is roughly 1.3 Mbit/s of upload per student.
+        agent_models: OpenRouter models the page's agent panel may use
+            (``twin.hub_agent``); an empty tuple turns the panel off.
+        agent_budget_usd: Each arm's budget for the panel's agent model.
+        agent_post: Sends requests to OpenRouter (tests pass a scripted model).
     """
     picture_ms = round(1000 / min(max(picture_hz, PICTURE_HZ_RANGE[0]), PICTURE_HZ_RANGE[1]))
 
@@ -430,6 +437,50 @@ def build_hub_app(
             else STARTER_PROMPTS
         )
         return JSONResponse({"prompts": prompts}, headers=PAGE_HEADERS)
+
+    from xbox_soarm_teleop.twin.hub_agent import DEFAULT_BUDGET_USD, DEFAULT_MODELS, AgentDesk, Refused
+
+    desk = AgentDesk(
+        port=port,
+        models=DEFAULT_MODELS if agent_models is None else tuple(agent_models),
+        budget_usd=DEFAULT_BUDGET_USD if agent_budget_usd is None else agent_budget_usd,
+        post=agent_post,
+    )
+    hub.agent_desk = desk  # closed with the hub
+
+    @server.custom_route("/r/{token}/agent", methods=["GET"])
+    async def agent_state(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        return JSONResponse(desk.state(room), headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/agent/run", methods=["POST"])
+    async def agent_run(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        body = await request.body()
+        try:
+            asked = json.loads(body or b"{}") if len(body) <= 8000 else None
+        except ValueError:
+            asked = None
+        if not isinstance(asked, dict):
+            return JSONResponse({"error": "expected a small JSON object"}, status_code=400)
+        try:
+            run = desk.start(
+                room, str(asked.get("task", "")), str(asked.get("model", "")), bool(asked.get("sees"))
+            )
+        except Refused as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status, headers=PAGE_HEADERS)
+        return JSONResponse({"ok": True, "run_id": run.run_id}, headers=PAGE_HEADERS)
+
+    @server.custom_route("/r/{token}/agent/stop", methods=["POST"])
+    async def agent_stop(request: Request) -> Response:
+        room = room_of(request)
+        if room is None:
+            return not_found
+        return JSONResponse({"ok": True, "stopped": desk.stop(room)}, headers=PAGE_HEADERS)
 
     @server.custom_route("/r/{token}/scores", methods=["GET"])
     async def scores(request: Request) -> Response:

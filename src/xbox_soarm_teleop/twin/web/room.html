@@ -100,6 +100,15 @@
   a { color: var(--accent); }
   p { margin: 0 0 8px; }
   .linkbtn { background: none; border: 0; padding: 0 0 0 6px; color: var(--accent); text-decoration: underline; font-size: 12px; }
+  #agentTask { width: 100%; min-height: 3.2em; font: inherit; padding: 6px 8px; box-sizing: border-box; resize: vertical; }
+  .agentopts { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0; }
+  .agentopts select { font: inherit; }
+  #agentLog { list-style: none; padding: 0; margin: 8px 0 0; max-height: 360px; overflow-y: auto; font-size: 13px; }
+  #agentLog li { padding: 6px 0; border-top: 1px solid var(--line, #ddd); }
+  #agentLog .said { white-space: pre-wrap; }
+  #agentLog .call { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted, #555); word-break: break-word; }
+  #agentLog .call.failed { color: #b42318; }
+  #agentLog .final { font-weight: 600; white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -126,6 +135,22 @@
         <span>Gripper <b id="grip">-</b></span>
         <span>Objects <b id="cube">-</b></span>
       </div>
+    </section>
+    <section class="panel" id="agentPanel">
+      <h2>Ask an agent</h2>
+      <p class="sub" id="agentNote">Loading...</p>
+      <textarea id="agentTask" aria-label="What should the agent do?"
+        placeholder="What should the agent do? (Click a prompt under Try asking your agent to fill this in.)"></textarea>
+      <div class="agentopts">
+        <label>Model <select id="agentModel" aria-label="Model"></select></label>
+        <label><input type="checkbox" id="agentSees"> Let it see camera pictures</label>
+      </div>
+      <div class="row">
+        <button id="agentRun">Run the agent</button>
+        <button id="agentStop" disabled>Stop the agent</button>
+      </div>
+      <p class="sub" id="agentStatus" role="status"></p>
+      <ol id="agentLog" aria-live="polite"></ol>
     </section>
     <section class="panel">
       <h2>What happened</h2>
@@ -450,6 +475,7 @@
       const b = document.createElement("b"); b.textContent = p.title;
       const code = document.createElement("code"); code.className = "copy"; code.textContent = p.text;
       code.addEventListener("click", async () => {
+        $("agentTask").value = p.text;  // ready for the agent panel, too
         try { await navigator.clipboard.writeText(p.text); } catch (err) { return; }
         code.classList.add("copied"); setTimeout(() => code.classList.remove("copied"), 1500);
       });
@@ -457,6 +483,88 @@
       return li;
     }));
   }).catch(() => { $("prompts").textContent = "Could not load the prompts."; });
+
+  // --- the agent panel: the hub runs the tested agent loop on this arm --------
+  // Everything the model says or a tool answers is shown as text, never as HTML.
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+  let agentShown = null, agentTimer = null;
+  function renderAgent(s) {
+    if (!s.available) {
+      $("agentNote").textContent = "This hub has no agent of its own (the instructor has not set a model key). " +
+        "Connect your own agent, below.";
+      $("agentRun").disabled = true;
+      return;
+    }
+    $("agentNote").textContent = "Runs the hub's agent on this arm, on your instructor's account. " +
+      `Budget left: $${(s.budget_usd - s.spent_usd).toFixed(3)} of $${s.budget_usd.toFixed(2)} ` +
+      "(the agent's model only; looking and checking cost a little more). " +
+      "You can take over or stop the arm at any time.";
+    if ($("agentModel").options.length !== s.models.length) {
+      $("agentModel").replaceChildren(...s.models.map((m) => { const o = el("option", "", m); o.value = m; return o; }));
+    }
+    $("agentRun").disabled = s.running;
+    $("agentStop").disabled = !s.running;
+    const run = s.run;
+    if (!run) return;
+    const steps = run.steps.length;
+    const key = `${run.run_id}:${steps}:${run.done}`;
+    if (key === agentShown) return;
+    agentShown = key;
+    $("agentStatus").textContent = run.done
+      ? `Finished: ${run.stop_reason} after ${steps} steps, ${run.seconds}s, $${run.cost_usd.toFixed(4)}` +
+        (run.error ? ` (${run.error})` : "")
+      : `Running ${run.model}${run.sees ? " (sees pictures)" : ""}: step ${steps}...`;
+    const items = [el("li", "said", `You asked: ${run.task}`)];
+    for (const step of run.steps) {
+      const li = el("li");
+      if (step.text) li.append(el("div", "said", step.text));
+      for (const call of step.calls || []) {
+        const preview = (call.result || "").split(/\s+/).join(" ").slice(0, 220);
+        const mark = call.ok ? "" : "FAILED ";
+        li.append(el("div", "call" + (call.ok ? "" : " failed"), `→ ${call.name}(${call.arguments || ""})  ${mark}${preview}`));
+      }
+      items.push(li);
+    }
+    const lastSaid = run.steps.length ? run.steps[run.steps.length - 1].text : "";
+    if (run.done && run.final_text && run.final_text.trim() !== (lastSaid || "").trim()) {
+      items.push(el("li", "final", run.final_text));
+    } else if (run.done && items.length > 1) {
+      items[items.length - 1].classList.add("final");  // the last thing it said is its answer
+    }
+    $("agentLog").replaceChildren(...items);
+    $("agentLog").scrollTop = $("agentLog").scrollHeight;
+  }
+  async function refreshAgent() {
+    try {
+      const s = await (await fetch(`${base}/agent`, { cache: "no-store" })).json();
+      renderAgent(s);
+      clearTimeout(agentTimer);
+      agentTimer = setTimeout(refreshAgent, s.running ? 1000 : 5000);
+    } catch (err) {
+      agentTimer = setTimeout(refreshAgent, 5000);
+    }
+  }
+  $("agentRun").addEventListener("click", async () => {
+    const res = await fetch(`${base}/agent/run`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task: $("agentTask").value, model: $("agentModel").value, sees: $("agentSees").checked }),
+    });
+    const reply = await res.json().catch(() => ({}));
+    $("agentStatus").textContent = res.ok ? "Starting..." : (reply.error || `Refused (${res.status})`);
+    if (res.ok) { agentShown = null; $("agentLog").replaceChildren(); }
+    refreshAgent();
+  });
+  $("agentStop").addEventListener("click", async () => {
+    await fetch(`${base}/agent/stop`, { method: "POST" });
+    $("agentStatus").textContent = "Stopping...";
+    refreshAgent();
+  });
+  refreshAgent();
 
   // --- WebMCP: the same tools, for an agent running in this browser ---------
   // The browser API is experimental and was renamed from navigator.modelContext

@@ -165,3 +165,17 @@ def test_check_by_description_whatever_the_object_is_called(monkeypatch):
         assert twin.check_success(bin_name="red_bin")["reason"] == "invalid_request"
     finally:
         twin.close()
+
+
+def test_a_description_given_as_a_name_is_pointed_at_description():
+    """An agent asked check_success(name="red cube"); the refusal now says how
+    to ask by how it looks."""
+    twin = build_twin(scene="sort_colors", with_controller=False)
+    try:
+        twin.tick()
+        twin.judge, _ = _clef_answers({"red_bin": 0.9})
+        answer = _check_in_thread(twin, name="red cube", bin_name="red_bin")
+        assert answer["reason"] == "invalid_request"
+        assert 'description="red cube"' in answer["detail"]
+    finally:
+        twin.close()

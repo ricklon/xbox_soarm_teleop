@@ -251,3 +251,25 @@ def test_a_blind_agent_is_told_it_cannot_see(twin_url, monkeypatch):
     tool = [m for m in messages if m["role"] == "tool"][0]
     assert "does not show it" in tool["content"]
     assert not any(isinstance(m["content"], list) for m in messages if m["role"] == "user")
+
+
+def test_a_stop_request_ends_the_run_and_calls_show_their_results(twin_url, monkeypatch):
+    url, _ = twin_url
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    model = ScriptedModel([_reply(calls=[_call("observe", {}, f"o{i}")]) for i in range(10)])
+    seen = []
+
+    def on_step(step):
+        seen.append(step)
+
+    run = run_agent(
+        url,
+        "google/gemma-4-31b-it",
+        "Look.",
+        post=model,
+        on_step=on_step,
+        should_stop=lambda: len(seen) >= 2,
+    )
+    assert run.stop_reason == "stopped" and len(run.steps) == 2
+    preview = seen[0]["calls"][0]["result"]
+    assert preview.startswith("{") and len(preview) <= 400
