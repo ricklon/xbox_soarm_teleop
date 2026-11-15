@@ -184,11 +184,15 @@ class AssistedGrasp:
         """Centers of the objects in the scene (parked ones are left out)."""
         return {name: self.position(name) for name in self.objects if name not in self.parked}
 
-    def place(self, name: str, xyz: np.ndarray) -> None:
-        """Put an object upright and at rest with its center at ``xyz``."""
+    def place(self, name: str, xyz: np.ndarray, yaw: float = 0.0) -> None:
+        """Put an object upright and at rest with its center at ``xyz``, turned
+        ``yaw`` radians about the vertical."""
         obj = self.objects[name]
         self.data.qpos[obj.qpos_adr : obj.qpos_adr + 3] = xyz
-        self.data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7] = _UPRIGHT
+        quat = _UPRIGHT
+        if yaw:
+            quat = np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])
+        self.data.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7] = quat
         self.data.qvel[obj.qvel_adr : obj.qvel_adr + 6] = 0.0
 
     def park(self, names) -> None:

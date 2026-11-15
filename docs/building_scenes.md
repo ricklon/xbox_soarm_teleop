@@ -14,35 +14,51 @@ The scene never says what goes where. That is the request's job, so one scene
 serves many tasks, and the agent has to understand what it is asked rather
 than follow a rule it is handed.
 
-## 1. The table: a recipe
+## 1. The cell: a recipe
 
-Every table scene has the same table (x 0.15 to 0.47 m, y -0.10 to 0.18 m,
-top at z 0.12 m) and the same objects (the red cube, the bean bag and five
-look-alikes). A recipe adds the fixed furniture: bins.
+A recipe (`TableScene`) is a whole work cell: the table (its size and
+height), the bins on it, and optionally its own cameras.
 
 ```python
-RED_BIN = Bin("red_bin", "red bin", (0.41, 0.13), (0.035, 0.035, 0.01), (0.80, 0.20, 0.18, 0.85))
-...
-TableScene("sort_bins", (RED_BIN, BLUE_BIN, GREEN_BIN))
+DESK = Table(center_xy_m=(0.17, 0.0), half_xy_m=(0.27, 0.42), top_z=0.002)
+RED_BIN = _tray("red_bin", "red bin", 45.0, ...)    # 27 cm out, at +45 degrees
+TableScene("sort_bins", DESK, (RED_BIN, BLUE_BIN, GREEN_BIN), views=DESK_VIEWS)
 ```
 
-A `Bin` is a name, words for it, its center, half its inside size and wall
-height, and a colour. Each recipe compiles into its own MuJoCo model. A twin,
-or a hub with many twins, runs one recipe at a time: a hub started with
-`--scene sort_colors` offers only the sort scenes, and one started with the
-single-box scenes never shows bins.
+Each recipe compiles into its own MuJoCo model, and a twin (or a hub of
+twins) runs one recipe at a time: a hub started with `--scene sort_colors`
+offers only the sort scenes.
+
+**Size the cell to the arm, not the arm to the table.** The SO-101 grasps
+from above in a ring around its base: steadily from about 17 to 36 cm out,
+across about +-80 degrees of base turn (it reaches 40 cm and +-110 degrees less
+steadily), with a dead zone inside 15 cm where it folds onto itself. The
+first pick-and-place table (32 x 28 cm, raised 12 cm) covered about a quarter
+of that ring, and its far corners were out of reach; crowding three cubes and
+three bins onto it caused most of the failures below. The sorting desk:
+
+- **At the base's height**, like a real desk the arm is clamped to, 54 x 84 cm.
+  The arm's configured workspace floor is 5 cm, which would keep the jaws off
+  everything on a desk, so for any table scene the twin puts the floor 5 mm
+  over the table instead. A real desk-mounted arm needs the same change in
+  its own configuration.
+- **Items in front, trays to the sides.** Placing means turning the base,
+  so the arm never passes over items still to be sorted and nothing stands
+  between the cameras and them. Trays are 27 cm out at +45, +72 and -70
+  degrees: inside the enforced workspace (x >= 5 cm, |y| <= 30 cm for the tool
+  point), 10 cm inside (a cube carried to the side lands turned with the
+  gripper), 2 cm walls (the cameras see over them).
+- **Its own cameras**, built into the model and aimed at the desk: `front`
+  (from beyond the pick area), `overhead` (the whole ring) and `side`.
+  `point_camera` and `locate`'s projection use a model's own camera when it
+  has one, so the single-box scene keeps its shared presets and its
+  benchmarks still compare.
 
 A recipe with one bin is a goal-box scene: `observe` gives `scene.goal` and
 each object's `in_goal`. A recipe with several bins is a sorting scene:
 `observe` gives `scene.bins` and each object's `in_bin` (hidden in
 no-coordinates mode, like positions; the room's answer key at
 `/r/{key}/scores` has it).
-
-Where the bins go matters. In a row leading away from the base, lowering into
-the far bin swung the forearm over the near one and knocked its cube out. The
-bins now stand in a column along the far edge, each in its own direction from
-the base. They are low trays (2 cm walls): the front camera, which `locate`
-uses by default, looks across them, and 6 cm walls hid the cubes behind them.
 
 ## 2. The layout: what is on the table
 
@@ -55,29 +71,25 @@ Layout(
 )
 ```
 
-Rules for starts, all found the hard way:
+An item's start can be turned, `(x, y, z, yaw)`. On the desk every item faces
+the base (`yaw = atan2(y, x)`), so the jaws meet it square: a cube sitting
+square to the table but 25 degrees off to the side is 40 degrees off from the
+jaws, and slips.
 
-- Objects must be at least 3 cm tall: the jaw center stops 1.5 cm above the table.
-- Keep clear of the arm's path from home, which brushes a 4 cm cube at (0.25, 0.04).
-- Keep objects near the arm's straight-ahead line. A cube sitting square to
-  the table at (0.20, 0.10) is about 40 degrees off from the jaws, which
-  reach it at an angle, and it slips.
-- Keep objects where the front camera sees them: not behind tall furniture,
-  and not under the arm at home (around x 0.18 to 0.22, y near 0), where the
-  arm itself hides them.
-- Keep objects well behind the bins (toward the base), off the lines from the
-  base to each bin, and at least 3 cm from a bin's outer wall.
-- Leave room for an agent's grasp: objects at least 8 cm apart and their
-  footprints at least 4 cm in from the table's edges. The open jaws span
-  about 9 cm and an agent's aim is off by a centimetre or two; with cubes 6 cm
-  apart and one 2 cm from the edge, agents pushed neighbours and knocked
-  cubes off the table, and `locate`, which assumes an object rests on the
-  table, then guessed 12 to 30 cm wrong for the cube on the floor.
+Rules for starts, all found the hard way and checked by
+`test_starts_leave_room_for_an_agents_grasp`:
 
-`test_starts_leave_room_for_an_agents_grasp` checks these rules for every
-layout. On the sort table only three spots in the front camera's view meet
-them all, so `sort_colors_decoy` has a red, a blue and a yellow cube (the
-green tray stays empty).
+- In the steady part of the ring (20 to 33 cm out) and in front of the arm
+  (within 40 degrees), at least 5 cm in from the desk's edges.
+- At least 10 cm apart, and 5 cm from a tray. The open jaws span about 9 cm
+  and an agent's aim is off by a centimetre or two: on the crowded table,
+  neighbours 6 to 8 cm away were pushed, and cubes walked off the edge after
+  repeated misses.
+- Off the strip straight ahead of the arm, where the arm at home hides
+  objects from the overhead camera.
+
+`test_the_cameras_see_every_object_at_the_start` checks, by segmentation, that
+the front and overhead cameras see every item clearly.
 
 ## 3. The tasks: the request carries the rule
 
@@ -129,11 +141,22 @@ carries out each task's arrangement by script, with the true positions: pick,
 place, lift 5 cm, home, for each object in turn. It then checks that every
 object is where the task wants it, so nothing already placed was knocked out.
 A new task is tested as soon as it is added.
+
+`test_an_agents_misses_do_not_push_neighbours_or_drop_anything` grasps every
+item with its aim off by up to 1.5 cm, as an agent's is: misses are allowed,
+pushing a neighbour more than 1 cm or anything off the desk is not. With the
+current grasp recipe, 6 of 9 such grasps miss. That is the baseline a `pick`
+skill has to beat.
 `test_the_front_camera_sees_every_object_at_the_start` checks that every
 object is clearly in the front camera's view, by segmentation, before any
 agent has to find it there.
 
 ## Not yet built
+
+- The gripper's bounding box dips about 6 mm below the desk at the lowest
+  grasp (the jaw center stops 1.5 cm over the table). The arm moves
+  kinematically, so nothing stops it; a real arm would scrape. Check against
+  the real gripper before trusting low grasps.
 
 - `check_success` judges only the goal box, and refuses in sorting scenes.
   Clef can answer "which bin is it in?", but its accuracy has to be measured

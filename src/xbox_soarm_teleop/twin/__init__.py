@@ -25,10 +25,10 @@ TABLE_CLEARANCE_M = 0.005
 
 def table_top_z(scene: str) -> float | None:
     """Height of the scene's table top, or None when objects rest on the ground."""
-    from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
-    from xbox_soarm_teleop.sim.table_scenes import is_table_scene
+    from xbox_soarm_teleop.sim.table_scenes import TABLE_SCENES
 
-    return sim_cli.PICK_PLACE_TABLE_HEIGHT if is_table_scene(scene) else None
+    recipe = TABLE_SCENES.get(scene)
+    return recipe.table.top_z if recipe is not None else None
 
 
 def scene_workspace(scene: str) -> dict:
@@ -42,8 +42,12 @@ def scene_workspace(scene: str) -> dict:
     bounds = dict(sim_cli.SIM_WORKSPACE_BOUNDS)
     top = table_top_z(scene)
     if top is not None:
-        low, high = bounds["z"]
-        bounds["z"] = (max(low, top + TABLE_CLEARANCE_M), high)
+        # The table is the floor: the tool stops just over it, whether it is a
+        # raised table (above the configured floor) or a desk at the arm's
+        # base (below it: the configured 5 cm floor would keep the jaws off
+        # every object on the desk).
+        _, high = bounds["z"]
+        bounds["z"] = (top + TABLE_CLEARANCE_M, high)
     return bounds
 
 

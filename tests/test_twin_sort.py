@@ -14,6 +14,7 @@ import logging
 import warnings
 
 import mujoco
+import numpy as np
 import pytest
 
 from tests.twin_helpers import jaws_around
@@ -107,7 +108,7 @@ def test_observe_says_which_bin_each_object_is_in_and_never_the_rule(twin):
     assert "goal" not in scene and "sorting" not in scene
     assert set(scene["objects"]) == {"pick_cube", "blue_cube", "green_cube"}
     assert all(entry["in_bin"] is None for entry in scene["objects"].values())
-    assert twin.table_top_z == pytest.approx(0.12)
+    assert twin.table_top_z == pytest.approx(TABLE_SCENES["sort_bins"].table.top_z)
     listed = json.dumps(twin.list_scenes())
     assert "red_bin" not in listed and "sort_into" not in listed
 
@@ -204,11 +205,11 @@ def test_every_task_can_be_done(task_name):
         service.close()
 
 
-def _visible_pixels(service, renderer, name: str) -> int:
+def _visible_pixels(service, renderer, name: str, view: str = "front") -> int:
     from xbox_soarm_teleop.twin.cameras import point_camera
 
     camera = mujoco.MjvCamera()
-    point_camera(camera, service.sim.model, "front")
+    point_camera(camera, service.sim.model, view)
     renderer.update_scene(service.sim.data, camera=camera)
     seg = renderer.render()
     body = service.grasp.objects[name].body_id
@@ -217,46 +218,36 @@ def _visible_pixels(service, renderer, name: str) -> int:
     return int((on_geom & (seg[..., 0][..., None] == geoms).any(-1)).sum())
 
 
+@pytest.mark.parametrize("view", ["front", "overhead"])
 @pytest.mark.parametrize("layout", SORT_LAYOUTS)
-def test_the_front_camera_sees_every_object_at_the_start(layout):
-    """locate looks from the front by default. The bins stand between that
-    camera and the table, so they must be low enough to see past, and an object
-    under the arm at home is hidden from it."""
+def test_the_cameras_see_every_object_at_the_start(layout, view):
+    """locate looks from the front by default, and overhead sees the whole
+    desk. Nothing may hide an object from either: not the trays, and not the
+    arm at home (which lies along the strip straight ahead)."""
     service = build_twin(scene=layout, with_controller=False)
     renderer = mujoco.Renderer(service.sim.model, 480, 640)
     renderer.enable_segmentation_rendering()
     try:
         service.tick()
-        model = service.sim.model
-        names = list(service.observe()["scene"]["objects"])
-        with_bins = {name: _visible_pixels(service, renderer, name) for name in names}
-        bin_geoms = [i for i in range(model.ngeom) if "_bin_" in (model.geom(i).name or "")]
-        saved = model.geom_pos[bin_geoms].copy()
-        model.geom_pos[bin_geoms, 2] -= 5.0  # out of the picture
-        mujoco.mj_forward(model, service.sim.data)
-        alone = {name: _visible_pixels(service, renderer, name) for name in names}
-        model.geom_pos[bin_geoms] = saved
-        mujoco.mj_forward(model, service.sim.data)
-        for name in names:
-            # Clearly in view (a 3 cm cube fully seen is about 900 pixels), so not
-            # under the arm at home either; and the bins hide little of it.
-            assert alone[name] >= 500, (name, alone[name])
-            assert with_bins[name] >= 0.8 * alone[name], (name, with_bins[name], alone[name])
+        for name in service.observe()["scene"]["objects"]:
+            # A 3 cm cube fully seen from the front is about 900 pixels, from
+            # overhead (farther off) about 350.
+            least = 500 if view == "front" else 200
+            assert _visible_pixels(service, renderer, name, view) >= least, (name, view)
     finally:
         renderer.close()
         service.close()
 
 
 # What an agent's grasp needs around an object, found by agents knocking cubes
-# off a tight layout: the open jaws span about 9 cm and an agent's aim is off
+# off a crowded table: the open jaws span about 9 cm and an agent's aim is off
 # by a centimetre or two, so a neighbour 6 cm away was pushed, and a cube 2 cm
-# from the front edge went over it.
-EDGE_GAP_M = 0.04  # from an object's footprint to the table's edge
-SPACING_M = 0.08  # between object centers
-HOME_PATH_XY = (0.25, 0.04)  # the arm's path from home brushes a cube here
-HOME_PATH_GAP_M = 0.05
-BIN_GAP_M = 0.03  # from an object's footprint to a bin's outer wall
-MAX_ANGLE_DEG = 16.0  # off the arm's straight-ahead line: further, the jaws meet it skewed
+# from the front edge went over it. On the desk there is room to spare.
+EDGE_GAP_M = 0.05  # from an object's footprint to the desk's edge
+SPACING_M = 0.10  # between object centers
+BIN_GAP_M = 0.05  # from an object's footprint to a tray's outer wall
+RING_M = (0.20, 0.33)  # the steady part of the ring the arm grasps in
+MAX_ANGLE_DEG = 40.0  # the pick area: in front of the arm, not out by the trays
 
 
 @pytest.mark.parametrize("layout", SORT_LAYOUTS)
@@ -264,22 +255,75 @@ def test_starts_leave_room_for_an_agents_grasp(layout):
     import itertools
     import math
 
-    from xbox_soarm_teleop.sim.table_scenes import TABLE_CENTER_XY_M, TABLE_HALF_XY_M
-
+    desk = TABLE_SCENES["sort_bins"].table
     objects = LAYOUTS[layout].objects
     half = {name: sim_cli.PICK_PLACE_CUBE_HALF_EXTENT for name in objects}
     half.update({name: h[0] for name, h, _, _ in sim_cli.DISTRACTOR_OBJECTS if name in objects})
-    for name, (x, y, _) in objects.items():
-        for axis, value in ((0, x), (1, y)):
-            low = TABLE_CENTER_XY_M[axis] - TABLE_HALF_XY_M[axis]
-            high = TABLE_CENTER_XY_M[axis] + TABLE_HALF_XY_M[axis]
-            assert value - half[name] - low >= EDGE_GAP_M - 1e-9, (name, "edge")
-            assert high - value - half[name] >= EDGE_GAP_M - 1e-9, (name, "edge")
-        assert math.dist((x, y), HOME_PATH_XY) >= HOME_PATH_GAP_M, (name, "home path")
+    for name, (x, y, _z, yaw) in objects.items():
+        assert desk.contains(x, y, margin=half[name] + EDGE_GAP_M), (name, "edge")
+        assert RING_M[0] <= math.hypot(x, y) <= RING_M[1], (name, "ring")
+        assert abs(math.degrees(math.atan2(y, x))) <= MAX_ANGLE_DEG, (name, "pick area")
+        assert yaw == pytest.approx(math.atan2(y, x)), (name, "faces the base")
         for bin_ in TABLE_SCENES["sort_bins"].bins:
             reach = [bin_.inner_half_m[i] + bin_.wall_m + half[name] for i in (0, 1)]
             gap = max(abs(x - bin_.center_xy_m[0]) - reach[0], abs(y - bin_.center_xy_m[1]) - reach[1])
             assert gap >= BIN_GAP_M - 1e-9, (name, bin_.name)
-        assert abs(math.degrees(math.atan2(y, x))) <= MAX_ANGLE_DEG, (name, "angle")
     for (a, pa), (b, pb) in itertools.combinations(objects.items(), 2):
         assert math.dist(pa[:2], pb[:2]) >= SPACING_M - 1e-9, (a, b)
+
+
+AIM_ERROR_M = 0.015  # an agent's aim: off by up to this, in any direction
+
+
+@pytest.mark.parametrize("layout", SORT_LAYOUTS)
+def test_an_agents_misses_do_not_push_neighbours_or_drop_anything(layout):
+    """Grasp every object with its aim off by up to 1.5 cm (seeded), as an agent's
+    is. A miss is allowed; pushing a neighbour, or anything off the desk, is not.
+    The miss rate is the baseline a pick skill must beat."""
+    rng = np.random.default_rng(7)
+    service = build_twin(scene=layout, with_controller=False)
+    misses = tries = 0
+    try:
+        service.tick()
+
+        def run(request):
+            future = service.submit(request)
+            service.tick()
+            status = future.result(timeout=0)
+            for _ in range(3000):
+                if service.wait(status.id, 0).state.terminal:
+                    return
+                service.tick()
+
+        def where():
+            return {n: np.array(e["xyz_m"]) for n, e in service.observe()["scene"]["objects"].items()}
+
+        for name in where():
+            for _ in range(3):
+                before = where()
+                error = rng.uniform(-AIM_ERROR_M, AIM_ERROR_M, size=2)
+                jaws_around(run, service.observe, name, aim_error=tuple(error))
+                width = service.observe()["scene"]["objects"][name]["grip_width_m"]
+                run(
+                    {
+                        "type": "set_gripper",
+                        "params": {"position": GraspSettings().gripper_for_opening(width)},
+                    }
+                )
+                tries += 1
+                misses += service.grasp.attached != name
+                run({"type": "set_gripper", "params": {"position": 0.0}})
+                run({"type": "move_ee_by", "params": {"dxyz_m": [0, 0, 0.05]}})
+                run({"type": "home"})
+                for _ in range(60):
+                    service.tick()
+                now = where()
+                for other in before:
+                    if other != name:
+                        moved = np.linalg.norm(now[other][:2] - before[other][:2])
+                        assert moved < 0.01, (layout, name, other, moved)
+                    assert not service.observe()["scene"]["objects"][other]["off_table"], other
+                # The one being grasped may have been nudged: aim again from where it is.
+        print(f"\n{layout}: {misses} misses in {tries} grasps with aim off by up to 1.5 cm")
+    finally:
+        service.close()

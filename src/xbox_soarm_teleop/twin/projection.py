@@ -98,7 +98,8 @@ def camera_geometry(
     """
     if view not in VIEWS:
         raise ValueError(f"Unknown view '{view}'. Known: {', '.join(VIEWS)}")
-    if view in FIXED_VIEWS:
+    own = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, view)
+    if view in FIXED_VIEWS and own < 0:  # a shared preset, not the scene's own camera
         preset = FIXED_VIEWS[view]
         az = math.radians(preset["azimuth"])
         el = math.radians(preset["elevation"])

@@ -144,7 +144,7 @@ PICK_PLACE_CUBE_START = np.array(
     [0.34, -0.03, PICK_PLACE_TABLE_HEIGHT + PICK_PLACE_CUBE_HALF_EXTENT], dtype=float
 )
 # The single-box scene's goal box (a bin recipe; see sim/table_scenes.py).
-PICK_PLACE_GOAL_CENTER = np.array(GOAL_BOX.base_center_m, dtype=float)
+PICK_PLACE_GOAL_CENTER = np.array(GOAL_BOX.base_center_m(TABLE_HEIGHT_M), dtype=float)
 PICK_PLACE_GOAL_INNER_HALF_EXTENTS = np.array(GOAL_BOX.inner_half_m, dtype=float)
 PICK_PLACE_GOAL_WALL_THICKNESS = GOAL_BOX.wall_m
 # A soft object for first grasps. It is a rigid box to the physics, but the arm
@@ -783,12 +783,14 @@ def _add_pick_place_scene(
         floor.pos = [0.2, 0.0, 0.0]
         floor.rgba = [0.45, 0.45, 0.45, 1.0]
 
+    recipe = TABLE_SCENES[scene]
+    top = recipe.table.top_z
     table = spec.worldbody.add_geom()
     table.name = "pick_place_table"
     table.type = mujoco.mjtGeom.mjGEOM_BOX
-    table.size = PICK_PLACE_TABLE_HALF_EXTENTS.tolist()
-    table.pos = PICK_PLACE_TABLE_CENTER.tolist()
-    table.rgba = [0.60, 0.60, 0.60, 1.0]
+    table.size = [*recipe.table.half_xy_m, top / 2.0]
+    table.pos = [*recipe.table.center_xy_m, top / 2.0]
+    table.rgba = list(recipe.table.rgba)
     table.friction = [1.1, 0.02, 0.001]
     table.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
 
@@ -818,8 +820,8 @@ def _add_pick_place_scene(
     bag_geom.contype = SOFT_OBJECT_COLLISION_BIT
     bag_geom.conaffinity = SOFT_OBJECT_COLLISION_BIT
 
-    spec.stat.center = list(PICK_PLACE_STAT_CENTER)
-    spec.stat.extent = PICK_PLACE_STAT_EXTENT
+    spec.stat.center = list(recipe.stat_center)
+    spec.stat.extent = recipe.stat_extent
     for index, (name, half, rgba, mass) in enumerate(DISTRACTOR_OBJECTS):
         body = spec.worldbody.add_body()
         body.name = name
@@ -833,16 +835,33 @@ def _add_pick_place_scene(
         geom.rgba = list(rgba)
         geom.friction = [1.1, 0.02, 0.001]
 
-    for bin_ in TABLE_SCENES[scene].bins:
+    for bin_ in recipe.bins:
         for name, offset, size in bin_.parts():
             geom = spec.worldbody.add_geom()
             geom.name = name
             geom.type = mujoco.mjtGeom.mjGEOM_BOX
-            geom.pos = (np.array(bin_.base_center_m) + np.array(offset, dtype=float)).tolist()
+            geom.pos = (np.array(bin_.base_center_m(top)) + np.array(offset, dtype=float)).tolist()
             geom.size = list(size)
             geom.rgba = list(bin_.rgba)
             geom.contype = 1
             geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
+    for view, aim in (recipe.views or {}).items():
+        _add_view_camera(spec, view, aim)
+
+
+def _add_view_camera(spec: mujoco.MjSpec, name: str, aim: dict) -> None:
+    """A fixed camera aimed like a free-camera preset (lookat, distance, azimuth,
+    elevation), with the model's global field of view: what the presets draw."""
+    az, el = np.deg2rad(aim["azimuth"]), np.deg2rad(aim["elevation"])
+    forward = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
+    up = np.array([-np.sin(el) * np.cos(az), -np.sin(el) * np.sin(az), np.cos(el)])
+    right = np.cross(forward, up)
+    camera = spec.worldbody.add_camera()
+    camera.name = name
+    camera.pos = (np.asarray(aim["lookat"], dtype=float) - aim["distance"] * forward).tolist()
+    camera.alt.type = mujoco.mjtOrientation.mjORIENTATION_XYAXES
+    camera.alt.xyaxes = [*right.tolist(), *up.tolist()]
+    camera.fovy = float(spec.visual.global_.fovy)
 
 
 def build_stack_scene_model(urdf_path: str, world: str = "plain") -> mujoco.MjModel:

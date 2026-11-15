@@ -8,6 +8,7 @@ twin keeps the rest parked out of sight and out of reach.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 
 from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
@@ -60,8 +61,10 @@ def _on_table(name: str, x: float, y: float) -> tuple[float, float, float]:
     return (x, y, _TABLE + _HALF[name][2])
 
 
-def _on_table_cube(x: float, y: float) -> tuple[float, float, float]:
-    return (x, y, _CUBE[2])
+def _on_desk(name: str, x: float, y: float) -> tuple[float, float, float, float]:
+    """On the sorting desk, turned to face the arm's base (so the jaws meet it square)."""
+    half = sim_cli.PICK_PLACE_CUBE_HALF_EXTENT if name == "pick_cube" else _HALF[name][2]
+    return (x, y, TABLE_SCENES["sort_bins"].table.top_z + half, math.atan2(y, x))
 
 
 def _distractors(name: str, description: str, others: dict, descriptions=None) -> "Layout":
@@ -132,21 +135,20 @@ LAYOUTS: dict[str, Layout] = {
             },
             {"pick_cube": "large red cube"},
         ),
-        # The sort table (sim/table_scenes.py): what goes where is up to the
-        # request (twin/tasks.py), not the layout. Starts are where the front
-        # camera sees them, near the arm's straight-ahead line, with room for an
-        # agent's open jaws (8 cm apart, 4 cm in from the table's edges, 3 cm
-        # from the trays) and clear of the arm's path from home: only three
-        # spots in view meet all of it (tests/test_twin_sort.py checks each).
+        # The sorting desk (sim/table_scenes.py): items in front of the arm,
+        # trays at its sides. What goes where is up to the request
+        # (twin/tasks.py), not the layout. Each item faces the base, 10 cm or
+        # more from the next, off the strip straight ahead (the arm at home
+        # hides it from the overhead camera); tests/test_twin_sort.py checks.
         Layout(
             name="sort_colors",
             model_scene="sort_bins",
             difficulty="easy",
             description="A red, a blue and a green cube, and a red, a blue and a green bin.",
             objects={
-                "pick_cube": _on_table_cube(0.32, -0.04),
-                "blue_cube": _on_table("blue_cube", 0.24, -0.04),
-                "green_cube": _on_table("green_cube", 0.31, 0.05),
+                "pick_cube": _on_desk("pick_cube", 0.275, -0.06),
+                "blue_cube": _on_desk("blue_cube", 0.23, -0.16),
+                "green_cube": _on_desk("green_cube", 0.30, 0.07),
             },
         ),
         Layout(
@@ -158,9 +160,9 @@ LAYOUTS: dict[str, Layout] = {
                 "There is no yellow bin."
             ),
             objects={
-                "pick_cube": _on_table_cube(0.32, -0.04),
-                "blue_cube": _on_table("blue_cube", 0.24, -0.04),
-                "yellow_cube": _on_table("yellow_cube", 0.31, 0.05),
+                "pick_cube": _on_desk("pick_cube", 0.275, -0.06),
+                "blue_cube": _on_desk("blue_cube", 0.23, -0.16),
+                "yellow_cube": _on_desk("yellow_cube", 0.30, 0.07),
             },
         ),
     )
@@ -198,10 +200,13 @@ class GoalBox:
         return inside and resting
 
 
-def _box(bin_: Bin) -> GoalBox:
+def _box(bin_: Bin, table_top_z: float) -> GoalBox:
     return GoalBox(
         name=bin_.name,
-        center_xyz_m=(*(float(v) for v in bin_.center_xy_m), round(bin_.floor_top_m, 4)),
+        center_xyz_m=(
+            *(float(v) for v in bin_.center_xy_m),
+            round(bin_.floor_top_m(table_top_z), 4),
+        ),
         inner_size_m=tuple(float(2 * v) for v in bin_.inner_half_m),
         label=bin_.label,
     )
@@ -210,7 +215,8 @@ def _box(bin_: Bin) -> GoalBox:
 # Every table scene's bins; a scene with exactly one is a goal-box scene, whose
 # box is also in GOALS (and in observe as scene.goal, and objects' in_goal).
 BINS: dict[str, tuple[GoalBox, ...]] = {
-    name: tuple(_box(bin_) for bin_ in scene.bins) for name, scene in TABLE_SCENES.items()
+    name: tuple(_box(bin_, scene.table.top_z) for bin_ in scene.bins)
+    for name, scene in TABLE_SCENES.items()
 }
 GOALS: dict[str, GoalBox] = {
     name: replace(boxes[0], label="") for name, boxes in BINS.items() if len(boxes) == 1

@@ -1136,8 +1136,10 @@ class TwinService:
         """Put the layout's objects at their starts and park the others."""
         if self.layout is None:
             return
-        for name, xyz in self.layout.objects.items():
-            self.grasp.place(name, np.asarray(xyz, dtype=float))
+        for name, pose in self.layout.objects.items():
+            # (x, y, z), or (x, y, z, yaw) for an object that starts turned.
+            yaw = float(pose[3]) if len(pose) > 3 else 0.0
+            self.grasp.place(name, np.asarray(pose[:3], dtype=float), yaw)
         self.grasp.park(name for name in self.grasp.objects if name not in self.layout.objects)
         mujoco.mj_forward(self.sim.model, self.sim.data)
 

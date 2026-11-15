@@ -1,29 +1,55 @@
-"""Table scenes: the shared table, plus the bins objects go into.
+"""Table scenes: a work surface, the bins on it, and the cameras that watch it.
 
-A table scene is a recipe. Every table scene has the same table and the same
+A table scene is a recipe for a work cell. Every table scene has the same
 objects (a red cube, a bean bag and five look-alikes; see ``simulate_mujoco``);
-what differs is the fixed furniture on the table: one goal box, or several
-bins. Each recipe compiles into its own MuJoCo model, so a twin (or a hub
-running many twins) uses one recipe at a time. Which objects are out, where
-they start and which bin each belongs in is a *layout* (``twin.layouts``),
-and a scene can have many.
+what differs is the cell: the table (its size and height), the fixed
+furniture on it (one goal box, or several bins), and, optionally, cameras
+aimed at it. Each recipe compiles into its own MuJoCo model, so a twin (or a
+hub running many twins) uses one recipe at a time. Which objects are out and
+where they start is a *layout* (``twin.layouts``); what goes where is a
+*task* (``twin.tasks``).
 
-To make a new scene: add a ``TableScene`` to ``TABLE_SCENES`` with its bins,
-then add its layouts in ``twin/layouts.py``, then prove each layout can be
-done (``tests/test_twin_sort.py`` shows how: a scripted run with the true
-positions must finish it).
+To make a new cell: add a ``TableScene`` to ``TABLE_SCENES``, then its
+layouts and tasks, then prove each task can be done (``tests/test_twin_sort.py``
+shows how: a scripted run with the true positions must finish it).
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
-TABLE_HEIGHT_M = 0.12  # top of the table (m, base frame)
-# The table's reach: x from 0.15 to 0.47 m, y from -0.10 to 0.18 m.
+TABLE_HEIGHT_M = 0.12  # top of the single-box scene's raised table (m, base frame)
+# The raised table's reach: x from 0.15 to 0.47 m, y from -0.10 to 0.18 m.
 TABLE_CENTER_XY_M = (0.31, 0.04)
 TABLE_HALF_XY_M = (0.16, 0.14)
 
 GOAL_GREEN = (0.10, 0.65, 0.35, 0.85)
+BIN_FLOOR_M = 0.004  # half the thickness of a bin's floor plate
+
+
+@dataclass(frozen=True)
+class Table:
+    """The work surface: a box standing on the floor, top at ``top_z``.
+
+    Args:
+        center_xy_m: Middle of the table (m, base frame).
+        half_xy_m: Half its length (x) and width (y).
+        top_z: Height of its top. A desk the arm is clamped to has its top at
+            the arm's base, a few millimetres up.
+        rgba: Colour.
+    """
+
+    center_xy_m: tuple[float, float]
+    half_xy_m: tuple[float, float]
+    top_z: float
+    rgba: tuple[float, float, float, float] = (0.60, 0.60, 0.60, 1.0)
+
+    def contains(self, x: float, y: float, margin: float = 0.0) -> bool:
+        """(x, y) lies on the table, at least ``margin`` in from every edge."""
+        cx, cy = self.center_xy_m
+        hx, hy = self.half_xy_m
+        return abs(x - cx) <= hx - margin and abs(y - cy) <= hy - margin
 
 
 @dataclass(frozen=True)
@@ -48,15 +74,13 @@ class Bin:
     wall_m: float = 0.005
     geom_prefix: str | None = None
 
-    @property
-    def base_center_m(self) -> tuple[float, float, float]:
+    def base_center_m(self, table_top_z: float) -> tuple[float, float, float]:
         """Center of the floor plate (it sits 1 mm above the table)."""
-        return (*self.center_xy_m, TABLE_HEIGHT_M + 0.001)
+        return (*self.center_xy_m, table_top_z + 0.001)
 
-    @property
-    def floor_top_m(self) -> float:
+    def floor_top_m(self, table_top_z: float) -> float:
         """Height of the top of its floor plate: objects in it rest here."""
-        return TABLE_HEIGHT_M + 0.001 + 0.004
+        return table_top_z + 0.001 + BIN_FLOOR_M
 
     def parts(self) -> list[tuple[str, tuple[float, float, float], tuple[float, float, float]]]:
         """Each geom as (name, center offset from ``base_center_m``, half-size)."""
@@ -64,7 +88,7 @@ class Bin:
         hx, hy, hz = self.inner_half_m
         w = self.wall_m
         return [
-            (f"{prefix}_base", (0.0, 0.0, 0.0), (hx, hy, 0.004)),
+            (f"{prefix}_base", (0.0, 0.0, 0.0), (hx, hy, BIN_FLOOR_M)),
             (f"{prefix}_wall_left", (-(hx + w), 0.0, hz), (w, hy, hz)),
             (f"{prefix}_wall_right", (hx + w, 0.0, hz), (w, hy, hz)),
             (f"{prefix}_wall_back", (0.0, -(hy + w), hz), (hx + w, w, hz)),
@@ -74,11 +98,22 @@ class Bin:
 
 @dataclass(frozen=True)
 class TableScene:
-    """A compiled scene: the table and its bins."""
+    """A compiled work cell: the table, its bins and, optionally, its own cameras.
+
+    ``views`` aims the named cameras (``front``, ``overhead``, ``side``) as
+    lookat, distance, azimuth and elevation, like the shared presets in
+    ``twin.cameras``. A scene without them uses those presets.
+    """
 
     name: str
+    table: Table
     bins: tuple[Bin, ...]
+    views: dict[str, dict] | None = None
+    stat_center: tuple[float, float, float] = (0.2245, 0.04, 0.0779)
+    stat_extent: float = 0.6128
 
+
+RAISED_TABLE = Table(TABLE_CENTER_XY_M, TABLE_HALF_XY_M, TABLE_HEIGHT_M)
 
 # The original pick-and-place box. Its geoms keep their old names ("goal_base",
 # ...), so pictures and benchmarks of the single-box scene are unchanged.
@@ -89,26 +124,53 @@ GOAL_BOX = Bin(
     geom_prefix="goal",
 )
 
-# Three bins in a column along the far edge of the table, each its own
-# direction from the base: reaching into one never swings the forearm over
-# another (in a row leading away from the base, lowering into the far bin
-# knocked a cube out of the near one). 7 cm inside, 1 cm apart.
-# Low trays (2 cm walls): they stand between the front camera and the table,
-# and 6 cm walls hid the cubes behind them from locate.
-_SORT_BIN = (0.035, 0.035, 0.01)
-RED_BIN = Bin("red_bin", "red bin", (0.41, 0.13), _SORT_BIN, (0.80, 0.20, 0.18, 0.85))
-BLUE_BIN = Bin("blue_bin", "blue bin", (0.41, 0.04), _SORT_BIN, (0.20, 0.35, 0.85, 0.85))
-GREEN_BIN = Bin("green_bin", "green bin", (0.41, -0.05), _SORT_BIN, GOAL_GREEN)
+# The sorting desk: a board at the arm's base, as on a real desk it is clamped
+# to, covering the ring the arm grasps in (about 17 to 36 cm out). Items are
+# picked in front of the arm and placed to its sides, so the arm never passes
+# over items still to be sorted and nothing stands between the cameras and
+# them. Trays: 10 cm inside (a cube carried to the side lands turned with the
+# gripper), 2 cm walls (cameras see over them), 27 cm out, inside the enforced
+# workspace (x >= 0.05 m, |y| <= 0.30 m for the tool point).
+DESK = Table(center_xy_m=(0.17, 0.0), half_xy_m=(0.27, 0.42), top_z=0.002, rgba=(0.62, 0.57, 0.5, 1.0))
+TRAY_RADIUS_M = 0.27
+_TRAY = (0.05, 0.05, 0.01)
+
+
+def _tray(name: str, label: str, angle_deg: float, rgba) -> Bin:
+    a = math.radians(angle_deg)
+    xy = (round(TRAY_RADIUS_M * math.cos(a), 4), round(TRAY_RADIUS_M * math.sin(a), 4))
+    return Bin(name, label, xy, _TRAY, rgba)
+
+
+RED_BIN = _tray("red_bin", "red bin", 45.0, (0.80, 0.20, 0.18, 0.9))
+GREEN_BIN = _tray("green_bin", "green bin", 72.0, GOAL_GREEN)
+BLUE_BIN = _tray("blue_bin", "blue bin", -70.0, (0.20, 0.35, 0.85, 0.9))
+
+DESK_VIEWS = {
+    # Straight down over the whole ring; picture up is forward (+x).
+    "overhead": {"lookat": (0.19, 0.0, 0.02), "distance": 0.78, "azimuth": 0.0, "elevation": -89.0},
+    # From beyond the pick area, looking back at the arm.
+    "front": {"lookat": (0.20, 0.0, 0.02), "distance": 0.75, "azimuth": 180.0, "elevation": -35.0},
+    # From the arm's left.
+    "side": {"lookat": (0.20, 0.0, 0.02), "distance": 0.80, "azimuth": 90.0, "elevation": -30.0},
+}
 
 TABLE_SCENES: dict[str, TableScene] = {
     scene.name: scene
     for scene in (
-        TableScene("pick_place_basic", (GOAL_BOX,)),
-        TableScene("sort_bins", (RED_BIN, BLUE_BIN, GREEN_BIN)),
+        TableScene("pick_place_basic", RAISED_TABLE, (GOAL_BOX,)),
+        TableScene(
+            "sort_bins",
+            DESK,
+            (RED_BIN, BLUE_BIN, GREEN_BIN),
+            views=DESK_VIEWS,
+            stat_center=(0.17, 0.0, 0.1),
+            stat_extent=0.7,
+        ),
     )
 }
 
 
 def is_table_scene(scene: str) -> bool:
-    """A scene with the table (and objects on it), as opposed to ``default`` or ``stack``."""
+    """A scene with a table (and objects on it), as opposed to ``default`` or ``stack``."""
     return scene in TABLE_SCENES

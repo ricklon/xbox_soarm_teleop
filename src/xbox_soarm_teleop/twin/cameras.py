@@ -174,6 +174,12 @@ def point_camera(camera: mujoco.MjvCamera, model: mujoco.MjModel, view: str) -> 
         camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
         camera.fixedcamid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
         return
+    if view != "free":
+        own = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, view)
+        if own >= 0:  # the scene's own camera for this view (sim/table_scenes.py)
+            camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
+            camera.fixedcamid = own
+            return
     camera.type = mujoco.mjtCamera.mjCAMERA_FREE
     camera.fixedcamid = -1
     if view != "free":
