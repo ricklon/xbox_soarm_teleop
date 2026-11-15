@@ -107,42 +107,50 @@ def mcp_tool_to_function(tool) -> dict[str, Any]:
     }
 
 
-def _result_text(result) -> str:
-    """A tool result as text for the model. Pictures are described, not sent."""
-    parts = []
+def _result_text(result, sees_images: bool = False) -> tuple[str, list[tuple[str, str]]]:
+    """A tool result as text for the model, and its pictures as (mime, base64).
+
+    A blind model (``sees_images`` False) is told a picture was taken but not
+    shown; a seeing model is told it is shown below, and the caller sends it.
+    """
+    parts, pictures = [], []
     for item in getattr(result, "content", None) or []:
         kind = getattr(item, "type", "")
         if kind == "text":
             parts.append(item.text)
         elif kind == "image":
-            parts.append(
-                json.dumps(
-                    {
-                        "image": getattr(item, "mime_type", None) or getattr(item, "mimeType", "image"),
-                        "note": "a picture was taken; this text-only harness does not show it to "
-                        "the model. Use locate to find objects.",
-                    }
+            mime = getattr(item, "mime_type", None) or getattr(item, "mimeType", None) or "image/png"
+            if sees_images:
+                pictures.append((mime, item.data))
+                note = "the picture is shown below."
+            else:
+                note = (
+                    "a picture was taken; this text-only harness does not show it to the "
+                    "model. Use locate to find objects."
                 )
-            )
+            parts.append(json.dumps({"image": mime, "note": note}))
     text = "\n".join(parts) or "{}"
-    return text[:MAX_TOOL_RESULT_CHARS]
+    return text[:MAX_TOOL_RESULT_CHARS], pictures
 
 
-async def _call_tool(session: ClientSession, name: str, arguments: dict) -> tuple[bool, str]:
+async def _call_tool(
+    session: ClientSession, name: str, arguments: dict, sees_images: bool = False
+) -> tuple[bool, str, list[tuple[str, str]]]:
     try:
         result = await asyncio.wait_for(session.call_tool(name, arguments), tool_timeout(name))
     except asyncio.TimeoutError:
-        return False, json.dumps({"ok": False, "reason": "timeout", "detail": f"{name} took too long"})
+        detail = {"ok": False, "reason": "timeout", "detail": f"{name} took too long"}
+        return False, json.dumps(detail), []
     except Exception as exc:  # noqa: BLE001 - told to the model
-        return False, json.dumps({"ok": False, "reason": "error", "detail": str(exc)[:300]})
-    text = _result_text(result)
+        return False, json.dumps({"ok": False, "reason": "error", "detail": str(exc)[:300]}), []
+    text, pictures = _result_text(result, sees_images)
     if getattr(result, "is_error", False):
-        return False, text
+        return False, text, pictures
     try:
         ok = json.loads(text).get("ok", True) is not False
     except (json.JSONDecodeError, AttributeError):
         ok = True
-    return ok, text
+    return ok, text, pictures
 
 
 async def _run(
@@ -156,6 +164,7 @@ async def _run(
     max_cost_usd: float,
     timeout_s: float,
     on_step: Callable[[dict], None] | None,
+    sees_images: bool = False,
 ) -> AgentRun:
     key = load_secret("OPENROUTER_API_KEY")
     if not key:
@@ -244,6 +253,7 @@ async def _run(
                         if on_step:
                             on_step(step)
                         break
+                    pictures: list[tuple[str, str]] = []
                     for call in calls:  # one at a time, in the model's order
                         function = call.get("function") or {}
                         name = function.get("name", "")
@@ -272,7 +282,10 @@ async def _run(
                                     }
                                 )
                             else:
-                                ok, content = await _call_tool(session, name, arguments)
+                                ok, content, shown = await _call_tool(
+                                    session, name, arguments, sees_images
+                                )
+                                pictures += shown
                         call_s = time.monotonic() - began
                         tools_s += call_s
                         record = {
@@ -287,6 +300,22 @@ async def _run(
                         )
                         messages.append(
                             {"role": "tool", "tool_call_id": call.get("id", ""), "content": content}
+                        )
+                    if pictures:  # tool messages carry text only: pictures follow as the user's
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Pictures from the tools just called:"},
+                                    *(
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {"url": f"data:{mime};base64,{data}"},
+                                        }
+                                        for mime, data in pictures
+                                    ),
+                                ],
+                            }
                         )
                     run.steps.append(step)
                     if on_step:
@@ -313,6 +342,7 @@ def run_agent(
     max_cost_usd: float = DEFAULT_MAX_COST_USD,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     on_step: Callable[[dict], None] | None = None,
+    sees_images: bool = False,
 ) -> AgentRun:
     """Run one task with one OpenRouter model against the twin at ``url``.
 
@@ -327,6 +357,8 @@ def run_agent(
         max_cost_usd: Stop once the run has cost this much.
         timeout_s: Stop once the run has taken this long.
         on_step: Called with each step as it finishes (for live display).
+        sees_images: Show the model the pictures tools return (``camera``), for
+            models that take images; otherwise it is told a picture was taken.
 
     Raises:
         AgentError: no OpenRouter key.
@@ -344,5 +376,6 @@ def run_agent(
             max_cost_usd=max_cost_usd,
             timeout_s=timeout_s,
             on_step=on_step,
+            sees_images=sees_images,
         )
     )

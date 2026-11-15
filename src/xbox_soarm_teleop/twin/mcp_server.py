@@ -9,6 +9,8 @@ Clients are identified by their MCP session id.
 from __future__ import annotations
 
 import asyncio
+import functools
+import re
 import threading
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, Callable
@@ -148,6 +150,31 @@ def _status_dict(status) -> dict[str, Any]:
     }
 
 
+# Tools whose ``name`` argument is an object (load_scene's is a scene).
+NAME_TAKING_TOOLS = {"locate", "pick", "report_estimate", "check_success"}
+# Tools whose answer carries the twin's own words for the object ("red cube").
+DESCRIBING_TOOLS = {"locate", "check_success"}
+
+
+def rename_objects(value: Any, names: dict[str, str]) -> Any:
+    """``value`` with every object name (as a key, a value or a word in text)
+    replaced by the name agents are shown."""
+    if isinstance(value, dict):
+        return {rename_objects(k, names): rename_objects(v, names) for k, v in value.items()}
+    if isinstance(value, list):
+        return [rename_objects(v, names) for v in value]
+    if isinstance(value, str):
+        pattern = _name_pattern(tuple(sorted(names)))
+        return pattern.sub(lambda match: names[match.group(0)], value)
+    return value
+
+
+@functools.lru_cache(maxsize=32)
+def _name_pattern(own_names: tuple[str, ...]) -> re.Pattern:
+    words = "|".join(re.escape(n) for n in sorted(own_names, key=len, reverse=True))
+    return re.compile(rf"(?<![A-Za-z0-9_])(?:{words})(?![A-Za-z0-9_])")
+
+
 def build_mcp_server(
     service: TwinService | Callable[[Context | None], TwinService],
     *,
@@ -170,6 +197,31 @@ def build_mcp_server(
 
     def twin(ctx: Context | None) -> TwinService:
         return service(ctx) if callable(service) else service
+
+    def tool(fn):
+        """Register ``fn`` as a tool that speaks in the names agents are shown
+        (``twin.naming``): object names in are mapped to the twin's own, and
+        everything out is mapped back."""
+
+        @functools.wraps(fn)
+        def named(*args, **kwargs):
+            names = twin(kwargs.get("ctx")).shown_names
+            if not names:
+                return fn(*args, **kwargs)
+            if fn.__name__ in NAME_TAKING_TOOLS and isinstance(kwargs.get("name"), str):
+                inverse = {shown: own for own, shown in names.items()}
+                given = kwargs["name"]
+                if given not in inverse:
+                    known = ", ".join(sorted(inverse))
+                    detail = f"Unknown object '{given}'. On the table: {known}"
+                    return {"ok": False, "reason": "invalid_request", "detail": detail}
+                kwargs["name"] = inverse[given]
+            result = fn(*args, **kwargs)
+            if isinstance(result, dict) and fn.__name__ in DESCRIBING_TOOLS:
+                result = {k: v for k, v in result.items() if k != "description"}
+            return rename_objects(result, names)
+
+        return server.tool()(named)
 
     def run_command(future) -> tuple[bool, Any]:
         try:
@@ -207,14 +259,14 @@ def build_mcp_server(
             extra["timeout_s"] = timeout_s
         return extra
 
-    @server.tool()
+    @tool
     def observe(ctx: Context | None = None) -> dict[str, Any]:
         """Current state: tool pose, joints (deg), gripper (0 open..1 closed),
         objects and whether one is attached, workspace bounds, the current
         action, stop status and who is in control."""
         return twin(ctx).observe()
 
-    @server.tool()
+    @tool
     def move_to(
         x: float,
         y: float,
@@ -232,7 +284,7 @@ def build_mcp_server(
         request.update(speed_and_timeout(max_speed_m_s, timeout_s))
         return submit(request, ctx, wait, preempt)
 
-    @server.tool()
+    @tool
     def move_by(
         dx: float,
         dy: float,
@@ -248,7 +300,7 @@ def build_mcp_server(
         request.update(speed_and_timeout(max_speed_m_s, timeout_s))
         return submit(request, ctx, wait, preempt)
 
-    @server.tool()
+    @tool
     def set_gripper(
         position: float | None = None,
         opening_m: float | None = None,
@@ -269,21 +321,21 @@ def build_mcp_server(
             position = twin(ctx).grasp.settings.gripper_for_opening(opening_m)
         return submit({"type": "set_gripper", "params": {"position": position}}, ctx, wait)
 
-    @server.tool()
+    @tool
     def set_wrist_roll(
         angle_rad: float, wait: bool = True, ctx: Context | None = None
     ) -> dict[str, Any]:
         """Rotate the wrist to an absolute roll angle in radians (0 = level)."""
         return submit({"type": "set_wrist_roll", "params": {"angle_rad": angle_rad}}, ctx, wait)
 
-    @server.tool()
+    @tool
     def home(wait: bool = True, ctx: Context | None = None) -> dict[str, Any]:
         """Return the arm to its home pose and open the gripper. Right after a
         release, lift straight up 5 cm first: from low down, homing drags the
         object the jaws still straddle."""
         return submit({"type": "home"}, ctx, wait)
 
-    @server.tool()
+    @tool
     def wait_for_action(
         action_id: str, timeout_s: float = 10.0, ctx: Context | None = None
     ) -> dict[str, Any]:
@@ -294,7 +346,7 @@ def build_mcp_server(
             return {"ok": False, "reason": "invalid_request", "detail": str(exc)}
         return {"ok": True, "action": _status_dict(status)}
 
-    @server.tool()
+    @tool
     def cancel_action(ctx: Context | None = None) -> dict[str, Any]:
         """Cancel your running action; the arm holds where it is."""
         ok, result = run_command(twin(ctx).cancel(client_id=client_of(ctx)))
@@ -302,40 +354,40 @@ def build_mcp_server(
             return result
         return {"ok": True, "action": _status_dict(result) if result else None}
 
-    @server.tool()
+    @tool
     def stop(ctx: Context | None = None) -> dict[str, Any]:
         """Latch the virtual emergency stop: cancels motion and refuses new
         motion until reset_stop. Always allowed."""
         twin(ctx).stop(by="agent", client_id=client_of(ctx))
         return {"ok": True, "stop_latched": True}
 
-    @server.tool()
+    @tool
     def reset_stop(confirm: bool = False, ctx: Context | None = None) -> dict[str, Any]:
         """Release a stop you latched. Requires confirm=true. A stop latched on
         the Xbox controller can only be released there (Menu button, also called Start)."""
         ok, result = run_command(twin(ctx).reset_stop(client_id=client_of(ctx), confirm=confirm))
         return {"ok": True, "released": bool(result)} if ok else result
 
-    @server.tool()
+    @tool
     def reset_scene(ctx: Context | None = None) -> dict[str, Any]:
         """Home the arm and put every object back where it started."""
         ok, result = run_command(twin(ctx).reset_scene(client_id=client_of(ctx)))
         return {"ok": True} if ok else result
 
-    @server.tool()
+    @tool
     def list_scenes(ctx: Context | None = None) -> dict[str, Any]:
         """Scenes you can load, easiest first: the objects in each, how hard
         they are to grasp, and which scene is current."""
         return {"ok": True, "scenes": twin(ctx).list_scenes()}
 
-    @server.tool()
+    @tool
     def load_scene(name: str, ctx: Context | None = None) -> dict[str, Any]:
         """Switch to another scene from list_scenes. Homes the arm, opens the
         gripper and replaces the objects on the table."""
         ok, result = run_command(twin(ctx).load_scene(name, client_id=client_of(ctx)))
         return {"ok": True, "scene": result} if ok else result
 
-    @server.tool()
+    @tool
     def report_estimate(
         name: str, x: float, y: float, z: float, ctx: Context | None = None
     ) -> dict[str, Any]:
@@ -346,7 +398,7 @@ def build_mcp_server(
         _, result = run_command(twin(ctx).report_estimate(name, [x, y, z], client_id=client_of(ctx)))
         return result
 
-    @server.tool()
+    @tool
     def pick(name: str, description: str | None = None, ctx: Context | None = None) -> dict[str, Any]:
         """Pick an object up, by itself: the arm looks (overhead, then close up
         through the wrist camera), centres its jaws, grasps, checks it holds it,
@@ -355,13 +407,13 @@ def build_mcp_server(
         described to the pointing model. Takes 20 to 60 seconds."""
         return twin(ctx).pick(name, client_id=client_of(ctx), description=description)
 
-    @server.tool()
+    @tool
     def place(bin: str, ctx: Context | None = None) -> dict[str, Any]:
         """Put what the gripper holds into a bin (a name from scene.bins, or the
         goal box's), let go, lift clear and go home."""
         return twin(ctx).place(bin, client_id=client_of(ctx))
 
-    @server.tool()
+    @tool
     def check_success(name: str, ctx: Context | None = None) -> dict[str, Any]:
         """Is the object in the goal box? A judge model (Clef) looks at a front
         picture and answers with probabilities and a verdict: "done" (p_in_goal
@@ -371,7 +423,7 @@ def build_mcp_server(
         coordinates say where it ended up."""
         return twin(ctx).check_success(name, client_id=client_of(ctx))
 
-    @server.tool()
+    @tool
     def locate(
         name: str,
         view: str = "front",
@@ -390,13 +442,13 @@ def build_mcp_server(
             name, view=view, description=description, rest_z_m=rest_z_m, client_id=client_of(ctx)
         )
 
-    @server.tool()
+    @tool
     def release_control(ctx: Context | None = None) -> dict[str, Any]:
         """Give up control so another agent can drive the arm."""
         ok, result = run_command(twin(ctx).release_control(client_id=client_of(ctx)))
         return {"ok": True, "released": bool(result)} if ok else result
 
-    @server.tool()
+    @tool
     def camera(
         view: str = "wrist",
         width: int | None = None,

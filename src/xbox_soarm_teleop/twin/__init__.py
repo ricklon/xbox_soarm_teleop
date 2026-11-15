@@ -132,6 +132,7 @@ def build_twin(
     hide_positions: bool = False,
     pointer: Any = None,
     judge: Any = None,
+    naming: str = "as_is",
 ) -> TwinService:
     """Create a twin with the same kinematics, mapping and bounds as teleop.
 
@@ -154,6 +155,7 @@ def build_twin(
             are (``TwinService``); they must look with the cameras.
         pointer: Pointing model behind ``locate`` (``twin.pointing``).
         judge: Success judge behind ``check_success`` (``twin.judge``).
+        naming: The names agents are shown for objects (``twin.naming``).
     """
     from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
     from xbox_soarm_teleop.control.safety import make_workspace_clipper
@@ -204,4 +206,5 @@ def build_twin(
         hide_positions=hide_positions,
         pointer=pointer,
         judge=judge,
+        naming=naming,
     )

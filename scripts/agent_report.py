@@ -34,10 +34,12 @@ def summarize(rows: list[dict]) -> list[dict]:
             row.get("harness", "opencode"),
             row.get("variant", "no_judge"),
             row.get("task") or "pick_place",
+            row.get("naming", "as_is"),
+            "sees" if row.get("agent_sees") else "blind",
         )
         groups.setdefault(key, []).append(row)
     table = []
-    for (model, harness, variant, task), everything in sorted(
+    for (model, harness, variant, task, naming, sight), everything in sorted(
         groups.items(), key=lambda item: tuple(map(str, item[0]))
     ):
         # A judged run whose judge could not answer tests nothing about the judge,
@@ -53,6 +55,8 @@ def summarize(rows: list[dict]) -> list[dict]:
                     "harness": harness,
                     "variant": variant,
                     "task": task,
+                    "naming": naming,
+                    "sight": sight,
                     "runs": 0,
                     "invalid_runs": invalid,
                 }
@@ -67,6 +71,8 @@ def summarize(rows: list[dict]) -> list[dict]:
                 "harness": harness,
                 "variant": variant,
                 "task": task,
+                "naming": naming,
+                "sight": sight,
                 "runs": len(group),
                 "invalid_runs": invalid,
                 # Success: the object in the box, or a sort task done as asked.
@@ -88,6 +94,8 @@ def print_table(table: list[dict]) -> None:
         ("model", "model"),
         ("variant", "variant"),
         ("task", "task"),
+        ("naming", "names"),
+        ("sight", "agent"),
         ("runs", "runs"),
         ("invalid_runs", "invalid"),
         ("in_box", "success"),

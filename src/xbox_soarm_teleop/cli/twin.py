@@ -108,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
         "ollama[:model], openrouter[:model] (OPENROUTER_API_KEY). Default: none (no locate)",
     )
     parser.add_argument(
+        "--names",
+        default="as_is",
+        choices=("as_is", "truthful", "neutral", "misleading"),
+        help="The names agents are shown for objects: the twin's own, what each looks "
+        "like (red_cube), object_1 ..., or another object's colour (to test whether an "
+        "agent believes words or its eyes). Logs keep the twin's own names",
+    )
+    parser.add_argument(
         "--start",
         default=None,
         metavar="X,Y",
@@ -154,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         hide_positions=args.no_coordinates,
         pointer=make_pointer(args.pointer),
         judge=make_judge(args.judge),
+        naming=args.names,
     )
     if args.start:
         from xbox_soarm_teleop.twin.layouts import layouts_for

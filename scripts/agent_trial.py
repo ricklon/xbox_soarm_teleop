@@ -355,6 +355,7 @@ def run_loop(args, work: Path, port: int, prompt: str) -> dict:
         max_steps=args.max_steps,
         max_cost_usd=args.max_cost,
         timeout_s=args.timeout,
+        sees_images=getattr(args, "agent_sees", False),
     )
     (work / "agent_run.json").write_text(json.dumps(agent.to_dict(), indent=1))
     return {
@@ -400,6 +401,7 @@ def twin_command(args, port: int, logs: Path, run: int) -> list[str]:
         *(["--pointer", args.pointer] if args.pointer else []),
         *(["--judge", args.judge] if args.judge else []),
         *(["--start", f"{start[0]:.4f},{start[1]:.4f}"] if start else []),
+        *(["--names", args.names] if getattr(args, "names", "as_is") != "as_is" else []),
     ]
 
 
@@ -438,6 +440,9 @@ def run_once(args, run: int) -> dict:
         "pointer": args.pointer,
         "judge": args.judge,
         "start_xy_m": start_of(args, run),
+        # What the agent was given: the names it saw, and whether it saw pictures.
+        "naming": getattr(args, "names", "as_is"),
+        "agent_sees": bool(getattr(args, "agent_sees", False)),
     }
     if task is not None:
         result["request"] = task.requests[run % len(task.requests)]
@@ -506,6 +511,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pointer", default="molmo", help="Pointing model spec for locate")
     parser.add_argument("--scene", default="pick_place_basic", choices=sorted(DESCRIPTIONS))
     parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument(
+        "--names",
+        default="as_is",
+        choices=("as_is", "truthful", "neutral", "misleading"),
+        help="The names the agent is shown for objects (twin/naming.py)",
+    )
+    parser.add_argument(
+        "--agent-sees",
+        action="store_true",
+        help="Show the agent model the pictures camera returns (loop harness; for models "
+        "that take images). Without it the agent is told a picture was taken, not shown it",
+    )
     parser.add_argument(
         "--task",
         default=None,

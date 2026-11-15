@@ -170,8 +170,11 @@ class TwinService:
         hide_positions: bool = False,
         pointer: Pointer | None = None,
         judge: Any = None,
+        naming: str = "as_is",
     ) -> None:
         self.log = log
+        self.naming = naming
+        """The names agents are shown for objects (``twin.naming``)."""
         self.hide_positions = hide_positions
         self._estimates: list[dict[str, Any]] = []
         self._shown: dict[str, Any] | None = None
@@ -391,6 +394,15 @@ class TwinService:
         if shown is None or shown["frame"] != snapshot["frame"]:
             shown = self._shown = hide_object_positions(snapshot)
         return shown
+
+    @property
+    def shown_names(self) -> dict[str, str] | None:
+        """The name agents see for each object on the table now (None: the
+        twin's own). Changes with the layout; see ``twin.naming``."""
+        from xbox_soarm_teleop.twin.naming import shown_names
+
+        objects = self.layout.objects if self.layout is not None else self.grasp.positions()
+        return shown_names(objects, self.naming)
 
     def observe_truth(self) -> dict[str, Any]:
         """The latest snapshot with every object's true position, whatever the mode.

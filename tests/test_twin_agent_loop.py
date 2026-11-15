@@ -214,3 +214,40 @@ def test_skills_get_time_to_finish():
 
     assert tool_timeout("pick") >= 180 and tool_timeout("place") >= 90
     assert tool_timeout("move_by") == TOOL_TIMEOUT_S
+
+
+def _camera_round(twin_url, monkeypatch, sees):
+    url, _ = twin_url
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    model = ScriptedModel(
+        [
+            _reply(calls=[_call("camera", {"view": "overhead"}, "p1")]),
+            _reply(content="I looked."),
+        ]
+    )
+    run_agent(url, "google/gemma-4-31b-it", "Look at the table.", post=model, sees_images=sees)
+    return model.sent[1]["body"]["messages"]
+
+
+def test_a_seeing_agent_is_shown_the_picture(twin_url, monkeypatch):
+    """Models that take images (Gemma 4, Gemini, GLM 5.3) get camera pictures as
+    pictures: after the tool's answer, a user message carries the image."""
+    messages = _camera_round(twin_url, monkeypatch, sees=True)
+    tool = [m for m in messages if m["role"] == "tool"][0]
+    assert "shown below" in tool["content"]
+    pictures = [
+        part
+        for m in messages
+        if m["role"] == "user" and isinstance(m["content"], list)
+        for part in m["content"]
+        if part.get("type") == "image_url"
+    ]
+    assert len(pictures) == 1
+    assert pictures[0]["image_url"]["url"].startswith("data:image/")
+
+
+def test_a_blind_agent_is_told_it_cannot_see(twin_url, monkeypatch):
+    messages = _camera_round(twin_url, monkeypatch, sees=False)
+    tool = [m for m in messages if m["role"] == "tool"][0]
+    assert "does not show it" in tool["content"]
+    assert not any(isinstance(m["content"], list) for m in messages if m["role"] == "user")

@@ -282,3 +282,34 @@ def test_runs_cut_short_by_the_model_service_are_invalid():
     ]
     (row,) = report.summarize(rows)
     assert row["runs"] == 1 and row["invalid_runs"] == 1 and row["in_box"] == 1.0
+
+
+def test_trials_record_and_report_what_the_agent_was_given(tmp_path):
+    from types import SimpleNamespace
+
+    args = SimpleNamespace(
+        scene="sort_colors",
+        timeout=500.0,
+        pointer="oracle",
+        judge=None,
+        random_start=False,
+        seed=0,
+        names="misleading",
+        agent_sees=True,
+    )
+    command = agent_trial.twin_command(args, port=9000, logs=tmp_path, run=0)
+    assert command[command.index("--names") + 1] == "misleading"
+    spec = importlib.util.spec_from_file_location(
+        "agent_report", Path(__file__).parent.parent / "scripts" / "agent_report.py"
+    )
+    report = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(report)
+    rows = [
+        {"model": "m", "task": "by_colour", "naming": "misleading", "agent_sees": True, "done": True},
+        {"model": "m", "task": "by_colour", "naming": "misleading", "agent_sees": False, "done": False},
+    ]
+    table = report.summarize(rows)
+    assert {(r["naming"], r["sight"]) for r in table} == {
+        ("misleading", "sees"),
+        ("misleading", "blind"),
+    }
