@@ -22,6 +22,10 @@ DEFAULT_NOTEBOOK = (
     "https://colab.research.google.com/github/ricklon/xbox_soarm_teleop/"
     "blob/main/notebooks/workshop_agent.ipynb"
 )
+SORTING_NOTEBOOK = (
+    "https://colab.research.google.com/github/ricklon/xbox_soarm_teleop/"
+    "blob/main/notebooks/workshop_sorting.ipynb"
+)
 
 
 # Whole sessions in one option; anything given explicitly still wins.
@@ -38,6 +42,7 @@ PRESETS: dict[str, dict] = {
         # ("pick_cube") misled an agent. Neutral or misleading names are for
         # exploring that lesson (--names).
         "names": "truthful",
+        "notebook_url": SORTING_NOTEBOOK,
     },
 }
 

@@ -54,9 +54,13 @@ Your agent drives the same arm through the arm's tools. Any of these:
     "headers": {"Authorization": "Bearer <your key>"}}}}
   ```
 
-- **The Colab notebook**, from the link at the bottom of the box (its
-  sorting version is coming; the current one is written for the pick-and-place
-  box).
+- **The Colab notebook** (`notebooks/workshop_sorting.ipynb`), from the link
+  at the bottom of the box: look, find by looking, pick and place, check,
+  write a sorting program, then hand the job to an agent (OpenRouter or
+  Claude, with or without pictures) and grade it against the answer key. The
+  link opens the notebook from GitHub's `main` branch, so it works for
+  students once this branch is merged there; until then open the file from
+  your own copy (in Jupyter, set `ARM_URL` to the page's address).
 
 Whichever you use, the arm tells the agent how to work: use `pick` and
 `place` (the arm does the moving), and after the last move check each cube

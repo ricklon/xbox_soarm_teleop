@@ -39,7 +39,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from xbox_soarm_teleop.twin.cameras import MAX_SIZE, VIEWS
 from xbox_soarm_teleop.twin.hub import Hub, Room
 from xbox_soarm_teleop.twin.layouts import BINS
-from xbox_soarm_teleop.twin.mcp_server import _client_id, build_mcp_server
+from xbox_soarm_teleop.twin.mcp_server import _client_id, build_mcp_server, rename_objects
 from xbox_soarm_teleop.twin.service import TwinService
 from xbox_soarm_teleop.twin.status import status_text
 
@@ -440,17 +440,18 @@ def build_hub_app(
         if room is None:
             return not_found
         truth = room.service.observe_truth()
-        return JSONResponse(
-            {
-                "objects": {
-                    name: {key: thing.get(key) for key in ("xyz_m", "in_goal", "in_bin", "off_table")}
-                    for name, thing in truth["scene"]["objects"].items()
-                },
-                "estimates": room.service.estimate_scores(),
-                "success_checks": room.service.success_checks(),
+        key = {
+            "objects": {
+                name: {k: thing.get(k) for k in ("xyz_m", "in_goal", "in_bin", "off_table")}
+                for name, thing in truth["scene"]["objects"].items()
             },
-            headers=PAGE_HEADERS,
-        )
+            "estimates": room.service.estimate_scores(),
+            "success_checks": room.service.success_checks(),
+        }
+        names = room.service.shown_names
+        if names:  # in the names the student (and their agent) sees
+            key = rename_objects(key, names)
+        return JSONResponse(key, headers=PAGE_HEADERS)
 
     @server.custom_route("/r/{token}/tools", methods=["GET"])
     async def page_tools(request: Request) -> Response:

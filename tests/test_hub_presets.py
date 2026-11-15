@@ -25,6 +25,7 @@ def test_the_sorting_preset_sets_up_the_sorting_session():
     assert args.pointer == "openrouter:google/gemma-4-31b-it"
     assert args.judge == "clef"
     assert args.names == "truthful"
+    assert args.notebook_url.endswith("notebooks/workshop_sorting.ipynb")
     assert "sorting" in PRESETS
 
 
@@ -90,5 +91,22 @@ def test_the_page_says_where_each_object_is_even_when_agents_cannot():
         assert summary["where"][shown["green_cube"]] == "on the table"
         assert "xyz_m" not in str(summary["where"])
         assert "pick_cube" not in summary["where"]  # the names the student's agent sees
+    finally:
+        hub.close()
+
+
+def test_the_answer_key_uses_the_names_the_student_sees():
+    from starlette.testclient import TestClient
+
+    from xbox_soarm_teleop.twin.hub import Hub
+    from xbox_soarm_teleop.twin.hub_server import build_hub_app
+
+    hub = Hub(seats=1, scene="sort_colors", log_dir=None, naming="truthful")
+    try:
+        token = next(iter(hub.rooms))
+        client = TestClient(build_hub_app(hub), base_url="http://127.0.0.1:8800")
+        scores = client.get(f"/r/{token}/scores").json()
+        assert set(scores["objects"]) == {"red_cube", "blue_cube", "green_cube"}
+        assert "pick_cube" not in str(scores)
     finally:
         hub.close()
