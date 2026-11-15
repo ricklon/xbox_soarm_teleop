@@ -130,14 +130,35 @@ and take over. Benchmark each layer at its own job.
     opencode sent about 18,000 tokens of instructions per step, so we built a
     lean loop.
 
+23. **An agent does not check what it believes it already knows.** Every
+    agent we ran could take images, but our loop showed them none, and a
+    blind agent sorted by colour from object names ("pick_cube, likely
+    red"). With pictures switched on, Gemma 4 31B sorting three cubes
+    (3 runs each):
+
+    | names the agent is shown | blind | seeing |
+    |---|---|---|
+    | truthful (`red_cube`) | 3/3 | 3/3 |
+    | neutral (`object_1`) | 1/3 | 2/3 |
+    | misleading (the red cube called `blue_cube`) | 0/3 | 0/3 |
+
+    Under misleading names neither blind nor seeing agents looked once: no
+    camera, no locate. They sorted by the words, got every cube wrong and
+    said "done" every time. Agents looked only when the words left a gap
+    (neutral names), and then seeing helped. Being able to see is not the
+    same as looking. What an agent is told (names, labels, exact sizes) is a
+    variable in every test, and something outside the agent has to check
+    the result: a judge that looks (Clef "which tray?") would have caught all
+    six false claims.
+
 ## Running experiments
 
-23. **Budget and limits are part of the setup.** OpenRouter refuses requests
+24. **Budget and limits are part of the setup.** OpenRouter refuses requests
     (HTTP 402, "in-flight budget") when the balance runs low, even with some
     credit left; run trials one at a time and check the balance first. The
     Gemini API's free tier allows 20 calls a day; Cloudflare's free tier has a
     daily allocation.
-24. **Costs per call:** Gemini 3.5 Flash $0.004, Gemma 4 31B $0.0002, Clef
+25. **Costs per call:** Gemini 3.5 Flash $0.004, Gemma 4 31B $0.0002, Clef
     $0.0002. A whole sort run with skills: about 1 to 2 cents.
 
 ## What we have not solved yet
@@ -145,7 +166,9 @@ and take over. Benchmark each layer at its own job.
 - `check_success` judges only the goal box, not bins.
 - The plan-first step (agent states what it sees and intends before moving)
   is designed and its tests written, but not built.
-- Object names still give colours away.
+- Agents believe names without looking (lesson 23). Neutral names, a
+  `describe` tool that answers what an object looks like, and a judge that
+  checks the result are the planned answers.
 - The 8 of 9 `pick` rate uses simulated aim errors; real pointer behaviour
   differs (lesson 16).
 - Nothing yet compares with a learned policy or with a person on the pad on
