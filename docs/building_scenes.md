@@ -66,7 +66,18 @@ Rules for starts, all found the hard way:
   and not under the arm at home (around x 0.18 to 0.22, y near 0), where the
   arm itself hides them.
 - Keep objects well behind the bins (toward the base), off the lines from the
-  base to each bin.
+  base to each bin, and at least 3 cm from a bin's outer wall.
+- Leave room for an agent's grasp: objects at least 8 cm apart and their
+  footprints at least 4 cm in from the table's edges. The open jaws span
+  about 9 cm and an agent's aim is off by a centimetre or two; with cubes 6 cm
+  apart and one 2 cm from the edge, agents pushed neighbours and knocked
+  cubes off the table, and `locate`, which assumes an object rests on the
+  table, then guessed 12 to 30 cm wrong for the cube on the floor.
+
+`test_starts_leave_room_for_an_agents_grasp` checks these rules for every
+layout. On the sort table only three spots in the front camera's view meet
+them all, so `sort_colors_decoy` has a red, a blue and a yellow cube (the
+green tray stays empty).
 
 ## 3. The tasks: the request carries the rule
 

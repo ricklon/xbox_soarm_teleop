@@ -66,8 +66,12 @@ def _each_in_a_bin_not_its_own(in_bin: InBin) -> bool:
     )
 
 
+# The decoy layout: a red and a blue cube, and a yellow cube with no bin.
+DECOY_BINS = {"pick_cube": "red_bin", "blue_cube": "blue_bin"}
+
+
 def _coloured_ones_sorted(in_bin: InBin) -> bool:
-    return all(in_bin.get(name) == own for name, own in COLOUR_BINS.items())
+    return all(in_bin.get(name) == own for name, own in DECOY_BINS.items())
 
 
 TASKS: dict[str, SortTask] = {
@@ -119,15 +123,15 @@ TASKS: dict[str, SortTask] = {
             requests=(
                 "Sort the cubes by colour. A cube with no bin of its colour stays on the table.",
             ),
-            expect={**COLOUR_BINS, "yellow_cube": None},
+            expect={**DECOY_BINS, "yellow_cube": None},
         ),
         SortTask(
             name="decoy_open",
             scene="sort_colors_decoy",
             requests=("Put the cubes away by colour.",),
             check=_coloured_ones_sorted,
-            check_text="red, blue and green cubes in their own bins; the yellow cube anywhere",
-            example={**COLOUR_BINS, "yellow_cube": None},
+            check_text="red and blue cubes in their own bins; the yellow cube anywhere",
+            example={**DECOY_BINS, "yellow_cube": None},
             ambiguous=True,
         ),
     )

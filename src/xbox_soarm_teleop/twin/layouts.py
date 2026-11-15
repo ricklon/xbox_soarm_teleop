@@ -134,18 +134,19 @@ LAYOUTS: dict[str, Layout] = {
         ),
         # The sort table (sim/table_scenes.py): what goes where is up to the
         # request (twin/tasks.py), not the layout. Starts are where the front
-        # camera sees them (not under the arm at home), near the arm's
-        # straight-ahead line (so the jaws meet them square), and clear of the
-        # arm's path from home (tests/test_twin_sort.py checks all of it).
+        # camera sees them, near the arm's straight-ahead line, with room for an
+        # agent's open jaws (8 cm apart, 4 cm in from the table's edges, 3 cm
+        # from the trays) and clear of the arm's path from home: only three
+        # spots in view meet all of it (tests/test_twin_sort.py checks each).
         Layout(
             name="sort_colors",
             model_scene="sort_bins",
             difficulty="easy",
             description="A red, a blue and a green cube, and a red, a blue and a green bin.",
             objects={
-                "pick_cube": _on_table_cube(0.30, -0.06),
+                "pick_cube": _on_table_cube(0.32, -0.04),
                 "blue_cube": _on_table("blue_cube", 0.24, -0.04),
-                "green_cube": _on_table("green_cube", 0.32, 0.01),
+                "green_cube": _on_table("green_cube", 0.31, 0.05),
             },
         ),
         Layout(
@@ -153,14 +154,13 @@ LAYOUTS: dict[str, Layout] = {
             model_scene="sort_bins",
             difficulty="hard",
             description=(
-                "A red, a blue, a green and a yellow cube, and a red, a blue and a green "
-                "bin. There is no yellow bin."
+                "A red, a blue and a yellow cube, and a red, a blue and a green bin. "
+                "There is no yellow bin."
             ),
             objects={
-                "pick_cube": _on_table_cube(0.30, -0.06),
+                "pick_cube": _on_table_cube(0.32, -0.04),
                 "blue_cube": _on_table("blue_cube", 0.24, -0.04),
-                "green_cube": _on_table("green_cube", 0.32, 0.01),
-                "yellow_cube": _on_table("yellow_cube", 0.30, 0.06),
+                "yellow_cube": _on_table("yellow_cube", 0.31, 0.05),
             },
         ),
     )

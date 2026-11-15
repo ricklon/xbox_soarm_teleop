@@ -146,7 +146,7 @@ def test_layouts_switch_within_the_sort_scene(twin):
     future = twin.load_scene("sort_colors_decoy")
     twin.tick()
     future.result(timeout=0)
-    assert "yellow_cube" in twin.observe()["scene"]["objects"]
+    assert set(twin.observe()["scene"]["objects"]) == {"pick_cube", "blue_cube", "yellow_cube"}
     future = twin.load_scene("sort_colors")
     twin.tick()
     future.result(timeout=0)
@@ -245,3 +245,41 @@ def test_the_front_camera_sees_every_object_at_the_start(layout):
     finally:
         renderer.close()
         service.close()
+
+
+# What an agent's grasp needs around an object, found by agents knocking cubes
+# off a tight layout: the open jaws span about 9 cm and an agent's aim is off
+# by a centimetre or two, so a neighbour 6 cm away was pushed, and a cube 2 cm
+# from the front edge went over it.
+EDGE_GAP_M = 0.04  # from an object's footprint to the table's edge
+SPACING_M = 0.08  # between object centers
+HOME_PATH_XY = (0.25, 0.04)  # the arm's path from home brushes a cube here
+HOME_PATH_GAP_M = 0.05
+BIN_GAP_M = 0.03  # from an object's footprint to a bin's outer wall
+MAX_ANGLE_DEG = 16.0  # off the arm's straight-ahead line: further, the jaws meet it skewed
+
+
+@pytest.mark.parametrize("layout", SORT_LAYOUTS)
+def test_starts_leave_room_for_an_agents_grasp(layout):
+    import itertools
+    import math
+
+    from xbox_soarm_teleop.sim.table_scenes import TABLE_CENTER_XY_M, TABLE_HALF_XY_M
+
+    objects = LAYOUTS[layout].objects
+    half = {name: sim_cli.PICK_PLACE_CUBE_HALF_EXTENT for name in objects}
+    half.update({name: h[0] for name, h, _, _ in sim_cli.DISTRACTOR_OBJECTS if name in objects})
+    for name, (x, y, _) in objects.items():
+        for axis, value in ((0, x), (1, y)):
+            low = TABLE_CENTER_XY_M[axis] - TABLE_HALF_XY_M[axis]
+            high = TABLE_CENTER_XY_M[axis] + TABLE_HALF_XY_M[axis]
+            assert value - half[name] - low >= EDGE_GAP_M - 1e-9, (name, "edge")
+            assert high - value - half[name] >= EDGE_GAP_M - 1e-9, (name, "edge")
+        assert math.dist((x, y), HOME_PATH_XY) >= HOME_PATH_GAP_M, (name, "home path")
+        for bin_ in TABLE_SCENES["sort_bins"].bins:
+            reach = [bin_.inner_half_m[i] + bin_.wall_m + half[name] for i in (0, 1)]
+            gap = max(abs(x - bin_.center_xy_m[0]) - reach[0], abs(y - bin_.center_xy_m[1]) - reach[1])
+            assert gap >= BIN_GAP_M - 1e-9, (name, bin_.name)
+        assert abs(math.degrees(math.atan2(y, x))) <= MAX_ANGLE_DEG, (name, "angle")
+    for (a, pa), (b, pb) in itertools.combinations(objects.items(), 2):
+        assert math.dist(pa[:2], pb[:2]) >= SPACING_M - 1e-9, (a, b)
