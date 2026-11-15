@@ -426,6 +426,29 @@ class TwinService:
         """Every ``check_success`` so far, with the truth beside the judge's answer (copies)."""
         return [dict(check) for check in self._success_checks]
 
+    def pick(
+        self, name: str, *, client_id: str = "agent", description: str | None = None
+    ) -> dict[str, Any]:
+        """Pick ``name`` up by itself (``twin.skills.pick``): look, centre, grasp,
+        check by feel, retry. Blocks; call it from a client thread."""
+        from xbox_soarm_teleop.twin import skills
+
+        self._log("request", client_id=client_id, type="pick", name=name)
+        result = skills.pick(self, name, client_id=client_id, description=description)
+        self._log("skill_result", client_id=client_id, skill="pick", target=name, **result)
+        return result
+
+    def place(self, bin_name: str, *, client_id: str = "agent") -> dict[str, Any]:
+        """Put what the gripper holds in ``bin_name`` (``twin.skills.place``), lift
+        clear and go home. Blocks; call it from a client thread."""
+        from xbox_soarm_teleop.twin import skills
+
+        self._log("request", client_id=client_id, type="place", target_bin=bin_name)
+        result = skills.place(self, bin_name, client_id=client_id)
+        # The result has its own "bin": the log line names the request's target_bin.
+        self._log("skill_result", client_id=client_id, skill="place", target_bin=bin_name, **result)
+        return result
+
     def check_success(
         self,
         name: str,

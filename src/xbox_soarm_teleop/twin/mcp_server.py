@@ -77,6 +77,12 @@ is up to the request you were given; if it leaves something open, say what
 you assumed. Release into a bin as into the goal box, then lift straight up
 5 cm before any other move. check_success does not judge bins.
 
+Skills: pick(name) picks an object up by itself (it looks, centres the
+jaws, grasps, checks it holds it and retries after a miss) and place(bin)
+puts what it holds into a bin, lifts clear and goes home. Prefer them to
+steering the jaws step by step: decide what goes where, and let the arm do
+the moving.
+
 No-coordinates mode: when `observe` says `scene.object_positions` is
 "hidden", the twin does not tell you where objects are, as on the real arm.
 Each object's `xyz_m`, `in_goal`, `in_bin` and `off_table` are left out, and a "missed"
@@ -339,6 +345,21 @@ def build_mcp_server(
         (`scene.object_positions` is "hidden")."""
         _, result = run_command(twin(ctx).report_estimate(name, [x, y, z], client_id=client_of(ctx)))
         return result
+
+    @server.tool()
+    def pick(name: str, description: str | None = None, ctx: Context | None = None) -> dict[str, Any]:
+        """Pick an object up, by itself: the arm looks (overhead, then close up
+        through the wrist camera), centres its jaws, grasps, checks it holds it,
+        and retries after a miss, then lifts it to carrying height. Uses only what
+        the arm can see and feel. description overrides how the object is
+        described to the pointing model. Takes 20 to 60 seconds."""
+        return twin(ctx).pick(name, client_id=client_of(ctx), description=description)
+
+    @server.tool()
+    def place(bin: str, ctx: Context | None = None) -> dict[str, Any]:
+        """Put what the gripper holds into a bin (a name from scene.bins, or the
+        goal box's), let go, lift clear and go home."""
+        return twin(ctx).place(bin, client_id=client_of(ctx))
 
     @server.tool()
     def check_success(name: str, ctx: Context | None = None) -> dict[str, Any]:

@@ -106,6 +106,12 @@ is up to the request you were given; if it leaves something open, say what
 you assumed. Release into a bin as into the goal box, then lift straight up
 5 cm before any other move. check_success does not judge bins.
 
+Skills: pick(name) picks an object up by itself (it looks, centres the
+jaws, grasps, checks it holds it and retries after a miss) and place(bin)
+puts what it holds into a bin, lifts clear and goes home. Prefer them to
+steering the jaws step by step: decide what goes where, and let the arm do
+the moving.
+
 No-coordinates mode: when `observe` says `scene.object_positions` is
 "hidden", the twin does not tell you where objects are, as on the real arm.
 Each object's `xyz_m`, `in_goal`, `in_bin` and `off_table` are left out, and a "missed"

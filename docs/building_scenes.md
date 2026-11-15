@@ -151,6 +151,30 @@ skill has to beat.
 object is clearly in the front camera's view, by segmentation, before any
 agent has to find it there.
 
+## Skills: pick and place
+
+An agent can steer the jaws itself (`move_by`, `set_gripper`, `locate`), but a
+language model deciding every few centimetres, a second or two per step, from
+estimates a centimetre or two off, misses most grasps: 6 of 9 with the aim
+off by up to 1.5 cm. The arm offers two skills instead (`twin/skills.py`),
+the way real robots give a planner skills:
+
+- `pick(name)`: a coarse look from overhead, a hover over the estimate with
+  the jaws turned and open, a close look through the wrist camera (about
+  half a centimetre off, from the vision benchmark) to centre the jaws,
+  twice; down, close, and a check by feel (`attached`). After a miss it
+  opens, lifts, looks again and retries, up to three times. With the same
+  1.5 cm aim error from overhead and 0.5 cm from the wrist, it picked 8 of 9
+  (`test_pick_beats_steering_by_hand`).
+- `place(bin)`: carry over the bin, lower, let go, lift 5 cm, go home.
+
+They use only what the arm can know: its pointing model (or `observe` when
+coordinates are shown and there is no pointing model) and whether it holds
+something. They never read the truth, so they work in no-coordinates mode and
+their answers give nothing away. They run through the twin's own actions, one
+at a time, so a stop, a person taking over or the workspace limits end them as
+they end any motion. The agent's job becomes deciding what goes where.
+
 ## Not yet built
 
 - The gripper's bounding box dips about 6 mm below the desk at the lowest
