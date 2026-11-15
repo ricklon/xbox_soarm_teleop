@@ -446,7 +446,9 @@ With misleading names, no agent looked even once, though half of them could
 see pictures. They sorted by the words, got everything wrong, and said
 "done". Asking the judge about each cube **by its name** did not help (the
 cube called `red_cube` really was in the red tray, it just was not red).
-Asking **by colour** caught every mistake.
+Asking **by colour** caught every mistake. Once the arm could also *pick*
+by colour (`pick(description="red cube")`) and every answer it gave used the
+same words, the same agents sorted 6 of 6 with misleading names.
 
 **Try it** (ask your instructor to restart your hub with `--names misleading`
 or `--names neutral`), or test the idea with words alone:
@@ -459,7 +461,76 @@ code(r"""
 """)
 
 md(r"""
-## 8. Think about it
+## 8. Design a challenge
+
+Now you set the test. Choose where the cubes start, what the agent is told
+they are called, what it is asked, and what should happen. Then find out
+where it breaks. The full guide is `docs/challenges.md`; examples are in
+`challenges/`.
+
+Positions are metres from the arm's base: `x` forward, `y` to the arm's
+left. The arm grasps steadily 20 to 33 cm out. Objects you can use:
+`red_cube`, `blue_cube`, `green_cube`, `yellow_cube`, `red_small_cube`,
+`red_bar`, `blue_bean_bag`. Trays: `red_bin`, `blue_bin`, `green_bin`.
+""")
+
+code(r"""
+CHALLENGE = {
+    "name": "my-challenge",
+    "scene": "sort_colors",
+    "objects": {
+        "red_cube": {"x": 0.27, "y": -0.06},
+        "blue_cube": {"x": 0.27, "y": 0.01},  # 7 cm from the red one: will the grasp push it?
+        "green_cube": {"x": 0.30, "y": 0.10, "turn_deg": 45},
+    },
+    "names": "truthful",  # or neutral, or misleading
+    "request": "Sort the cubes by colour into the bins.",
+    "expect": {"red_cube": "red_bin", "blue_cube": "blue_bin", "green_cube": "green_bin"},
+}
+
+reply = httpx2.post(f"{BASE}/r/{ARM_KEY}/challenge", json=CHALLENGE, timeout=60)
+answer = reply.json()
+if reply.status_code != 200:
+    print("Not set up:", answer["error"])
+else:
+    print("Your arm is set up. Notes on what you changed from the standard desk:")
+    for note in answer["warnings"]:
+        print(" -", note)
+    await look("overhead")
+""")
+
+md(r"""
+Run the agent on it, then grade against your `expect` (the answer key grades
+it in your names, whatever names the agent saw). Run it several times: one
+run proves little. **Reset** (or `await arm("reset_scene")`) puts your
+challenge back.
+""")
+
+code(r"""
+await arm("reset_scene")
+await ask_agent(CHALLENGE["request"])
+answer_key()["challenge"]
+""")
+
+md(r"""
+**Before you blame the agent**, check the arm can do it at all. On a computer
+with this project installed:
+
+```bash
+uv run soarm-challenge prove my_challenge.yaml
+```
+
+It says *doable*, *fragile* (aim errors like an agent's sometimes defeat
+it) or *not doable*. Then write it up: `soarm-challenge report` fills a
+findings template with your runs, and you add what you expected, what
+happened, the kind of failure, the evidence and a fix you tried.
+
+When you are done: `httpx2.delete(f"{BASE}/r/{ARM_KEY}/challenge")` puts your
+arm back.
+""")
+
+md(r"""
+## 9. Think about it
 
 - Your program and the agent used the same skills. What did the agent add?
   What did it get wrong that your program could not?

@@ -117,3 +117,9 @@ Then try what the lessons are about:
 Each `locate` look costs about $0.0002 (Gemma 4 31B) and each check about
 $0.0002 (Clef), on the instructor's keys; a whole sort with skills is about
 1 to 2 cents. Your own agent's model is on your key.
+
+## Next: design your own challenge
+
+Set the desk up yourself (where the cubes start, what the agent is told they
+are called, what it is asked, what should happen), prove the arm can do it,
+run agents on it and write up where it breaks: [challenges.md](challenges.md).
