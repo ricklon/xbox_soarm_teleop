@@ -205,7 +205,7 @@ and take over. Benchmark each layer at its own job.
 - Agents believe names without looking (lesson 23). Working by description
   (lesson 24) answers it for colour sorting; `observe` still lists names,
   and requests that need more than colour and shape are untested.
-- The 8 of 9 `pick` rate uses simulated aim errors; real pointer behaviour
+- The 9 of 9 `pick` rate uses simulated aim errors; real pointer behaviour
   differs (lesson 16).
 - Nothing yet compares with a learned policy or with a person on the pad on
   the same cell and tasks.
