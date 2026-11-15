@@ -161,6 +161,14 @@ and take over. Benchmark each layer at its own job.
     terms ("is the *red* cube in the red tray?", found by appearance), or
     judge the request itself, never the agent's labels.
 
+    With checks by description, Clef answered "retry: the red cube is in the
+    blue tray" every time it was asked, and false "done" claims fell from 6
+    of 6 to 2 of 6 (the two that checked by name anyway). Still 0 of 6
+    sorted: the agents could see the mistake but not fix it, because `pick`
+    only takes a name, and they kept picking up the cube *called* red. The
+    whole chain has to speak the request's language: perception, action and
+    check. Next: `pick(description="red cube")`.
+
 ## Running experiments
 
 25. **Budget and limits are part of the setup.** OpenRouter refuses requests
