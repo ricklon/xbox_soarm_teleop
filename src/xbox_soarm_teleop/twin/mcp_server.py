@@ -78,8 +78,9 @@ gives each bin's name, label, floor center and inside size, and each object's
 is up to the request you were given; if it leaves something open, say what
 you assumed. Release into a bin as into the goal box, then lift straight up
 5 cm before any other move. After the last move, check each object with
-check_success(name, bin): a judge looks at a front picture and says whether it
-is in that bin.
+check_success(description, bin), describing it in the request's words
+(description="red cube"), not by its name: a judge looks at a front picture,
+finds it by how it looks, and says whether it is in that bin.
 
 Skills: pick(name) picks an object up by itself (it looks, centres the
 jaws, grasps, checks it holds it and retries after a miss) and place(bin)
@@ -416,15 +417,25 @@ def build_mcp_server(
         return twin(ctx).place(bin, client_id=client_of(ctx))
 
     @tool
-    def check_success(name: str, bin: str | None = None, ctx: Context | None = None) -> dict[str, Any]:
+    def check_success(
+        name: str | None = None,
+        bin: str | None = None,
+        description: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
         """Is the object where it should be? A judge model (Clef) looks at a front
         picture. In the goal-box scenes: P(in the box) and a verdict, "done"
         (0.9 or more), "retry" (0.1 or less: locate it and pick again) or
         "look_again" (unsure: check again, or look with camera). In sorting
         scenes, give bin (a name from scene.bins): P(in that bin) and the same
-        verdicts, plus where it most likely is. Use it after the last move:
-        no coordinates say where things ended up."""
-        return twin(ctx).check_success(name, bin_name=bin, client_id=client_of(ctx))
+        verdicts, plus where it most likely is. In sorting scenes you can name
+        the object by description instead of name (description="red cube", in
+        the request's words): the judge finds it by how it looks, whatever it is
+        called. Use it after the last move: no coordinates say where things
+        ended up."""
+        return twin(ctx).check_success(
+            name, bin_name=bin, description=description, client_id=client_of(ctx)
+        )
 
     @tool
     def locate(

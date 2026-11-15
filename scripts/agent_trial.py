@@ -61,8 +61,9 @@ RESULT: not_done, saying whether you did what was asked.
 """
 # --require-check with --task: confirm every object's tray with the judge.
 SORT_REQUIRE_CHECK = """Before you finish, after the last move, confirm where each object ended
-up with check_success(name, bin). If it says retry, pick that object up and
-place it again; if it says look_again, ask again.
+up with check_success(description, bin), describing each object as the request
+does (description="red cube"), not by its name. If it says retry, find that
+object, pick it up and place it again; if it says look_again, ask again.
 """
 # --require-check: the task also asks for the judge's confirmation.
 REQUIRE_CHECK = """Before you finish, after homing, confirm the placement with check_success.

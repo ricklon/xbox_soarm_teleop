@@ -124,3 +124,44 @@ def test_check_success_asks_which_tray_and_logs_the_truth(monkeypatch):
         assert bad["reason"] == "invalid_request"
     finally:
         twin.close()
+
+
+def _check_in_thread(twin, **kwargs):
+    import threading
+
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(twin.check_success(**kwargs)))
+    worker.start()
+    while worker.is_alive():
+        twin.tick()
+    return result
+
+
+def test_check_by_description_whatever_the_object_is_called(monkeypatch):
+    """Lesson 24: asked by the agent's own (misleading) name, the check confirmed
+    the agent's mistake. Asked in the request's words, Clef finds the object by
+    how it looks, so a wrong name cannot fool it."""
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "cfTESTTOKEN0123456789abcdef")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef")
+    twin = build_twin(scene="sort_colors", with_controller=False, naming="misleading")
+    try:
+        twin.tick()
+        scenarios.place_in_bin(twin, "pick_cube", "blue_bin")  # the red cube, wrong tray
+        for _ in range(30):
+            twin.tick()
+        twin.judge, asked = _clef_answers({"blue_bin": 0.94, "red_bin": 0.03, "on_table": 0.03})
+        result = _check_in_thread(twin, description="red cube", bin_name="red_bin")
+        assert result["ok"] is True and result["verdict"] == "retry"
+        assert result["where"] == "blue_bin" and "name" not in result
+        assert "red cube" in asked[0]["questions"]["where"]["instructions"]
+        last = twin.success_checks()[-1]
+        assert last["matched"] == "pick_cube"  # the twin knows which object that is
+        assert last["truth"]["where"] == "blue_bin" and last["correct"] is True
+
+        nothing = _check_in_thread(twin, description="purple cube", bin_name="red_bin")
+        assert nothing["ok"] is True  # Clef is asked anyway; nothing on the desk matches
+        assert twin.success_checks()[-1]["matched"] is None
+        assert twin.success_checks()[-1]["correct"] is None
+        assert twin.check_success(bin_name="red_bin")["reason"] == "invalid_request"
+    finally:
+        twin.close()

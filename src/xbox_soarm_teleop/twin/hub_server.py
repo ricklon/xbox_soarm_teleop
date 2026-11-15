@@ -105,8 +105,9 @@ gives each bin's name, label, floor center and inside size, and each object's
 is up to the request you were given; if it leaves something open, say what
 you assumed. Release into a bin as into the goal box, then lift straight up
 5 cm before any other move. After the last move, check each object with
-check_success(name, bin): a judge looks at a front picture and says whether it
-is in that bin.
+check_success(description, bin), describing it in the request's words
+(description="red cube"), not by its name: a judge looks at a front picture,
+finds it by how it looks, and says whether it is in that bin.
 
 Skills: pick(name) picks an object up by itself (it looks, centres the
 jaws, grasps, checks it holds it and retries after a miss) and place(bin)

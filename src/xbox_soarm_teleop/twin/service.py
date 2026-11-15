@@ -463,9 +463,10 @@ class TwinService:
 
     def check_success(
         self,
-        name: str,
+        name: str | None = None,
         *,
         bin_name: str | None = None,
+        description: str | None = None,
         client_id: str = "agent",
         timeout_s: float = LOCATE_TIMEOUT_S,
     ) -> dict[str, Any]:
@@ -478,8 +479,21 @@ class TwinService:
         lines, :meth:`success_checks`) and never returned. Blocks while the
         judge answers; call it from a client thread.
         """
+        if name is None and not description:
+            return {
+                "ok": False,
+                "reason": "invalid_request",
+                "detail": "say which object: its name, or (in sorting scenes) a description "
+                'in the request\'s words, like description="red cube"',
+            }
         if GOALS.get(self.sim.scene) is None and BINS.get(self.sim.scene):
-            return self._check_trays(name, bin_name, client_id, timeout_s)
+            return self._check_trays(name, bin_name, client_id, timeout_s, description)
+        if name is None:
+            return {
+                "ok": False,
+                "reason": "invalid_request",
+                "detail": "checking by description works in sorting scenes; give the name",
+            }
         judge = self.judge
         if judge is None:
             return {
@@ -544,9 +558,19 @@ class TwinService:
         return result
 
     def _check_trays(
-        self, name: str, bin_name: str | None, client_id: str, timeout_s: float
+        self,
+        name: str | None,
+        bin_name: str | None,
+        client_id: str,
+        timeout_s: float,
+        description: str | None = None,
     ) -> dict[str, Any]:
         """check_success in a sorting scene: which tray is ``name`` in?
+
+        Asked by ``description`` instead ("red cube", the request's words),
+        Clef finds the object by how it looks, so a name that misleads the
+        agent cannot mislead the check (lesson 24 in docs/lessons_learned.md).
+        The twin works out which object matches, for grading only.
 
         Clef answers from the front picture with the cell's bins as options
         (measured on the sorting desk: 95% right, and every answer of 0.9 or
@@ -570,8 +594,18 @@ class TwinService:
                 "detail": f"Unknown bin '{bin_name}'. Here: {known}",
             }
         try:
-            self._log("request", client_id=client_id, type="check_success", name=name)
-            setup = self.call(lambda: self._check_setup(name, tray_truth)).result(timeout=timeout_s)
+            self._log(
+                "request",
+                client_id=client_id,
+                type="check_success",
+                name=name,
+                description=description,
+            )
+            if name is not None:
+                setup = self.call(lambda: self._check_setup(name, tray_truth)).result(timeout=timeout_s)
+                setup["matched"] = name
+            else:
+                setup = self.call(lambda: self._describe_setup(description)).result(timeout=timeout_s)
             picture = self.render(
                 "front", width=CHECK_SIZE[0], height=CHECK_SIZE[1], fmt="png", client_id=client_id
             ).result(timeout=timeout_s)
@@ -592,7 +626,7 @@ class TwinService:
         where = max(probabilities, key=probabilities.get)
         result = {
             "ok": True,
-            "name": name,
+            **({"name": name} if name is not None else {}),
             "description": setup["description"],
             "where": where,
             "p_where": probabilities,
@@ -605,14 +639,21 @@ class TwinService:
             p_in_bin = probabilities.get(bin_name, 0.0)
             verdict = verdict_for(p_in_bin)
             result.update(bin=bin_name, p_in_bin=p_in_bin, verdict=verdict)
-            correct = None if verdict == "look_again" else (verdict == "done") == (truth == bin_name)
+            correct = (
+                None
+                if verdict == "look_again" or truth is None
+                else (verdict == "done") == (truth == bin_name)
+            )
         else:
-            correct = where == truth
+            correct = None if truth is None else where == truth
         record = {
             **result,
             "client_id": client_id,
             "sim_time_s": round(self.now_s, 3),
-            "truth": {"where": truth, "in_goal": truth == bin_name if bin_name else None},
+            "matched": setup["matched"],
+            "truth": None
+            if truth is None
+            else {"where": truth, "in_goal": truth == bin_name if bin_name else None},
             "correct": correct,
         }
         self._success_checks.append(record)
@@ -622,6 +663,23 @@ class TwinService:
             **{k: v for k, v in record.items() if k != "client_id"},
         )
         return result
+
+    def _describe_setup(self, description: str) -> dict[str, Any]:
+        """On the loop thread: which object a description means (for grading
+        only), the others on the desk, and where the matching one is."""
+        from xbox_soarm_teleop.twin.judge import tray_truth
+
+        positions = self.grasp.positions()
+        wanted = description.strip().lower()
+        matched = next(
+            (n for n in positions if object_description(n, self.layout).lower() == wanted), None
+        )
+        return {
+            "description": description.strip(),
+            "others": [object_description(o, self.layout) for o in positions if o != matched],
+            "matched": matched,
+            "truth": tray_truth(self, matched) if matched is not None else None,
+        }
 
     def _check_setup(self, name: str, truth_of=None) -> dict[str, Any]:
         """On the loop thread: check the name, word the question, read the truth."""
