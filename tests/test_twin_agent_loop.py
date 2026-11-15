@@ -207,3 +207,10 @@ def test_no_key_says_so(twin_url, monkeypatch, tmp_path):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(AgentError, match="OPENROUTER_API_KEY"):
         run_agent(twin_url[0], "m", "Hi.", post=ScriptedModel([]))
+
+
+def test_skills_get_time_to_finish():
+    from xbox_soarm_teleop.twin.agent_loop import TOOL_TIMEOUT_S, tool_timeout
+
+    assert tool_timeout("pick") >= 180 and tool_timeout("place") >= 90
+    assert tool_timeout("move_by") == TOOL_TIMEOUT_S

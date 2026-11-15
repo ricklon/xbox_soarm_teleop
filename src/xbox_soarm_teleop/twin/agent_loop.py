@@ -44,6 +44,15 @@ DEFAULT_MAX_COST_USD = 0.50
 DEFAULT_TIMEOUT_S = 900.0
 MAX_TOOL_RESULT_CHARS = 12000  # a camera image's base64 never goes to a text model
 TOOL_TIMEOUT_S = 60.0
+# Skills move the arm and look several times in one call: a pick with a
+# hosted pointing model takes 20 to 90 s. Cutting one short would leave it
+# running in the twin while the model, told "timeout", sends other moves.
+SKILL_TIMEOUTS_S = {"pick": 240.0, "place": 120.0}
+
+
+def tool_timeout(name: str) -> float:
+    """How long the loop waits for one call of tool ``name``."""
+    return SKILL_TIMEOUTS_S.get(name, TOOL_TIMEOUT_S)
 
 
 class AgentError(RuntimeError):
@@ -121,7 +130,7 @@ def _result_text(result) -> str:
 
 async def _call_tool(session: ClientSession, name: str, arguments: dict) -> tuple[bool, str]:
     try:
-        result = await asyncio.wait_for(session.call_tool(name, arguments), TOOL_TIMEOUT_S)
+        result = await asyncio.wait_for(session.call_tool(name, arguments), tool_timeout(name))
     except asyncio.TimeoutError:
         return False, json.dumps({"ok": False, "reason": "timeout", "detail": f"{name} took too long"})
     except Exception as exc:  # noqa: BLE001 - told to the model
