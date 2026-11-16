@@ -153,10 +153,23 @@ class Room:
     service: TwinService
     controller: WebController
     log_path: Path | None = None
-    challenge: Any = None
-    """The challenge set up on this arm (``twin.challenges.Challenge``), if any."""
-    naming_before: str | None = None
-    """The names agents were shown before the challenge chose its own."""
+
+    @property
+    def challenge(self) -> Any:
+        """The challenge set up on this arm, by its page or its agent (kept by the twin)."""
+        return self.service.challenge
+
+    @challenge.setter
+    def challenge(self, value: Any) -> None:
+        self.service.challenge = value
+
+    @property
+    def naming_before(self) -> str | None:
+        return self.service.naming_before
+
+    @naming_before.setter
+    def naming_before(self, value: str | None) -> None:
+        self.service.naming_before = value
 
 
 class Hub:

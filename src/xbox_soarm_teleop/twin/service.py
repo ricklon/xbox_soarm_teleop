@@ -224,6 +224,10 @@ class TwinService:
         self.stop_latched_by: str | None = None
         self.stop_release_hint = "press the controller's Menu/Start button"
         """Told to an agent that tries to release a stop a person latched."""
+        self.challenge = None
+        """The challenge this arm is set up for (``twin.challenges.set_up``), if any."""
+        self.layout_before = None  # the layout and names a challenge replaced
+        self.naming_before: str | None = None
         self.home_opens_gripper = False
         """A person's Home also opens the gripper. For controllers with no
         trigger to let go of (the hub's web page); a pad's trigger decides."""

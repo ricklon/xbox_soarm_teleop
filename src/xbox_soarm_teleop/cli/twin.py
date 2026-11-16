@@ -123,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
         "instead of its usual spot (agent trials from random starts)",
     )
     parser.add_argument(
+        "--agent-designs",
+        action="store_true",
+        help="Give agents tools to check, prove, load and clear challenges on this arm",
+    )
+    parser.add_argument(
         "--challenge",
         default=None,
         metavar="FILE",
@@ -219,7 +224,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Nothing moves while the stop is latched: press the {MENU_BUTTON}.", flush=True)
 
     if not args.no_mcp:
-        mcp = McpThread(build_mcp_server(service), host=host, port=args.port)
+        mcp = McpThread(
+            build_mcp_server(service, designs=args.agent_designs), host=host, port=args.port
+        )
         mcp.start()
         if not _wait_for_port(host, args.port) or mcp.error is not None:
             print(f"ERROR: MCP server failed to start: {mcp.error}", flush=True)

@@ -3,7 +3,8 @@
 A short path to everything students use on the sorting desk: start a hub,
 open an arm's page, connect an agent, ask it to sort, and check how it did.
 For the background see [building_scenes.md](building_scenes.md) and
-[lessons_learned.md](lessons_learned.md).
+[lessons_learned.md](lessons_learned.md). This page is for whoever runs the
+hub; students start with the [student guide](students.md).
 
 ## 1. Start the hub
 

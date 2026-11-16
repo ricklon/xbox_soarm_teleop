@@ -90,6 +90,7 @@ SPACING_M = 0.10  # between object centres
 TRAY_GAP_M = 0.05  # from an object's footprint to a tray's outer wall
 RING_M = (0.20, 0.33)  # the steady part of the ring the arm grasps in
 MAX_ANGLE_DEG = 40.0  # the pick area: in front of the arm, not out by the trays
+AHEAD_STRIP_M = 0.035  # the strip the arm at rest covers, as seen from overhead
 
 AIM_ERROR_M = 0.015  # a distant view's aim error, as measured (docs/vision_benchmark.md)
 WRIST_ERROR_M = 0.005  # the wrist camera's, close up
@@ -371,6 +372,11 @@ def check(challenge: Challenge) -> list[str]:
                 f"{person} is {reach * 100:.0f} cm from the base, outside the arm's steady reach "
                 f"({RING_M[0] * 100:.0f} to {RING_M[1] * 100:.0f} cm)"
             )
+        if abs(y) < AHEAD_STRIP_M and name not in BOXES:
+            warnings.append(
+                f"{person} is straight ahead of the arm: at rest the arm hides it from the "
+                "overhead camera, so finding it is harder"
+            )
         angle = math.degrees(math.atan2(y, x))
         if abs(angle) > MAX_ANGLE_DEG:
             warnings.append(
@@ -593,4 +599,96 @@ def prove(challenge: Challenge, *, aim_runs: int = 3, seed: int = 0) -> dict[str
         "true_run": true_run,
         "aim_runs": aims,
         "hidden": true_run["hidden"],
+    }
+
+
+# --- setting a challenge up on a running arm (the page, the hub, an agent) ---
+
+PROVE_AIM_RUNS = 2  # a quick proof: a few seconds each
+PROVE_TIMEOUT_S = 120.0
+_PROVING = threading.Lock()  # one proof at a time: each runs a twin of its own
+
+
+def parse(source: Any) -> Challenge:
+    """A challenge from what a page, a notebook or an agent sends: a dict, JSON
+    text, YAML text, or an example's name."""
+    import json as _json
+
+    if isinstance(source, (bytes, bytearray)):
+        source = source.decode("utf-8")
+    if isinstance(source, str) and source.lstrip().startswith("{"):
+        source = _json.loads(source)
+    if isinstance(source, str) and "\n" not in source.strip() and example_path(source.strip()):
+        return load_challenge(source.strip())
+    return load_challenge(source if isinstance(source, dict) else str(source) + "\n")
+
+
+def set_up(service, challenge: Challenge, *, client_id: str, timeout_s: float = 30.0) -> None:
+    """Set the arm up as the challenge says: its desk (home, objects swapped),
+    and the names its agents are shown. ``clear`` puts back what was there.
+
+    Raises what ``load_layout`` raises: the arm refused (stopped, or someone
+    else is driving it).
+    """
+    before = (service.layout, service.naming) if service.challenge is None else None
+    service.load_layout(challenge.layout(), client_id=client_id).result(timeout=timeout_s)
+    if before is not None:
+        service.layout_before, service.naming_before = before
+    service.naming = challenge.names
+    service.challenge = challenge
+
+
+def clear(service, *, client_id: str, timeout_s: float = 30.0) -> None:
+    """Put back the desk and names the arm had before its challenge."""
+    if service.challenge is None:
+        return
+    if service.layout_before is not None:
+        service.load_layout(service.layout_before, client_id=client_id).result(timeout=timeout_s)
+    service.naming = service.naming_before or service.naming
+    service.challenge = None
+
+
+def prove_elsewhere(challenge: Challenge, *, aim_runs: int = PROVE_AIM_RUNS) -> dict[str, Any]:
+    """``prove``, in a process of its own: a proof runs its own twin flat out,
+    and in a hub's process it would slow every student's arm. One at a time;
+    a second asks again later (``{"busy": True}``)."""
+    import json as _json
+    import subprocess
+    import sys
+
+    if not _PROVING.acquire(blocking=False):
+        return {"busy": True, "error": "another challenge is being proved; try again in a few seconds"}
+    try:
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "xbox_soarm_teleop.cli.challenge",
+                "prove",
+                "-",
+                "--aim-runs",
+                str(aim_runs),
+                "--json",
+                "-",
+            ],
+            input=_json.dumps(challenge.summary()),
+            capture_output=True,
+            text=True,
+            timeout=PROVE_TIMEOUT_S,
+        )
+        proof = _json.loads(done.stdout.strip().splitlines()[-1])
+    except (subprocess.TimeoutExpired, ValueError, IndexError, OSError) as exc:
+        return {"error": f"the check did not finish ({type(exc).__name__})"}
+    finally:
+        _PROVING.release()
+
+    def summary(run):
+        return None if run is None else {k: run.get(k) for k in ("done", "in_bin", "off_table")}
+
+    return {
+        "verdict": proof["verdict"],
+        "why": proof["why"],
+        "hidden": proof.get("hidden") or [],
+        "true_run": summary(proof.get("true_run")),
+        "aim_runs": [summary(run) for run in proof.get("aim_runs") or []],
     }

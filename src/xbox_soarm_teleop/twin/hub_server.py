@@ -25,8 +25,6 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-import sys
-import threading
 from contextvars import ContextVar
 from importlib import resources
 from typing import Any
@@ -49,8 +47,6 @@ RENDER_TIMEOUT_S = 3.0
 MAX_PAD_BYTES = 2048
 MAX_CHALLENGE_BYTES = 20_000  # a challenge file: a few dozen lines
 CHALLENGE_CLIENT = "challenge"  # who the session log says set a challenge up
-PROVE_AIM_RUNS = 2  # the page's "Can the arm do it?": a few seconds each
-PROVE_TIMEOUT_S = 120.0
 DEFAULT_PICTURE_HZ = 10.0  # camera pictures a second each student page asks for
 PICTURE_HZ_RANGE = (1.0, 30.0)
 AGENT_THREADS = 200  # agents block a worker thread while a move finishes
@@ -332,6 +328,7 @@ def build_hub_app(
     agent_post=None,
     feedback_repo: str | None = None,
     feedback_post=None,
+    agent_designs: bool = False,
 ):
     """Build the ASGI app serving ``hub``.
 
@@ -352,6 +349,8 @@ def build_hub_app(
         feedback_repo: GitHub repository (OWNER/NAME) the instructor posts
             student feedback to (``twin.feedback``); None: posting is off.
         feedback_post: Opens an issue (tests pass a stand-in for ``gh``).
+        agent_designs: Give agents the challenge design tools for their own arm
+            (check, prove, load and clear a challenge).
     """
     picture_ms = round(1000 / min(max(picture_hz, PICTURE_HZ_RANGE[0]), PICTURE_HZ_RANGE[1]))
 
@@ -371,7 +370,11 @@ def build_hub_app(
         return PAGE_AGENT if page_room.get() is not None else _client_id(ctx)
 
     server = build_mcp_server(
-        twin_for, name="soarm-arm", instructions=INSTRUCTIONS, client_id=client_for
+        twin_for,
+        name="soarm-arm",
+        instructions=INSTRUCTIONS,
+        client_id=client_for,
+        designs=agent_designs,
     )
 
     def room_of(request: Request) -> Room | None:
@@ -525,15 +528,13 @@ def build_hub_app(
 
     async def posted_challenge(request: Request):
         """The challenge in a request's body (JSON or YAML), or an error response."""
-        from xbox_soarm_teleop.twin.challenges import ChallengeError, load_challenge
+        from xbox_soarm_teleop.twin.challenges import ChallengeError, parse
 
         body = await request.body()
         if len(body) > MAX_CHALLENGE_BYTES:
             return JSONResponse({"error": "that challenge is too long"}, status_code=400)
         try:
-            text = body.decode("utf-8")
-            spec = json.loads(text) if text.lstrip().startswith("{") else text
-            return load_challenge(spec if isinstance(spec, dict) else str(spec) + "\n")
+            return parse(body)
         except (ChallengeError, UnicodeDecodeError, ValueError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=400, headers=PAGE_HEADERS)
 
@@ -546,71 +547,24 @@ def build_hub_app(
         listed = [{"name": name, "text": text} for name, text in examples().items()]
         return JSONResponse({"examples": listed}, headers=PAGE_HEADERS)
 
-    proving = threading.Lock()  # one proof at a time: each runs a twin of its own
-
     @server.custom_route("/r/{token}/challenge/prove", methods=["POST"])
     async def challenge_prove(request: Request) -> Response:
+        from xbox_soarm_teleop.twin.challenges import prove_elsewhere
+
         if room_of(request) is None:
             return not_found
         challenge = await posted_challenge(request)
         if isinstance(challenge, Response):
             return challenge
-        if not proving.acquire(blocking=False):
-            return JSONResponse(
-                {"error": "another arm's challenge is being proved; try again in a few seconds"},
-                status_code=429,
-                headers=PAGE_HEADERS,
-            )
-        try:
-            # In a process of its own: a proof runs its own twin flat out, and
-            # in this one it would slow every student's arm.
-            child = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "xbox_soarm_teleop.cli.challenge",
-                "prove",
-                "-",
-                "--aim-runs",
-                str(PROVE_AIM_RUNS),
-                "--json",
-                "-",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            spec = json.dumps(challenge.summary()).encode()
-            out, _ = await asyncio.wait_for(child.communicate(spec), PROVE_TIMEOUT_S)
-            proof = json.loads(out.decode().strip().splitlines()[-1])
-        except (asyncio.TimeoutError, ValueError, IndexError, OSError) as exc:
-            if "child" in locals() and child.returncode is None:
-                child.kill()
-            return JSONResponse(
-                {"error": f"the check did not finish ({type(exc).__name__})"},
-                status_code=500,
-                headers=PAGE_HEADERS,
-            )
-        finally:
-            proving.release()
-
-        def run_summary(run):
-            if run is None:
-                return None
-            return {k: run.get(k) for k in ("done", "in_bin", "off_table")}
-
-        return JSONResponse(
-            {
-                "verdict": proof["verdict"],
-                "why": proof["why"],
-                "hidden": proof.get("hidden") or [],
-                "true_run": run_summary(proof.get("true_run")),
-                "aim_runs": [run_summary(run) for run in proof.get("aim_runs") or []],
-            },
-            headers=PAGE_HEADERS,
-        )
+        proof = await asyncio.to_thread(prove_elsewhere, challenge)
+        if "error" in proof:
+            status = 429 if proof.get("busy") else 500
+            return JSONResponse({"error": proof["error"]}, status_code=status, headers=PAGE_HEADERS)
+        return JSONResponse(proof, headers=PAGE_HEADERS)
 
     @server.custom_route("/r/{token}/challenge", methods=["POST"])
     async def challenge_post(request: Request) -> Response:
-        from xbox_soarm_teleop.twin.challenges import check
+        from xbox_soarm_teleop.twin.challenges import check, set_up
 
         room = room_of(request)
         if room is None:
@@ -623,17 +577,11 @@ def build_hub_app(
                 {"error": "an agent is running on this arm: stop it first"}, status_code=409
             )
         try:
-            await asyncio.wrap_future(
-                room.service.load_layout(challenge.layout(), client_id=CHALLENGE_CLIENT)
-            )
+            await asyncio.to_thread(set_up, room.service, challenge, client_id=CHALLENGE_CLIENT)
         except Exception as exc:  # noqa: BLE001 - refused (someone is driving): say why
             return JSONResponse(
                 {"error": f"the arm could not be set up: {exc}"}, status_code=409, headers=PAGE_HEADERS
             )
-        if room.challenge is None:
-            room.naming_before = room.service.naming
-        room.service.naming = challenge.names
-        room.challenge = challenge
         return JSONResponse(
             {"ok": True, "challenge": challenge.summary(), "warnings": check(challenge)},
             headers=PAGE_HEADERS,
@@ -641,22 +589,17 @@ def build_hub_app(
 
     @server.custom_route("/r/{token}/challenge", methods=["DELETE"])
     async def challenge_clear(request: Request) -> Response:
+        from xbox_soarm_teleop.twin.challenges import clear
+
         room = room_of(request)
         if room is None:
             return not_found
-        if room.challenge is not None:
-            try:
-                await asyncio.wrap_future(
-                    room.service.load_scene(hub.scene, client_id=CHALLENGE_CLIENT)
-                )
-            except Exception as exc:  # noqa: BLE001
-                return JSONResponse(
-                    {"error": f"the arm could not be reset: {exc}"},
-                    status_code=409,
-                    headers=PAGE_HEADERS,
-                )
-            room.service.naming = room.naming_before or room.service.naming
-            room.challenge = None
+        try:
+            await asyncio.to_thread(clear, room.service, client_id=CHALLENGE_CLIENT)
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(
+                {"error": f"the arm could not be reset: {exc}"}, status_code=409, headers=PAGE_HEADERS
+            )
         return JSONResponse({"ok": True}, headers=PAGE_HEADERS)
 
     @server.custom_route("/r/{token}/scores", methods=["GET"])

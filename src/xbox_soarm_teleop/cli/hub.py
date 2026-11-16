@@ -45,6 +45,8 @@ PRESETS: dict[str, dict] = {
         "notebook_url": SORTING_NOTEBOOK,
         # Students' feedback goes here once the instructor posts it (gh login).
         "feedback_repo": "ricklon/xbox_soarm_teleop",
+        # Students' own agents may design challenges for their arm (docs/students.md).
+        "agent_designs": True,
     },
 }
 
@@ -83,6 +85,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.50,
         help="Each arm's budget (USD) for the agent panel's model, for the whole session",
+    )
+    parser.add_argument(
+        "--agent-designs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Give agents tools to check, prove, load and clear challenges on their own arm "
+        "(students design challenges with their own agent). On in --preset sorting",
     )
     parser.add_argument(
         "--feedback-repo",
@@ -359,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         agent_models=tuple(m.strip() for m in args.agent_models.split(",") if m.strip()),
         agent_budget_usd=args.agent_budget,
         feedback_repo=args.feedback_repo or None,
+        agent_designs=args.agent_designs,
     )
     base = (args.public_url or f"http://{args.host}:{args.port}").rstrip("/")
     for line in startup_lines(
@@ -383,9 +393,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if challenge is not None:  # every arm starts with it; students may post their own
         for room in hub.rooms.values():
+            before = room.service.layout  # what clearing the challenge puts back
             future = room.service.load_layout(challenge.layout(), client_id="challenge")
             room.service.tick()
             future.result(timeout=0)
+            room.service.layout_before = before
             room.naming_before, room.service.naming = room.service.naming, challenge.names
             room.challenge = challenge
         print(f"Every arm starts with the challenge {challenge.name}.", flush=True)
