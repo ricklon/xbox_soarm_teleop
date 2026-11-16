@@ -194,6 +194,7 @@ def build_mcp_server(
     name: str = "soarm-twin",
     instructions: str = INSTRUCTIONS,
     client_id: Callable[[Context | None], str] | None = None,
+    designs: bool = False,
 ) -> MCPServer:
     """Create the MCP server exposing a twin.
 
@@ -204,6 +205,8 @@ def build_mcp_server(
         name: Server name shown to clients.
         instructions: Server instructions for the agent.
         client_id: Names the caller of a request; by default its MCP session id.
+        designs: Offer the challenge design tools (check, prove, load and clear
+            a challenge on the caller's own arm; ``twin.challenges``).
     """
     server = MCPServer(name, instructions=instructions)
     client_of = client_id or _client_id
@@ -537,7 +540,96 @@ def build_mcp_server(
             return _rejection(exc)
         return Image(data=data, format="jpeg")
 
+    if designs:
+        _add_design_tools(server, twin, client_of)
     return server
+
+
+SOLVE_FRESH = (
+    "Loaded. To test it, solve it with a fresh agent (a new session, or the arm page's "
+    "agent panel): you designed it, so you know where everything is and what the answer is."
+)
+
+
+def _add_design_tools(server: MCPServer, twin, client_of) -> None:
+    """The challenge design tools. They speak a person's names (red_cube), not
+    the names the arm's agents are shown, so they skip the renaming the other
+    tools do."""
+    from xbox_soarm_teleop.twin import challenges
+
+    def parsed(challenge):
+        try:
+            return challenges.parse(challenge), None
+        except (challenges.ChallengeError, ValueError) as exc:
+            return None, {"ok": False, "error": str(exc)}
+
+    @server.tool()
+    def check_challenge(challenge: str | dict[str, Any]) -> dict[str, Any]:
+        """Check a challenge for the sorting desk without setting anything up.
+
+        ``challenge`` is YAML text (or the same as a JSON object, or an example's
+        name: crowded, no_yellow_bin, red_swap_tricky) in a person's names:
+
+            name: red-swap
+            scene: sort_colors          # or sort_colors_decoy, sort_colors_box
+            objects:                    # m from the arm's base: x forward, y to its left
+              red_cube:  {x: 0.275, y: -0.06}
+              blue_cube: {x: 0.23, y: -0.16, turn_deg: 30}
+            names: misleading           # truthful, neutral, misleading, as_is
+            request: Put the red cube in the blue bin and the blue cube in the red bin.
+            expect: {red_cube: blue_bin, blue_cube: red_bin}   # left out: out of the bins
+            possible: true              # false: impossible on purpose (then asked: ...)
+
+        Objects: red_cube, blue_cube, green_cube, yellow_cube, red_small_cube,
+        red_bar, blue_bean_bag, orange_box (pushable, holds things). Bins:
+        red_bin, blue_bin, green_bin (fixed), and orange_box when it is out.
+        Returns errors for what cannot be set up, and notes for what breaks the
+        standard desk's layout rules (allowed: it may be the point)."""
+        found, error = parsed(challenge)
+        if error:
+            return error
+        return {"ok": True, "challenge": found.summary(), "notes": challenges.check(found)}
+
+    @server.tool()
+    def prove_challenge(challenge: str | dict[str, Any]) -> dict[str, Any]:
+        """Can the arm do it? Its own skills carry out what the challenge expects,
+        on a separate copy of the desk: once from true positions, twice looking
+        with an agent's aim error. Verdict: doable, fragile, not_doable (or, for
+        an impossible one, impossible / possible_after_all). Takes about 10 s.
+        Your arm is not touched."""
+        found, error = parsed(challenge)
+        if error:
+            return error
+        return challenges.prove_elsewhere(found)
+
+    @server.tool()
+    def load_challenge(challenge: str | dict[str, Any], ctx: Context | None = None) -> dict[str, Any]:
+        """Set this arm up as the challenge says: the arm goes home, the desk is
+        rearranged, and the arm's agents are told the challenge's names. Its
+        request is offered first on the arm's page, and the page's answer key
+        grades it. clear_challenge puts the desk back."""
+        found, error = parsed(challenge)
+        if error:
+            return error
+        try:
+            challenges.set_up(twin(ctx), found, client_id=client_of(ctx))
+        except Exception as exc:  # noqa: BLE001 - refused (stopped, someone else driving)
+            return {"ok": False, "error": f"the arm could not be set up: {exc}"}
+        return {
+            "ok": True,
+            "name": found.name,
+            "notes": challenges.check(found),
+            "next": SOLVE_FRESH,
+        }
+
+    @server.tool()
+    def clear_challenge(ctx: Context | None = None) -> dict[str, Any]:
+        """Take this arm's challenge away: the desk and names it had before."""
+        try:
+            challenges.clear(twin(ctx), client_id=client_of(ctx))
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"the arm could not be reset: {exc}"}
+        return {"ok": True}
 
 
 class McpThread:

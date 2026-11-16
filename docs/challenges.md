@@ -89,6 +89,21 @@ of the desk, about 10 seconds), then **Load on my arm**. The panel lists the
 notes, puts the request in the agent box, and shows the result against your
 `expect` as the arm works. **Clear** puts the arm back.
 
+**With your own agent** (Claude Code, opencode, or the agent panel): when
+the hub runs with `--agent-designs` (on in `--preset sorting`), agents have
+four tools for their own arm: `check_challenge`, `prove_challenge`,
+`load_challenge` and `clear_challenge`, taking the same YAML. Ask in plain
+words; for example:
+
+> Design a challenge on the sorting desk where the red and blue cubes start
+> 6 cm apart and the agent is told misleading names. Ask it to swap them.
+> Check it, prove the arm can do it, and load it on my arm.
+
+In our test, Gemma 4 31B designed it, found from the proof that a cube it had
+put straight ahead of the arm could not be done, moved it, proved it again,
+loaded it, and said what it changed, in 26 seconds. Then **solve it with a
+fresh agent**: the designer knows where everything is.
+
 From the sorting notebook, or any script, post it to your arm's link:
 
 ```python

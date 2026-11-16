@@ -234,3 +234,17 @@ def test_putting_a_cube_in_the_box_is_proved_doable():
     proof = prove(load_challenge(BOXED), aim_runs=1)
     assert proof["true_run"]["in_bin"]["red_cube"] == "orange_box", proof
     assert proof["verdict"] in ("doable", "fragile")
+
+
+def test_a_note_for_an_object_hidden_under_the_arm():
+    """An agent designing a challenge put the red cube straight ahead; the
+    proof found it hard to see from overhead and not doable. Say so first."""
+    ahead = load_challenge(
+        {
+            "name": "ahead",
+            "objects": {"red_cube": {"x": 0.25, "y": 0.0}},
+            "request": "Put it away.",
+            "expect": {"red_cube": "red_bin"},
+        }
+    )
+    assert any("straight ahead" in note for note in check(ahead))
