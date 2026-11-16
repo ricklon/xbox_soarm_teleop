@@ -23,6 +23,7 @@
   header { display: flex; align-items: baseline; gap: 12px; padding: 14px 20px 6px; flex-wrap: wrap; }
   header h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
   header .scene { color: var(--muted); }
+  header .guide { margin-left: auto; font-size: 14px; }
   main {
     display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr);
     gap: 16px; padding: 10px 20px 28px; max-width: 1280px; margin: 0 auto;
@@ -126,6 +127,7 @@
 <header>
   <h1 id="title">Your robot arm</h1>
   <span class="scene" id="scene"></span>
+  <a class="guide" href="https://github.com/ricklon/xbox_soarm_teleop/blob/main/docs/students.md" target="_blank" rel="noopener">Student guide</a>
 </header>
 <main>
   <div class="stack">
@@ -180,7 +182,7 @@
       <h2>Your challenge</h2>
       <p class="sub">Set the desk up yourself: where the cubes start, what the agent is told they
         are called, what it is asked, and what should happen. Then find where it breaks.
-        Guide: docs/challenges.md.</p>
+        <a href="https://github.com/ricklon/xbox_soarm_teleop/blob/main/docs/challenges.md" target="_blank" rel="noopener">How challenges work</a>.</p>
       <div class="scenepick">
         <label for="challengeExample">Start from</label>
         <select id="challengeExample"><option value="">an example...</option></select>
