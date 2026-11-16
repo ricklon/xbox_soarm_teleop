@@ -159,8 +159,9 @@ center. Neither tells you the true answer.
 
 Scenes differ in how forgiving their objects are. `list_scenes` shows them,
 easiest first, and `load_scene` switches (it homes the arm and swaps the
-objects). A soft object gives way to the gripper and takes any closure; a
-rigid one is pushed away if the gripper touches it before it closes.
+objects). A soft object takes any closure at any angle; a rigid one must be
+gripped square. Both are pushed if the gripper bumps them before it closes,
+so aim before going down.
 
 The student can take over from their page at any time (reason
 `preempted`/`human`); wait until they are done. If the stop is latched, motion

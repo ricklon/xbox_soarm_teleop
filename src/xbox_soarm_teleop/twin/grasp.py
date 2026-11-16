@@ -22,8 +22,8 @@ jaws (``align_tol_deg``). Its top and bottom do not count: one of them rests
 on the table or box floor, where the lower jaw cannot reach, as on the real
 arm. At wrist roll 0 the twin's jaws close nearly top to bottom, so a rigid
 object needs the wrist turned about 90 degrees; a refused grasp says which
-roll would square the jaws. A soft object (one the arm does not collide with,
-like the bean bag) takes any closure and any angle.
+roll would square the jaws. A soft object (one marked with the soft collision
+bit, like the bean bag) takes any closure and any angle.
 
 Only the act of closing grabs: jaws already closed past an object's width
 push it without picking it up, and re-arm once they open wider than it.
@@ -40,6 +40,8 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
+# The collision bit soft objects carry (simulate_mujoco.SOFT_OBJECT_COLLISION_BIT).
+SOFT_BIT = 2
 # Parked objects are held here (m), one metre apart, clear of every camera.
 PARK_XYZ = np.array([0.0, 0.0, 50.0])
 _UPRIGHT = np.array([1.0, 0.0, 0.0, 0.0])
@@ -150,8 +152,8 @@ class AssistedGrasp:
 
     Args:
         model: MuJoCo model; every body with a free joint is graspable. Its
-            size spans its geoms (a box's floor and walls), and it is soft if the robot
-            does not collide with that geom.
+            size spans its geoms (a box's floor and walls), and it is soft if its
+            first geom has the soft collision bit (2; the robot may still touch it).
         data: MuJoCo data.
         settings: The numbers to run on (:class:`GraspSettings`).
     """
@@ -181,7 +183,7 @@ class AssistedGrasp:
                     int(model.jnt_qposadr[jnt]),
                     int(model.jnt_dofadr[jnt]),
                     size_m=_body_extent(model, body_id),
-                    soft=not (int(model.geom_contype[geom]) & 1),
+                    soft=bool(int(model.geom_contype[geom]) & SOFT_BIT),
                 )
         self.parked: tuple[str, ...] = ()
         self.attached: str | None = None

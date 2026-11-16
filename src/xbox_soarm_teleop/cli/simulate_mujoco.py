@@ -819,8 +819,10 @@ def _add_pick_place_scene(
     bag_geom.mass = BEAN_BAG_MASS
     bag_geom.rgba = [0.20, 0.40, 0.85, 1.0]
     bag_geom.friction = [1.5, 0.05, 0.002]
-    bag_geom.contype = SOFT_OBJECT_COLLISION_BIT
-    bag_geom.conaffinity = SOFT_OBJECT_COLLISION_BIT
+    # Solid to the arm (a push slides it), soft to the grip (the soft bit:
+    # twin.grasp takes it at any angle, with a looser fit).
+    bag_geom.contype = 1 | SOFT_OBJECT_COLLISION_BIT
+    bag_geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
     # It settles a little into what it rests on, and does not bounce: a soft
     # contact (a rigid box underneath, so the sink is a millimetre or two).
     bag_geom.solref = [0.03, 1.0]

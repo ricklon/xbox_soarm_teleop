@@ -297,8 +297,8 @@ Thin mapping of the interface; names indicative only.
 
 Scenes of one compiled model are *layouts* (`twin/layouts.py`): the model holds
 every object, and a layout says which are on the table. `pick_place_easy` has a
-bean bag the arm passes through instead of pushing (a rigid box to the physics,
-but it does not collide with the robot); `pick_place_basic` has the rigid cube,
+bean bag that is soft to the grip (any angle, a looser fit) but solid to the arm,
+so a push slides it; `pick_place_basic` has the rigid cube,
 which the gripper knocks away if it touches it before closing. Switching never
 recompiles, so each hub room switches on its own.
 

@@ -97,14 +97,18 @@ def test_bean_bag_rests_on_the_table_and_stays_put(easy):
     assert objects(easy)["bean_bag"]["xyz_m"] == pytest.approx(before, abs=1e-3)
 
 
-def test_gripper_does_not_knock_the_bean_bag(easy):
-    """Lowering the tool point right onto the bag's center leaves it where it is."""
+def test_the_gripper_nudges_the_bean_bag_when_it_lands_on_it(easy):
+    """The bag is solid to the arm (a push slides it), so lowering the tool point
+    right onto its center nudges it out from between the jaws, as a real bag
+    would be: steered by hand, aim before going down. It stays on the table.
+    (The pick skill aims with the wrist camera first and takes it at the first
+    attempt: tests/test_twin_bean_bag.py.)"""
     start = np.array(objects(easy)["bean_bag"]["xyz_m"])
     assert move(easy, [start[0], start[1], 0.20]).state is ActionState.SUCCEEDED
     assert move(easy, [start[0], start[1], 0.13]).state is ActionState.SUCCEEDED
-    assert objects(easy)["bean_bag"]["xyz_m"] == pytest.approx(start.tolist(), abs=2e-3)
-    assert grip(easy, 1.0).state is ActionState.SUCCEEDED
-    assert objects(easy)["bean_bag"]["attached"] is True
+    bag = objects(easy)["bean_bag"]
+    nudged = float(np.linalg.norm(np.array(bag["xyz_m"][:2]) - start[:2]))
+    assert 0.005 < nudged < 0.05 and bag["off_table"] is False
 
 
 def test_bean_bag_can_be_placed_in_the_goal_box(easy):
