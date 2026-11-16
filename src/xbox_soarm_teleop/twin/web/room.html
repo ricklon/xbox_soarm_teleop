@@ -150,6 +150,19 @@
     <section class="panel" id="agentPanel">
       <h2>Ask an agent</h2>
       <p class="sub" id="agentNote">Loading...</p>
+      <details class="sub" id="armCan">
+        <summary>What the arm can do</summary>
+        <ul>
+          <li><b>Look</b>: take camera pictures, and find things by how they look ("the red cube").</li>
+          <li><b>Pick</b> an object up, by name or description, and <b>place</b> it in a bin or the orange box.</li>
+          <li><b>Push</b> an object, or the orange box, along the desk (forward, back, left, right, a few cm).
+            The red, green and blue bins are fixed to the desk: they cannot be moved.</li>
+          <li><b>Check</b> where something ended up, by asking a judge that looks at a picture.</li>
+          <li><b>Go home</b>, and stop. You can always take over or press STOP.</li>
+        </ul>
+        It cannot stack, turn things over, or lift the box. The agent says what it is doing as it
+        goes, and ends with RESULT: done or not done.
+      </details>
       <textarea id="agentTask" aria-label="What should the agent do?"
         placeholder="What should the agent do? (Click a prompt under Try asking your agent to fill this in.)"></textarea>
       <div class="agentopts">
@@ -571,9 +584,11 @@
     const key = `${run.run_id}:${steps}:${run.done}`;
     if (key === agentShown) return;
     agentShown = key;
+    const said = { done: "The agent says it is done.", not_done: "The agent says it is not done." };
     $("agentStatus").textContent = run.done
-      ? `Finished: ${run.stop_reason} after ${steps} steps, ${run.seconds}s, $${run.cost_usd.toFixed(4)}` +
-        (run.error ? ` (${run.error})` : "")
+      ? `${said[run.verdict] || (run.stop_reason === "stopped" ? "Stopped." : "The agent gave no verdict.")} ` +
+        `(${run.stop_reason} after ${steps} steps, ${run.seconds}s, $${run.cost_usd.toFixed(4)})` +
+        (run.error ? ` ${run.error}` : "")
       : `Running ${run.model}${run.sees ? " (sees pictures)" : ""}: step ${steps}...`;
     const items = [el("li", "said", `You asked: ${run.task}`)];
     for (const step of run.steps) {

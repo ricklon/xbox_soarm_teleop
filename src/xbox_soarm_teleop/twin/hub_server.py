@@ -126,7 +126,9 @@ puts what it holds into a bin, lifts clear and goes home.
 push(name or description, direction="left", distance_m=0.05) slides an object
 along the table without lifting it (directions as seen from the arm's base:
 forward/away, back/toward, left, right; or dx_m, dy_m); it pushes whatever is
-in its way too, so one object can push another. Prefer them to
+in its way too, so one object can push another. The bins (scene.bins, marked
+"fixed") are part of the desk: they cannot be pushed. If a skill answers ok:
+false, say what happened rather than repeating it. Prefer them to
 steering the jaws step by step: decide what goes where, and let the arm do
 the moving.
 

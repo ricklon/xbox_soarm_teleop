@@ -359,6 +359,28 @@ PUSH_CLOSE_M = 0.01  # near enough: stop pushing
 PUSH_SPEED_M_S = 0.03  # the push stroke itself
 PUSH_LEAD_M = 0.025  # how far a slow push carries on past where the jaw centre stops (measured)
 PUSH_TRIES = 4  # pushes, each followed by a fresh look
+PUSH_TOLERANCE_M = 0.035  # within this of the goal counts as done (judged by looks, which are rough)
+PUSH_TOLERANCE_SHARE = 0.3  # or within this share of the distance asked
+
+
+def _fixed_furniture(service, name: str | None, description: str | None) -> str | None:
+    """The fixed tray (or goal box) a push request names, if it names one: they
+    are part of the desk and cannot be pushed (issue 53)."""
+    scene = service.observe()["scene"]
+    fixed = list(scene.get("bins", [])) + ([scene["goal"]] if "goal" in scene else [])
+    words = (description or "").lower()
+    for box in fixed:
+        label = (box.get("label") or box["name"]).lower()
+        if name == box["name"] or (words and label in words):
+            return label
+        colour = label.split()[0]
+        if words and ("tray" in words or "bin" in words) and "box" not in words:
+            if colour in words or not any(other in words for other in _COLOURS):
+                return label
+    return None
+
+
+_COLOURS = ("red", "green", "blue", "yellow", "orange", "purple", "white", "black")
 
 
 def _where(service, target, description, client_id, looks) -> np.ndarray:
@@ -395,6 +417,15 @@ def push(
     pushes = 0
     try:
         objects = _objects(service)
+        furniture = _fixed_furniture(service, name, description)
+        if furniture is not None:
+            movable = [n.replace("_", " ") for n, entry in objects.items() if entry.get("box")]
+            can = "the objects" + (f" and the {', '.join(movable)}" if movable else "")
+            raise SkillFailed(
+                "fixed",
+                f"the {furniture} is fixed to the desk and cannot be pushed; only {can} can. "
+                "Tell the person it cannot be done; do not push something else instead",
+            )
         if name is None and not description:
             loose = [n for n, entry in objects.items() if not entry["attached"]]
             raise SkillFailed(
@@ -480,17 +511,39 @@ def push(
             )
             jaw = _jaw(service)
             _move_by(service, 0.0, 0.0, high - jaw[2], client_id)  # lift clear before looking
-            now = _where(service, target, look_with, client_id, looks)
+            before, now = now, _where(service, target, look_with, client_id, looks)
+            if pushes == 1 and np.linalg.norm(now[:2] - before[:2]) < PUSH_CLOSE_M:
+                break  # it did not move: pushing again would not help (issue 53)
         _act(service, {"type": "home"}, client_id)
         moved = now[:2] - start[:2]
-        return {
-            "ok": True,
+        off_by = float(np.linalg.norm(goal - now[:2]))
+        result = {
             "pushed": description.strip() if name is None else name,
             "pushes": pushes,
             "moved_m": [round(float(v), 3) for v in moved],
-            "off_by_m": round(float(np.linalg.norm(goal - now[:2])), 3),
+            "off_by_m": round(off_by, 3),
             "looks": looks[0],
         }
+        asked = float(np.linalg.norm(step))
+        # Say plainly how it went: the agent tells the person (issue 53).
+        if float(np.linalg.norm(moved)) < PUSH_CLOSE_M:
+            return {
+                "ok": False,
+                "reason": "did_not_move",
+                "detail": "it did not move: it may be fixed in place, stuck against something, "
+                "or the arm looked at something else",
+                **result,
+            }
+        if off_by > max(PUSH_TOLERANCE_M, PUSH_TOLERANCE_SHARE * asked):
+            reason = "fell_short" if float(np.dot(goal - now[:2], step)) > 0 else "overshot"
+            return {
+                "ok": False,
+                "reason": reason,
+                "detail": f"moved {np.linalg.norm(moved) * 100:.0f} cm of the {asked * 100:.0f} cm asked; "
+                f"{off_by * 100:.0f} cm from where it should be",
+                **result,
+            }
+        return {"ok": True, **result}
     except SkillFailed as exc:
         return {
             "ok": False,

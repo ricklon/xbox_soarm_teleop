@@ -218,6 +218,18 @@ and take over. Benchmark each layer at its own job.
     with fixed positions; a box that is pushed needs its live position and
     turn, or a cube that rode along in it stops counting as "in" it.
 
+31. **A skill must say when it failed, and an agent must not swap the task.**
+    Issue 53, from a student: asked to push the red tray (fixed to the desk),
+    `push` pushed four times, saw nothing move, and still answered ok, twice;
+    the agent had nothing to report and ran for almost four minutes until
+    stopped. With `push` refusing fixed trays, the agent then pushed the red
+    *cube* instead and said "done" (it called the cube the tray). With the
+    refusal saying "tell the person; do not push something else", and the
+    panel asking for no substitutes, it answered "the red tray is a fixed bin
+    and cannot be moved; RESULT: not_done", 2 of 2, in 8 seconds. Same root
+    as lessons 23 and 24: an agent bends the request to fit what it can do
+    unless every reply holds it to the request.
+
 ## What we have not solved yet
 
 - The plan-first step (agent states what it sees and intends before moving)
