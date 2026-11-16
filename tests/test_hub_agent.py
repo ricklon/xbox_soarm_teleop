@@ -221,6 +221,7 @@ def test_the_panel_asks_the_agent_to_say_what_it_is_doing(served):
     state = _wait_done(base, token)
     asked = json.dumps(model.bodies[-1]["messages"])
     assert "Look around." in asked and "before each action" in asked and "summary" in asked
+    assert "Never do something" in asked  # it once pushed a cube for a tray and said done
     assert state["run"]["task"] == "Look around."  # the page shows what the student typed
     assert state["run"]["verdict"] == "done"
     page = httpx.get(f"{base}/arm").text

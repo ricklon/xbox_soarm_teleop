@@ -423,7 +423,8 @@ def push(
             can = "the objects" + (f" and the {', '.join(movable)}" if movable else "")
             raise SkillFailed(
                 "fixed",
-                f"the {furniture} is fixed to the desk and cannot be pushed; only {can} can",
+                f"the {furniture} is fixed to the desk and cannot be pushed; only {can} can. "
+                "Tell the person it cannot be done; do not push something else instead",
             )
         if name is None and not description:
             loose = [n for n, entry in objects.items() if not entry["attached"]]

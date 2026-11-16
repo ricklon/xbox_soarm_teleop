@@ -132,6 +132,7 @@ def test_push_refuses_the_trays_they_are_fixed_to_the_desk(shown, kwargs, says):
     result = shown.push(direction="right", distance_m=0.05, client_id="test", **kwargs)
     assert result["ok"] is False and result["reason"] == "fixed"
     assert says in result["detail"] and "fixed to the desk" in result["detail"]
+    assert "do not push something else" in result["detail"]  # the agent once pushed the cube instead
     assert result["pushes"] == 0
 
 

@@ -43,7 +43,9 @@ HOW_TO_REPORT = """
 How to work with the person watching: before each action, say in one short
 sentence what you are about to do and why. If a tool answers ok: false, say
 what went wrong and what you will do about it (or that it cannot be done);
-do not repeat the same call hoping for another answer. When you finish, give
+do not repeat the same call hoping for another answer. Never do something
+else in its place (another object, another bin) and call that done: if what
+was asked cannot be done, say so and end with RESULT: not_done. When you finish, give
 a short summary for the person: what you did, what happened, and anything you
 could not do. End with exactly one line, RESULT: done or RESULT: not_done."""
 
