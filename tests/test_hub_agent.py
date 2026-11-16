@@ -58,10 +58,12 @@ class Scripted:
 
     def __init__(self):
         self.replies = []
+        self.bodies = []
         self.hold = threading.Event()
         self.hold.set()
 
     def __call__(self, url, body, headers=None, timeout=None):
+        self.bodies.append(body)
         self.hold.wait(30)
         if not self.replies:
             return _reply(content="RESULT: done")
@@ -205,3 +207,21 @@ def test_the_budget_runs_out(served):
     _wait_done(base, token)
     refused = httpx.post(f"{base}/r/{token}/agent/run", json=body)
     assert refused.status_code == 402 and "budget" in refused.json()["error"]
+
+
+def test_the_panel_asks_the_agent_to_say_what_it_is_doing(served):
+    """Issue 53: "I wish it could communicate to the operator more." The
+    panel asks for a sentence before each action and a summary at the end,
+    and the page shows the summary's verdict and what the arm can do."""
+    hub, base, model = served
+    token = _token(hub, 1)
+    model.replies = [_reply(content="I looked. RESULT: done")]
+    body = {"task": "Look around.", "model": "google/gemma-4-31b-it"}
+    assert httpx.post(f"{base}/r/{token}/agent/run", json=body).status_code == 200
+    state = _wait_done(base, token)
+    asked = json.dumps(model.bodies[-1]["messages"])
+    assert "Look around." in asked and "before each action" in asked and "summary" in asked
+    assert state["run"]["task"] == "Look around."  # the page shows what the student typed
+    assert state["run"]["verdict"] == "done"
+    page = httpx.get(f"{base}/arm").text
+    assert "What the arm can do" in page and "fixed to the desk" in page

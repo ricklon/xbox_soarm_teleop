@@ -104,3 +104,14 @@ def test_the_box_is_too_big_to_pick(desk):
     refused = desk.pick("orange_box", client_id="test")
     assert refused["ok"] is False and refused["reason"] == "invalid_request"
     assert "push" in refused["detail"]
+
+
+def test_a_box_s_position_stays_hidden_in_no_coordinates_mode():
+    service = build_twin(scene="sort_colors_box", with_controller=False, hide_positions=True)
+    try:
+        service.tick()
+        scene = service.observe()["scene"]
+        assert "orange_box" not in [entry["name"] for entry in scene["bins"]]
+        assert "xyz_m" not in scene["objects"]["orange_box"]
+    finally:
+        service.close()

@@ -116,3 +116,51 @@ def test_push_with_an_agents_aim_error():
     finally:
         alive.clear()
         thread.join(timeout=10)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "says"),
+    [
+        ({"description": "red tray"}, "red bin"),
+        ({"description": "the green bin"}, "green bin"),
+        ({"name": "blue_bin"}, "blue bin"),
+    ],
+)
+def test_push_refuses_the_trays_they_are_fixed_to_the_desk(shown, kwargs, says):
+    """Issue 53: asked to push the red tray, the arm pushed four times at a
+    tray fixed to the desk, and said ok."""
+    result = shown.push(direction="right", distance_m=0.05, client_id="test", **kwargs)
+    assert result["ok"] is False and result["reason"] == "fixed"
+    assert says in result["detail"] and "fixed to the desk" in result["detail"]
+    assert result["pushes"] == 0
+
+
+def test_push_says_when_nothing_moved(shown, monkeypatch):
+    """If the first push moves nothing, it stops and says so, rather than
+    pushing four times and reporting success (issue 53)."""
+    from xbox_soarm_teleop.twin import skills
+
+    _reset(shown)
+    stuck = np.asarray(shown.observe_truth()["scene"]["objects"]["green_cube"]["xyz_m"])
+    monkeypatch.setattr(skills, "_where", lambda *args, **kwargs: stuck.copy())
+    result = shown.push("green_cube", direction="left", distance_m=0.05, client_id="test")
+    assert result["ok"] is False and result["reason"] == "did_not_move", result
+    assert result["pushes"] == 1 and result["moved_m"] == [0.0, 0.0]
+
+
+def test_push_says_when_it_fell_short(shown, monkeypatch):
+    from xbox_soarm_teleop.twin import skills
+
+    _reset(shown)
+    start = np.asarray(shown.observe_truth()["scene"]["objects"]["green_cube"]["xyz_m"])
+    seen = iter([start] + [start + [0.0, 0.02, 0.0]] * 10)  # it creeps 2 cm and stops
+    monkeypatch.setattr(skills, "_where", lambda *args, **kwargs: next(seen).copy())
+    result = shown.push("green_cube", direction="left", distance_m=0.1, client_id="test")
+    assert result["ok"] is False and result["reason"] == "fell_short", result
+    assert result["moved_m"] == [0.0, 0.02] and result["off_by_m"] == pytest.approx(0.08)
+
+
+def test_the_trays_say_they_are_fixed_and_a_box_never_shows_its_place(shown):
+    bins = shown.observe()["scene"]["bins"]
+    assert bins and all(entry["fixed"] is True for entry in bins)
+    assert "orange_box" not in [entry["name"] for entry in bins]

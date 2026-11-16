@@ -20,6 +20,7 @@ latched on the page ends the run too.
 from __future__ import annotations
 
 import itertools
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,16 @@ MAX_STEPS = 40
 TIMEOUT_S = 600.0
 MAX_RUNNING = 2  # across the hub
 MAX_TASK_CHARS = 2000
+# Added to what the student typed (issue 53: "I wish it could communicate to
+# the operator more"; "I don't know what it would say when completed").
+HOW_TO_REPORT = """
+
+How to work with the person watching: before each action, say in one short
+sentence what you are about to do and why. If a tool answers ok: false, say
+what went wrong and what you will do about it (or that it cannot be done);
+do not repeat the same call hoping for another answer. When you finish, give
+a short summary for the person: what you did, what happened, and anything you
+could not do. End with exactly one line, RESULT: done or RESULT: not_done."""
 
 
 @dataclass
@@ -65,10 +76,19 @@ class PanelRun:
             "done": self.done,
             "stop_reason": self.stop_reason,
             "final_text": self.final_text,
+            "verdict": verdict_of(self.final_text) if self.done else None,
             "error": self.error,
             "cost_usd": round(self.cost_usd, 5),
             "seconds": round(self.seconds, 1),
         }
+
+
+def verdict_of(text: str) -> str | None:
+    """The agent's own verdict from its last RESULT line: done, not_done, or None."""
+    found = re.findall(r"result:\s*\**\s*(not[ _]done|done)", (text or "").lower())
+    if not found:
+        return None
+    return "not_done" if found[-1].startswith("not") else "done"
 
 
 class Refused(Exception):
@@ -172,7 +192,7 @@ class AgentDesk:
             result = run_agent(
                 self.url,
                 run.model,
-                run.task,
+                run.task + HOW_TO_REPORT,
                 arm_key=room.token,
                 max_steps=MAX_STEPS,
                 max_cost_usd=cap_usd,

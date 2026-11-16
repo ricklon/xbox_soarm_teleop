@@ -1550,7 +1550,8 @@ class TwinService:
                 turn = self.grasp._rotation(box.name)  # noqa: SLF001 - the twin's own grasp
                 yaw = math.atan2(float(turn[1, 0]), float(turn[0, 0]))
                 movable[box.name] = live_box(box, loose[box.name], yaw)
-        bins = tuple(bins) + tuple(movable.values())
+        fixed = tuple(bins)  # furniture: shown in scene.bins
+        bins = fixed + tuple(movable.values())  # and boxes: graded, but their place stays hidden
         opening = self.grasp.settings.jaw_opening_m(self.state.gripper_pos)
         jaw_center = self.grasp.jaw_center(opening)
         objects = {}
@@ -1588,8 +1589,9 @@ class TwinService:
         }
         if goal is not None:
             scene["goal"] = goal.summary()
-        if bins:  # where each object should go is the request's business, not the scene's
-            scene["bins"] = [box.summary() for box in bins]
+        if fixed:  # where each object should go is the request's business, not the scene's
+            # Fixed to the desk: push cannot move them (issue 53).
+            scene["bins"] = [{**box.summary(), "fixed": True} for box in fixed]
         observation = Observation(
             frame=self.frame,
             sim_time_s=round(self.now_s, 6),

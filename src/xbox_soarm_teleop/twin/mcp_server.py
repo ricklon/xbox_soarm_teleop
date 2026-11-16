@@ -92,7 +92,9 @@ puts what it holds into a bin, lifts clear and goes home.
 push(name or description, direction="left", distance_m=0.05) slides an object
 along the table without lifting it (directions as seen from the arm's base:
 forward/away, back/toward, left, right; or dx_m, dy_m); it pushes whatever is
-in its way too, so one object can push another. Prefer them to
+in its way too, so one object can push another. The bins (scene.bins, marked
+"fixed") are part of the desk: they cannot be pushed. If a skill answers ok:
+false, say what happened rather than repeating it. Prefer them to
 steering the jaws step by step: decide what goes where, and let the arm do
 the moving.
 
@@ -442,7 +444,11 @@ def build_mcp_server(
         with distance_m, or dx_m and dy_m (metres; +x away from the base, +y to
         its left), at most 0.15 m. The arm closes its jaws, gets behind the
         object, goes low and slides it, then looks again and pushes the rest.
-        Whatever is in its way is pushed too. Takes 20 to 60 seconds."""
+        Whatever is in its way is pushed too. Objects and boxes move; the bins in
+        scene.bins are fixed to the desk and are refused. ok is true only if it
+        got there; otherwise reason says what happened (did_not_move,
+        fell_short, overshot) and moved_m how far it went: tell the person.
+        Takes 20 to 100 seconds."""
         return twin(ctx).push(
             name,
             description=description,
