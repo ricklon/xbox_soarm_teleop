@@ -160,6 +160,7 @@ BEAN_BAG_START = np.array(
 # Soft objects collide only with geoms that carry this bit: the table, the goal
 # box and the floor, but not the robot (whose geoms keep MuJoCo's default bit 1).
 SOFT_OBJECT_COLLISION_BIT = 2
+HIDDEN_GEOM_GROUP = 3  # geoms that collide but are not drawn (cameras show groups 0 to 2)
 # Objects for the twin's distractor scenes (twin.layouts): rigid boxes that
 # look like the red cube in one way or another. Name, half extents (m), colour,
 # mass (kg). They rest on the floor far from the table, out of every view,
@@ -820,6 +821,12 @@ def _add_pick_place_scene(
     bag_geom.friction = [1.5, 0.05, 0.002]
     bag_geom.contype = SOFT_OBJECT_COLLISION_BIT
     bag_geom.conaffinity = SOFT_OBJECT_COLLISION_BIT
+    # It settles a little into what it rests on, and does not bounce: a soft
+    # contact (a rigid box underneath, so the sink is a millimetre or two).
+    bag_geom.solref = [0.03, 1.0]
+    bag_geom.solimp = [0.85, 0.95, 0.002, 0.5, 2.0]
+    bag_geom.group = HIDDEN_GEOM_GROUP  # cameras show the bag's look, below
+    _add_bean_bag_look(spec, bag_body)
 
     spec.stat.center = list(recipe.stat_center)
     spec.stat.extent = recipe.stat_extent
@@ -868,6 +875,80 @@ def _add_pick_place_scene(
             geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
     for view, aim in (recipe.views or {}).items():
         _add_view_camera(spec, view, aim)
+
+
+def _pillow_mesh(half: np.ndarray, rings: int = 10, sides: int = 24) -> tuple[list, list]:
+    """A bean bag's shape: a pillow, square-ish seen from above, flat where it
+    rests and domed on top (a superellipsoid with a flatter bottom).
+
+    Returns vertices (flat x, y, z list) and triangles (flat index list).
+    """
+
+    def signed_pow(value: float, power: float) -> float:
+        return float(np.sign(value) * abs(value) ** power)
+
+    across, top, bottom = 0.25, 0.55, 0.2  # exponents: squarish plan, domed top, flat bottom
+    vertices = [0.0, 0.0, -half[2]]  # bottom pole
+    for ring in range(1, rings):
+        lat = -np.pi / 2 + np.pi * ring / rings
+        up = top if lat > 0 else bottom
+        rad, height = signed_pow(np.cos(lat), up), signed_pow(np.sin(lat), up)
+        for side in range(sides):
+            lon = 2 * np.pi * side / sides
+            vertices += [
+                half[0] * rad * signed_pow(np.cos(lon), across),
+                half[1] * rad * signed_pow(np.sin(lon), across),
+                half[2] * height,
+            ]
+    vertices += [0.0, 0.0, half[2]]  # top pole
+    top_index = len(vertices) // 3 - 1
+
+    def at(ring: int, side: int) -> int:
+        return 1 + (ring - 1) * sides + side % sides
+
+    faces = []
+    for side in range(sides):
+        faces += [0, at(1, side + 1), at(1, side)]
+        faces += [top_index, at(rings - 1, side), at(rings - 1, side + 1)]
+    for ring in range(1, rings - 1):
+        for side in range(sides):
+            a, b = at(ring, side), at(ring, side + 1)
+            c, d = at(ring + 1, side), at(ring + 1, side + 1)
+            faces += [a, b, d, a, d, c]
+    return vertices, faces
+
+
+def _add_bean_bag_look(spec: mujoco.MjSpec, body) -> None:
+    """What cameras show of the bean bag: a fabric pillow (visual only; it
+    neither collides nor weighs anything)."""
+    texture = spec.add_texture()
+    texture.name = f"{BEAN_BAG_NAME}_fabric"
+    texture.type = mujoco.mjtTexture.mjTEXTURE_CUBE
+    texture.builtin = mujoco.mjtBuiltin.mjBUILTIN_FLAT
+    texture.mark = mujoco.mjtMark.mjMARK_RANDOM
+    texture.random = 0.35  # a speckled weave
+    texture.rgb1 = [0.20, 0.40, 0.85]
+    texture.rgb2 = [0.32, 0.52, 0.95]
+    texture.markrgb = [0.14, 0.30, 0.70]
+    texture.width = texture.height = 64
+    material = spec.add_material()
+    material.name = f"{BEAN_BAG_NAME}_cloth"
+    material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = texture.name
+    material.specular = 0.05  # cloth: matte
+    material.shininess = 0.05
+    vertices, faces = _pillow_mesh(BEAN_BAG_HALF_EXTENTS)
+    mesh = spec.add_mesh()
+    mesh.name = f"{BEAN_BAG_NAME}_pillow"
+    mesh.uservert = vertices
+    mesh.userface = faces
+    look = body.add_geom()
+    look.name = f"{BEAN_BAG_NAME}_look"
+    look.type = mujoco.mjtGeom.mjGEOM_MESH
+    look.meshname = mesh.name
+    look.material = material.name
+    look.contype = 0
+    look.conaffinity = 0
+    look.density = 0.0
 
 
 def _add_view_camera(spec: mujoco.MjSpec, name: str, aim: dict) -> None:
@@ -929,6 +1010,8 @@ def load_model_with_cameras(
     mesh_dir = Path(urdf_path).resolve().parent
     with tempfile.TemporaryDirectory(prefix="soarm-meshes-") as simplified:
         for mesh in spec.meshes:
+            if not mesh.file:  # built in code (the bean bag's look): nothing to simplify
+                continue
             write_simplified(mesh_dir / mesh.file, Path(simplified) / mesh.file, mesh_cell_mm / 1000)
         spec.meshdir = simplified
         return spec.compile()

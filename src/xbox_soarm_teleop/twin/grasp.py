@@ -131,11 +131,15 @@ def _body_extent(model: mujoco.MjModel, body_id: int) -> np.ndarray:
     """Full extents of a body's box geoms, together, along its own axes (one
     geom: its size; a movable box: its floor and walls)."""
     first, count = int(model.body_geomadr[body_id]), int(model.body_geomnum[body_id])
-    if count == 1:
-        return 2.0 * model.geom_size[first].copy()
+    # What touches things: a look drawn over it (the bean bag's) does not count.
+    solid = [
+        g for g in range(first, first + count) if model.geom_contype[g] or model.geom_conaffinity[g]
+    ] or [first]
+    if len(solid) == 1:
+        return 2.0 * model.geom_size[solid[0]].copy()
     low = np.full(3, np.inf)
     high = np.full(3, -np.inf)
-    for geom in range(first, first + count):
+    for geom in solid:
         low = np.minimum(low, model.geom_pos[geom] - model.geom_size[geom])
         high = np.maximum(high, model.geom_pos[geom] + model.geom_size[geom])
     return high - low

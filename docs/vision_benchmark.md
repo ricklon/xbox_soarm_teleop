@@ -1,5 +1,7 @@
 # Vision benchmark on the digital twin
 
+> **Note (2026-11-16):** the bean bag now looks like a cloth pillow, not a blue box (same size, softness and contact). Its pointing and judge numbers below were measured on the old box look and have not been rerun.
+
 The real arm has no ground-truth coordinates: an agent has to find objects by
 looking. The MuJoCo twin knows exactly where everything is, which makes it a
 grader for perception. This page covers how to run the twin as a benchmark and
