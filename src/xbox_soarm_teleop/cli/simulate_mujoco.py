@@ -148,17 +148,18 @@ PICK_PLACE_CUBE_START = np.array(
 PICK_PLACE_GOAL_CENTER = np.array(GOAL_BOX.base_center_m(TABLE_HEIGHT_M), dtype=float)
 PICK_PLACE_GOAL_INNER_HALF_EXTENTS = np.array(GOAL_BOX.inner_half_m, dtype=float)
 PICK_PLACE_GOAL_WALL_THICKNESS = GOAL_BOX.wall_m
-# A soft object for first grasps. It is a rigid box to the physics, but the arm
-# passes through it instead of pushing it (see ``SOFT_OBJECT_COLLISION_BIT``),
-# the way a real bean bag gives way to a jaw.
+# A soft object for first grasps. It is a rigid box to the physics, and solid to
+# the arm (a push slides it), but the grip treats it as soft: any angle, a looser
+# fit (see ``SOFT_OBJECT_COLLISION_BIT``).
 BEAN_BAG_NAME = "bean_bag"
 BEAN_BAG_HALF_EXTENTS = np.array([0.03, 0.025, 0.012], dtype=float)
 BEAN_BAG_MASS = 0.03
 BEAN_BAG_START = np.array(
     [0.26, -0.03, PICK_PLACE_TABLE_HEIGHT + BEAN_BAG_HALF_EXTENTS[2]], dtype=float
 )
-# Soft objects collide only with geoms that carry this bit: the table, the goal
-# box and the floor, but not the robot (whose geoms keep MuJoCo's default bit 1).
+# Marks an object as soft to the grip (twin.grasp reads it from the geom's
+# contype). Soft objects also carry MuJoCo's default bit 1, so the robot touches
+# them; the table, the goal box and the floor carry both bits.
 SOFT_OBJECT_COLLISION_BIT = 2
 HIDDEN_GEOM_GROUP = 3  # geoms that collide but are not drawn (cameras show groups 0 to 2)
 # Objects for the twin's distractor scenes (twin.layouts): rigid boxes that
