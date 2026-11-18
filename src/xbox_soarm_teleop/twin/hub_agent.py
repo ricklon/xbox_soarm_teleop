@@ -34,7 +34,7 @@ DEFAULT_BUDGET_USD = 0.50  # per arm, for the whole session
 PER_RUN_CAP_USD = 0.25
 MAX_STEPS = 40
 TIMEOUT_S = 600.0
-MAX_RUNNING = 6  # across the hub (2 left most of a 12-student class waiting on "try again")
+MAX_RUNNING = 12  # across the hub: a whole 12-seat class can run agents at once
 MAX_TASK_CHARS = 2000
 # Added to what the student typed (issue 53: "I wish it could communicate to
 # the operator more"; "I don't know what it would say when completed").
