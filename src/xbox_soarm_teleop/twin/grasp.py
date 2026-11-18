@@ -22,8 +22,13 @@ jaws (``align_tol_deg``). Its top and bottom do not count: one of them rests
 on the table or box floor, where the lower jaw cannot reach, as on the real
 arm. At wrist roll 0 the twin's jaws close nearly top to bottom, so a rigid
 object needs the wrist turned about 90 degrees; a refused grasp says which
-roll would square the jaws. A soft object (one the arm does not collide with,
-like the bean bag) takes any closure and any angle.
+roll would square the jaws. A soft object (one marked with the soft collision
+bit, like the bean bag) takes any closure and any angle.
+
+A held object is fitted to the jaws as drawn (their meshes, not the
+numbers above): seated against the fixed finger, with the moving jaw stopped
+where it touches it, as a servo stalls on what it holds. A soft object is also
+pulled to the middle of the pads, as a bag squashes into them.
 
 Only the act of closing grabs: jaws already closed past an object's width
 push it without picking it up, and re-arm once they open wider than it.
@@ -40,6 +45,8 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
+# The collision bit soft objects carry (simulate_mujoco.SOFT_OBJECT_COLLISION_BIT).
+SOFT_BIT = 2
 # Parked objects are held here (m), one metre apart, clear of every camera.
 PARK_XYZ = np.array([0.0, 0.0, 50.0])
 _UPRIGHT = np.array([1.0, 0.0, 0.0, 0.0])
@@ -73,6 +80,11 @@ JAW_CURVE_M = 0.006
 JAW_RELEASE_CLEARANCE_M = 0.0005
 # How much wider than an object to open the jaws before coming down on it (m).
 JAW_APPROACH_MARGIN_M = 0.05
+# A held object is seated this far (m) from the drawn fixed finger, and the
+# moving jaw stops this far from it: touching to the eye, not sunk in.
+JAW_SEAT_CLEARANCE_M = 0.0003
+# The gripper joint closes toward lower angles (rad); simulate_mujoco.set_gripper.
+GRIPPER_JOINT = "gripper"
 
 
 @dataclass(frozen=True)
@@ -127,15 +139,58 @@ class _FreeObject:
     soft: bool
 
 
+def _finger_points(model: mujoco.MjModel, body_id: int) -> np.ndarray:
+    """The corners of a body's drawn meshes, in the body's frame (m), without
+    repeats: what a held object is fitted against."""
+    if body_id < 0:
+        return np.zeros((0, 3))
+    first, count = int(model.body_geomadr[body_id]), int(model.body_geomnum[body_id])
+    points = []
+    for geom in range(first, first + count):
+        if model.geom_type[geom] != mujoco.mjtGeom.mjGEOM_MESH:
+            continue
+        mesh = int(model.geom_dataid[geom])
+        start, n = int(model.mesh_vertadr[mesh]), int(model.mesh_vertnum[mesh])
+        rotation = np.zeros(9)
+        mujoco.mju_quat2Mat(rotation, model.geom_quat[geom])
+        points.append(
+            model.geom_pos[geom] + model.mesh_vert[start : start + n] @ rotation.reshape(3, 3).T
+        )
+    if not points:
+        return np.zeros((0, 3))
+    return np.unique(np.round(np.vstack(points), 5), axis=0)
+
+
+def _solid_geoms(model: mujoco.MjModel, body_id: int) -> list[int]:
+    """A body's geoms that collide (not the ones only drawn)."""
+    first, count = int(model.body_geomadr[body_id]), int(model.body_geomnum[body_id])
+    return [
+        g for g in range(first, first + count) if model.geom_contype[g] or model.geom_conaffinity[g]
+    ]
+
+
+def _box_distance(points: np.ndarray, half: np.ndarray) -> float:
+    """Signed distance (m) from the nearest point to a box at the origin: below 0 inside."""
+    if points.size == 0:
+        return math.inf
+    q = np.abs(points) - half
+    outside = np.linalg.norm(np.maximum(q, 0.0), axis=1)
+    return float((outside + np.minimum(q.max(axis=1), 0.0)).min())
+
+
 def _body_extent(model: mujoco.MjModel, body_id: int) -> np.ndarray:
     """Full extents of a body's box geoms, together, along its own axes (one
     geom: its size; a movable box: its floor and walls)."""
     first, count = int(model.body_geomadr[body_id]), int(model.body_geomnum[body_id])
-    if count == 1:
-        return 2.0 * model.geom_size[first].copy()
+    # What touches things: a look drawn over it (the bean bag's) does not count.
+    solid = [
+        g for g in range(first, first + count) if model.geom_contype[g] or model.geom_conaffinity[g]
+    ] or [first]
+    if len(solid) == 1:
+        return 2.0 * model.geom_size[solid[0]].copy()
     low = np.full(3, np.inf)
     high = np.full(3, -np.inf)
-    for geom in range(first, first + count):
+    for geom in solid:
         low = np.minimum(low, model.geom_pos[geom] - model.geom_size[geom])
         high = np.maximum(high, model.geom_pos[geom] + model.geom_size[geom])
     return high - low
@@ -146,8 +201,8 @@ class AssistedGrasp:
 
     Args:
         model: MuJoCo model; every body with a free joint is graspable. Its
-            size spans its geoms (a box's floor and walls), and it is soft if the robot
-            does not collide with that geom.
+            size spans its geoms (a box's floor and walls), and it is soft if its
+            first geom has the soft collision bit (2; the robot may still touch it).
         data: MuJoCo data.
         settings: The numbers to run on (:class:`GraspSettings`).
     """
@@ -166,6 +221,18 @@ class AssistedGrasp:
         self._gripper_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "gripper_link")
         self._jaw_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "moving_jaw_so101_v1_link")
         self._roll_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "wrist_roll")
+        gripper_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, GRIPPER_JOINT)
+        self._gripper_qpos = int(model.jnt_qposadr[gripper_joint]) if gripper_joint >= 0 else -1
+        self._jaw_range = (
+            tuple(float(v) for v in model.jnt_range[gripper_joint])
+            if gripper_joint >= 0
+            else (0.0, 0.0)
+        )
+        # The drawn jaws, each in its own body's frame: what a held object is fitted to.
+        self._fixed_points = _finger_points(model, self._gripper_body)
+        self._jaw_points = _finger_points(model, self._jaw_body)
+        self._scratch = mujoco.MjData(model)
+        self._jaw_stop: float | None = None  # the gripper joint stops here while holding
         self.objects: dict[str, _FreeObject] = {}
         for body_id in range(model.nbody):
             jnt = model.body_jntadr[body_id]
@@ -177,7 +244,7 @@ class AssistedGrasp:
                     int(model.jnt_qposadr[jnt]),
                     int(model.jnt_dofadr[jnt]),
                     size_m=_body_extent(model, body_id),
-                    soft=not (int(model.geom_contype[geom]) & 1),
+                    soft=bool(int(model.geom_contype[geom]) & SOFT_BIT),
                 )
         self.parked: tuple[str, ...] = ()
         self.attached: str | None = None
@@ -393,6 +460,7 @@ class AssistedGrasp:
                 events.append(f"{self.attached} released")
             elif not obj.soft and opening < width - cfg.rigid_squeeze_m:
                 events.append(f"{self.attached} squeezed out: the gripper closed too far")
+                self._jaw_stop = None  # nothing between the jaws now: they shut
             else:
                 return events
             self.data.qvel[obj.qvel_adr : obj.qvel_adr + 6] = 0.0
@@ -520,10 +588,101 @@ class AssistedGrasp:
         # turned in the grip, so no corner sinks into the fixed finger.
         across = float(np.abs(relative[0, :]) @ (self.objects[name].size_m / 2.0))
         local[0] = JAW_FIXED_FACE_X + across + JAW_RELEASE_CLEARANCE_M
-        self._offset = local
+        if self.objects[name].soft:
+            local[1] = 0.0  # squashed into the pads, the middle of the bag between them
         self._rel_rotation = relative
+        self._offset = self._seat(name, local)
+        self._jaw_stop = self._contact_angle(name)
         self._told_still_held = False
         self.carry()
+
+    def _fixed_gap(self, name: str, local: np.ndarray) -> float:
+        """Gap (m) from the fixed finger to the object at ``local`` (gripper frame),
+        less the seat's clearance: from the drawn finger, and from the gripper's
+        collision hulls, whichever is nearer. Seated inside a hull, the object
+        was kicked aside when let go."""
+        inside = (self._fixed_points - local) @ self._rel_rotation
+        drawn = _box_distance(inside, self.objects[name].size_m / 2.0) - JAW_SEAT_CLEARANCE_M
+        return min(drawn, self._hull_gap(name, local) - JAW_RELEASE_CLEARANCE_M)
+
+    def _hull_gap(self, name: str, local: np.ndarray) -> float:
+        """Nearest distance (m) from the gripper's collision geoms to the object
+        posed at ``local`` (gripper frame), as MuJoCo's contacts would see it."""
+        obj = self.objects[name]
+        model, scratch = self.model, self._scratch
+        scratch.qpos[:] = self.data.qpos
+        mujoco.mj_kinematics(model, scratch)
+        hand = self._gripper_body
+        rotation = scratch.xmat[hand].reshape(3, 3)
+        scratch.qpos[obj.qpos_adr : obj.qpos_adr + 3] = scratch.xpos[hand] + rotation @ local
+        quat = np.zeros(4)
+        mujoco.mju_mat2Quat(quat, (rotation @ self._rel_rotation).reshape(-1))
+        scratch.qpos[obj.qpos_adr + 3 : obj.qpos_adr + 7] = quat
+        mujoco.mj_kinematics(model, scratch)
+        fromto = np.zeros(6)
+        nearest = 0.05
+        for held in _solid_geoms(model, obj.body_id):
+            for finger in _solid_geoms(model, hand):
+                nearest = min(
+                    nearest, mujoco.mj_geomDistance(model, scratch, held, finger, 0.05, fromto)
+                )
+        return float(nearest)
+
+    def _seat(self, name: str, local: np.ndarray) -> np.ndarray:
+        """Slide the object along the closing direction until it just clears
+        the fixed finger (its mesh and its collision boxes); it arrives seated
+        by the finger's nominal face. If even far out it would not clear (the
+        palm is in the way, not the finger), it is left where it was."""
+        if self._fixed_points.size == 0:
+            return local
+        seated = local.copy()
+        size = float(np.max(self.objects[name].size_m))
+        low, high = JAW_FIXED_FACE_X - size, JAW_FIXED_FACE_X + size + 0.02
+        seated[0] = high
+        if self._fixed_gap(name, seated) < 0.0:
+            return local  # the palm, not the finger, is in the way: leave it as it was
+        for _ in range(30):
+            seated[0] = (low + high) / 2.0
+            if self._fixed_gap(name, seated) < 0.0:
+                low = seated[0]
+            else:
+                high = seated[0]
+        seated[0] = high
+        return seated
+
+    def _jaw_gap(self, name: str, angle: float) -> float:
+        """Gap (m) from the drawn moving jaw, at this gripper angle, to the held object."""
+        scratch = self._scratch
+        scratch.qpos[:] = self.data.qpos
+        scratch.qpos[self._gripper_qpos] = angle
+        mujoco.mj_kinematics(self.model, scratch)
+        hand, jaw = self._gripper_body, self._jaw_body
+        hand_rotation = scratch.xmat[hand].reshape(3, 3)
+        jaw_rotation = scratch.xmat[jaw].reshape(3, 3)
+        # Moving-jaw corners in the gripper frame, then in the object's.
+        in_hand = (scratch.xpos[jaw] - scratch.xpos[hand]) @ hand_rotation + self._jaw_points @ (
+            hand_rotation.T @ jaw_rotation
+        ).T
+        inside = (in_hand - self._offset) @ self._rel_rotation
+        return _box_distance(inside, self.objects[name].size_m / 2.0)
+
+    def _contact_angle(self, name: str) -> float | None:
+        """The gripper angle at which the drawn moving jaw just touches the held
+        object: closing further, a servo would stall there."""
+        if self._gripper_qpos < 0 or self._jaw_body < 0 or self._jaw_points.size == 0:
+            return None
+        closed, opened = self._jaw_range
+        if self._jaw_gap(name, opened) < JAW_SEAT_CLEARANCE_M:
+            return None  # touching even wide open: nothing sensible to stop at
+        if self._jaw_gap(name, closed) >= JAW_SEAT_CLEARANCE_M:
+            return closed  # the jaw never reaches it
+        for _ in range(40):
+            middle = (closed + opened) / 2.0
+            if self._jaw_gap(name, middle) < JAW_SEAT_CLEARANCE_M:
+                closed = middle
+            else:
+                opened = middle
+        return opened
 
     def _jaws_touch(self, name: str) -> bool:
         """Whether either jaw still presses into the object (from the last physics step)."""
@@ -544,6 +703,13 @@ class AssistedGrasp:
         the wrist. ``tool_pos`` is unused, kept for callers. An object the
         closing jaws have met but not yet closed on is held where it is.
         """
+        if self._jaw_stop is not None:
+            if self.data.qpos[self._gripper_qpos] < self._jaw_stop:
+                # Stalled on what it holds; let go, it opens from there, not
+                # from where it was told to close to (that sweep threw objects).
+                self.data.qpos[self._gripper_qpos] = self._jaw_stop
+            elif self.attached is None:
+                self._jaw_stop = None  # opened past it: free again
         if self.attached is None and self._engaged is not None:
             engaged = self.objects[self._engaged]
             self.data.qpos[engaged.qpos_adr : engaged.qpos_adr + 7] = self._engaged_pose
@@ -560,6 +726,7 @@ class AssistedGrasp:
         self.data.qvel[obj.qvel_adr : obj.qvel_adr + 6] = 0.0
 
     def reset(self) -> None:
+        self._jaw_stop = None
         self._engaged = None
         self.attached = None
         self._armed = True

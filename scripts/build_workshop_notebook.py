@@ -209,9 +209,10 @@ first (`set_wrist_roll(angle_rad=-1.5)`) to put them side to side.
 
 `observe` tells you each object's `size_m`, and its `grip_width_m`: its size
 across the jaws as they are turned now. `set_gripper(opening_m=...)` closes to
-a gap in meters. The bean bag is forgiving. A rigid object like the
-cube (scene `pick_place_basic`) is not: bump it on the way down and it slides
-away; close much past its width and it is squeezed out.
+a gap in meters. The bean bag is forgiving: it takes any closure at any angle.
+A rigid object like the cube (scene `pick_place_basic`) is not: close much past
+its width and it is squeezed out. Either one slides away if the jaws bump it on
+the way down, so line up before you descend.
 
 So a pick-and-place is a handful of steps. Read them, then run the cell and watch your page.
 """)

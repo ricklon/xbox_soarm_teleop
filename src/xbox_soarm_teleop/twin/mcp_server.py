@@ -61,8 +61,8 @@ those, in order, then close again. A soft object takes any closure at any roll.
 A held object rides near the jaw center, so to put it somewhere, move
 `jaw_center_xyz_m` over that spot, lower until the object's own z is a few mm
 above where it will rest (as low as the workspace allows), then
-set_gripper(position=0). Opening only a little does not let go: the jaws taper
-in toward the wrist and still touch it ("still held"). A held object turns
+set_gripper(position=0). Opening only a little may not let go: while a jaw
+still touches it, it says "still held". A held object turns
 with the gripper, so it may land on an edge and rock flat.
 
 `observe` also gives the goal box (`scene.goal`: the center of its floor and
@@ -129,8 +129,9 @@ center. Neither tells you the true answer.
 
 Scenes differ in how forgiving their objects are. `list_scenes` shows them,
 easiest first, and `load_scene` switches (it homes the arm and swaps the
-objects). A soft object gives way to the gripper and takes any closure; a
-rigid one is pushed away if the gripper touches it before it closes.
+objects). A soft object takes any closure at any angle; a rigid one must be
+gripped square. Both are pushed if the gripper bumps them before it closes,
+so aim before going down.
 
 A human with an Xbox controller can take over at any time (reason
 `preempted`/`human`); wait until they are done. If the stop is latched, motion
@@ -581,7 +582,8 @@ def _add_design_tools(server: MCPServer, twin, client_of) -> None:
             possible: true              # false: impossible on purpose (then asked: ...)
 
         Objects: red_cube, blue_cube, green_cube, yellow_cube, red_small_cube,
-        red_bar, blue_bean_bag, orange_box (pushable, holds things). Bins:
+        red_bar, pink_slab (thin), teal_tower (tall), brown_block (wide),
+        blue_bean_bag, orange_box (pushable, holds things). Bins:
         red_bin, blue_bin, green_bin (fixed), and orange_box when it is out.
         Returns errors for what cannot be set up, and notes for what breaks the
         standard desk's layout rules (allowed: it may be the point)."""

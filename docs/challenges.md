@@ -33,7 +33,7 @@ notes: Anything you want to say about it.
 
 | Field | What you can use |
 |---|---|
-| `objects` | `red_cube`, `blue_cube`, `green_cube`, `yellow_cube`, `red_small_cube`, `red_bar`, `blue_bean_bag`, each with `x`, `y` and, if you like, `turn_deg` |
+| `objects` | `red_cube`, `blue_cube`, `green_cube`, `yellow_cube`, `red_small_cube`, `red_bar`, `pink_slab` (1.5 cm thin), `teal_tower` (5.5 cm tall), `brown_block` (5.5 cm wide), `blue_bean_bag`, each with `x`, `y` and, if you like, `turn_deg` |
 | a box | `orange_box`: an open box the arm can push (`push`) and put things in (`place(bin="orange_box")`). It sits square to the desk; `turn_deg` turns it. In `expect` it is a tray like the others; it cannot itself go in a tray |
 | where | `x` forward from the base, `y` to the arm's left; the desk runs x −0.10 to 0.44, y −0.42 to 0.42. The arm grasps steadily 20 to 33 cm from its base |
 | trays | `red_bin`, `blue_bin`, `green_bin` (fixed, at the arm's sides), and `orange_box` when it is on the desk |
@@ -160,6 +160,11 @@ refused are left out and counted). You write the rest:
 - Move a cube to the edge of the reach, or next to a tray.
 - Put two cubes 6 cm apart, or turn one 45°.
 - Use `red_small_cube` beside `red_cube`, and ask for "the small one".
+- Try the odd shapes: the thin `pink_slab` closes the jaws nearly shut, the
+  `teal_tower` reaches up the fingers, the `brown_block` opens them wide.
+  The tower is tall and narrow: the arm's own `pick` knocks it over about
+  half the time as the jaws come down (measured: 7 misses in 12 runs), so
+  "leave the tower standing" is a challenge, and so is picking it.
 - Give misleading names, then ask by colour; then ask by name.
 - Ask for something impossible ("the yellow bin") and see whether it says so.
 - Ask in an unusual way: "put the warm-coloured cube where the sky colour goes".

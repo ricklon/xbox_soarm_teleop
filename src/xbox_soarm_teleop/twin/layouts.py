@@ -89,8 +89,8 @@ LAYOUTS: dict[str, Layout] = {
             model_scene="pick_place_basic",
             difficulty="easy",
             description=(
-                "A soft blue bean bag and a green goal box. The bean bag gives way "
-                "to the gripper, so it is not knocked about when the jaws touch it."
+                "A soft blue bean bag and a green goal box. The bean bag is soft: the "
+                "gripper takes it at any angle. Bump it and it slides; push it on purpose."
             ),
             objects={
                 sim_cli.BEAN_BAG_NAME: (*_START_XY, _TABLE + float(sim_cli.BEAN_BAG_HALF_EXTENTS[2]))
@@ -280,6 +280,9 @@ OBJECT_DESCRIPTIONS: dict[str, str] = {
     "red_bar": "red bar",
     "green_cube": "green cube",
     "yellow_cube": "yellow cube",
+    "pink_slab": "pink slab",
+    "teal_tower": "teal tower",
+    "brown_block": "brown block",
     "orange_box": "orange box",
 }
 
