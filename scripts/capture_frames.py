@@ -9,6 +9,9 @@ Run it in a terminal that is allowed to use the camera:
 Press Enter to save a frame (it reports whether the board's 9 x 6 inner corners
 were found), type q and Enter to stop. macOS can renumber cameras after a
 replug: the first frame is saved as preview.png so you can check which one it is.
+
+With --once it saves one frame after the camera has settled and exits (for
+taking shots from a script, or of the cutting mat, with no board in view).
 """
 
 from __future__ import annotations
@@ -29,6 +32,10 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True, help="folder for the frames")
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
+    parser.add_argument("--once", action="store_true", help="save one frame and exit")
+    parser.add_argument(
+        "--settle", type=float, default=2.0, help="seconds to let exposure settle (--once)"
+    )
     args = parser.parse_args()
 
     capture = cv2.VideoCapture(args.camera, cv2.CAP_AVFOUNDATION)
@@ -64,6 +71,14 @@ def main() -> None:
     )
 
     count = len(list(args.out.glob("frame_*.png")))
+    if args.once:
+        time.sleep(args.settle)  # auto-exposure and focus settle after opening
+        path = args.out / f"frame_{count + 1:03d}.png"
+        cv2.imwrite(str(path), latest["frame"])
+        running.clear()
+        capture.release()
+        print(f"saved {path}")
+        return
     found_total = 0
     try:
         while True:
