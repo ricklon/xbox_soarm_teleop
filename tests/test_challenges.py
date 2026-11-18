@@ -248,3 +248,33 @@ def test_a_note_for_an_object_hidden_under_the_arm():
         }
     )
     assert any("straight ahead" in note for note in check(ahead))
+
+
+SHAPES = {
+    "name": "odd-shapes",
+    "scene": "sort_colors",
+    "objects": {
+        "pink_slab": {"x": 0.275, "y": -0.06},
+        "teal_tower": {"x": 0.23, "y": -0.16},
+        "brown_block": {"x": 0.30, "y": 0.07},
+    },
+    "names": "truthful",
+    "request": "Put the slab in the red bin and the block in the green bin. Leave the tower standing.",
+    "expect": {"pink_slab": "red_bin", "teal_tower": None, "brown_block": "green_bin"},
+}
+
+
+def test_students_can_choose_the_slab_the_tower_and_the_block():
+    """The shapes that tested the grip (a thin slab, a tall tower, a wide
+    block) are in the library a challenge chooses from, by the names a person
+    would use. The arm's own skills sort the slab and the block without
+    knocking the tower over. (Picking the tower itself is not proved: its own
+    pick tips it over about half the time; docs/challenges.md says so.)"""
+    challenge = load_challenge(SHAPES)
+    assert set(challenge.layout().objects) == {"pink_slab", "teal_tower", "brown_block"}
+    assert challenge.summary()  # it describes itself in the student's names
+    proof = prove(challenge, aim_runs=1)
+    assert proof["true_run"]["done"] is True, proof
+    assert proof["true_run"]["in_bin"] == SHAPES["expect"]
+    assert proof["verdict"] in ("doable", "fragile")
+    assert proof["hidden"] == []

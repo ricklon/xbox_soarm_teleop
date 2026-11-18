@@ -471,7 +471,7 @@ where it breaks. The full guide is `docs/challenges.md`; examples are in
 Positions are metres from the arm's base: `x` forward, `y` to the arm's
 left. The arm grasps steadily 20 to 33 cm out. Objects you can use:
 `red_cube`, `blue_cube`, `green_cube`, `yellow_cube`, `red_small_cube`,
-`red_bar`, `blue_bean_bag`. Trays: `red_bin`, `blue_bin`, `green_bin`.
+`red_bar`, `pink_slab`, `teal_tower`, `brown_block`, `blue_bean_bag`. Trays: `red_bin`, `blue_bin`, `green_bin`.
 """)
 
 code(r"""

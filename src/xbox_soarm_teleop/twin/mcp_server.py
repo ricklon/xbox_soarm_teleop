@@ -582,7 +582,8 @@ def _add_design_tools(server: MCPServer, twin, client_of) -> None:
             possible: true              # false: impossible on purpose (then asked: ...)
 
         Objects: red_cube, blue_cube, green_cube, yellow_cube, red_small_cube,
-        red_bar, blue_bean_bag, orange_box (pushable, holds things). Bins:
+        red_bar, pink_slab (thin), teal_tower (tall), brown_block (wide),
+        blue_bean_bag, orange_box (pushable, holds things). Bins:
         red_bin, blue_bin, green_bin (fixed), and orange_box when it is out.
         Returns errors for what cannot be set up, and notes for what breaks the
         standard desk's layout rules (allowed: it may be the point)."""

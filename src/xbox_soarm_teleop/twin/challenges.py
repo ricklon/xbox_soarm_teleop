@@ -60,6 +60,9 @@ _INTERNAL = (
     "yellow_cube",
     "red_cube_small",
     "red_bar",
+    "pink_slab",
+    "teal_tower",
+    "brown_block",
     sim_cli.BEAN_BAG_NAME,
     *(box.name for box in TABLE_SCENES[CELL].boxes),
 )

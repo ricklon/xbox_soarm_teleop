@@ -280,6 +280,9 @@ OBJECT_DESCRIPTIONS: dict[str, str] = {
     "red_bar": "red bar",
     "green_cube": "green cube",
     "yellow_cube": "yellow cube",
+    "pink_slab": "pink slab",
+    "teal_tower": "teal tower",
+    "brown_block": "brown block",
     "orange_box": "orange box",
 }
 
