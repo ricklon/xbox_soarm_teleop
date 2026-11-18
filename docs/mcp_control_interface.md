@@ -349,9 +349,19 @@ along the curved moving jaw (`_add_gripper_collision_boxes` and
 collides a mesh as its convex hull, which filled the open space between the
 finger and the wrist: a held cube sat 12 mm inside it and was thrown 13 mm
 or more when let go. A held object is let go only once neither jaw still
-presses into it (the moving jaw tapers in toward the wrist); until then a
-partly opened gripper says it is still held. Between the jaws first meeting
-an object and closing on it, the object is held where it was squared.
+presses into it; until then a partly opened gripper says it is still held.
+Between the jaws first meeting an object and closing on it, the object is
+held where it was squared.
+
+A held object is fitted to the jaws as they are drawn, not to the numbers the
+grasp is judged by. It is seated against the fixed finger, clear of both its
+mesh and its collision boxes, and the moving jaw stops where its mesh touches
+the object, as a servo stalls on what it holds. Let go, the jaw opens from
+there. Before this, the moving jaw curved 2 to 9 mm into what it held (the
+jaw's opening was taken at its tips, and it curves in above them), and a soft
+object could hang 10 mm off the pads. A soft object is now pulled to the
+middle of the pads. `tests/test_twin_grip_fit.py` checks the fit on the
+drawn meshes for seven shapes, within 1 mm.
 
 A grasp is judged where the jaws first meet the object (its extent across
 them, wider than its width when it sits turned), not when they reach its

@@ -485,14 +485,19 @@ def test_a_released_cube_is_not_thrown_sideways(parts, twin, xy, release_opening
     assert np.linalg.norm(landed - alone) < 0.002, (landed, alone)
 
 
-def test_opening_a_little_says_the_tapered_jaws_still_hold_it(twin):
-    """The moving jaw tapers in toward the palm: opened just past the width at
-    the tips, it still touches the object higher up, so it is not let go yet."""
+def test_opening_a_little_lets_go_from_where_the_jaw_stopped(twin):
+    """The moving jaw curves in toward the palm, so it meets an object above
+    its tips first, and stops there, as a servo stalls. (It used to close on
+    past that, sunk into the object, so opening a little still pressed on it.)
+    Opened just past the width at the tips, it lets go, and opens from where
+    it stopped, so it does not sweep the object aside."""
     over(twin)
     grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH))
     move_by(twin, [0.0, 0.0, 0.05])
+    held = twin.grasp.position("pick_cube")
     grip(twin, SETTINGS.gripper_for_opening(CUBE_WIDTH + SETTINGS.release_margin_m + 0.001))
-    assert twin.grasp.attached == "pick_cube"
-    assert any("still held" in event for event in events(twin))
-    grip(twin, 0.0)
     assert twin.grasp.attached is None
+    assert "pick_cube released" in events(twin)
+    assert not any("still held" in event for event in events(twin))
+    # It drops straight down, not sideways.
+    np.testing.assert_allclose(twin.grasp.position("pick_cube")[:2], held[:2], atol=0.003)

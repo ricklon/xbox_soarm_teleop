@@ -174,6 +174,12 @@ DISTRACTOR_OBJECTS = (
     ("red_bar", (0.015, 0.035, 0.015), (0.85, 0.25, 0.20, 1.0), 0.035),
     ("green_cube", (0.015, 0.015, 0.015), (0.20, 0.70, 0.30, 1.0), 0.02),
     ("yellow_cube", (0.015, 0.015, 0.015), (0.95, 0.78, 0.15, 1.0), 0.02),
+    # Shapes that grip differently: a thin slab (the jaws nearly shut), a tall
+    # tower (reaches up the fingers, where the moving jaw curves in) and a wide
+    # block (the jaws nearly as open as they approach).
+    ("pink_slab", (0.0075, 0.025, 0.02), (0.90, 0.45, 0.65, 1.0), 0.02),
+    ("teal_tower", (0.0125, 0.0125, 0.0275), (0.15, 0.60, 0.60, 1.0), 0.03),
+    ("brown_block", (0.0275, 0.0275, 0.018), (0.55, 0.38, 0.22, 1.0), 0.05),
 )
 DISTRACTOR_REST_XY = (8.0, 8.0)  # first object's spot on the floor; the rest 0.3 m apart
 # The scene's size as MuJoCo would compute it without the resting distractors.
