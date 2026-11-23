@@ -21,9 +21,10 @@ uv run soarm-hub --preset sorting --seats 2
 | `--pointer openrouter:google/gemma-4-31b-it` | what `locate` and `pick` look with (needs `OPENROUTER_API_KEY`) |
 | `--judge clef` | what `check_success` asks (needs `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) |
 | `--names truthful` | objects are shown to agents as `red_cube`, `blue_cube`, `green_cube` |
-| `--switch-games` | each student may switch to pick and place from the page's **Scene** menu, and back |
 
-With `--switch-games`, `--no-coordinates` and `--names` set the sorting game.
+Every hub lets each student switch to pick and place from the page's
+**Scene** menu, and back (`--no-switch-games` keeps every arm on one game).
+`--no-coordinates` and `--names` set the sorting game.
 Pick and place keeps its own rules: agents are told where things are, under
 the twin's own names. A student can't switch game while their arm is stopped
 or their page's agent is running, and switching off the desk ends its challenge.

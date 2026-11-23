@@ -47,8 +47,6 @@ PRESETS: dict[str, dict] = {
         "feedback_repo": "ricklon/xbox_soarm_teleop",
         # Students' own agents may design challenges for their arm (docs/students.md).
         "agent_designs": True,
-        # Students may also switch to pick and place, which brings its own rules.
-        "switch_games": True,
     },
 }
 
@@ -57,13 +55,20 @@ PRESETS: dict[str, dict] = {
 PICK_AND_PLACE_RULES = {"hide_positions": False, "naming": "as_is"}
 
 
+def switches_games(args: argparse.Namespace) -> bool:
+    """Students switch game: on unless --no-switch-games, or the stack scene (no other game)."""
+    if args.switch_games is None:
+        return args.scene != "stack"
+    return bool(args.switch_games)
+
+
 def game_rules(args: argparse.Namespace) -> dict[str, dict] | None:
     """What each game brings where students switch games, by table scene.
 
     Sorting is played as the options say (--no-coordinates, --names: the
     sorting preset's, or yours); pick and place keeps its own rules.
     """
-    if not args.switch_games:
+    if not switches_games(args):
         return None
     return {
         "pick_place_basic": dict(PICK_AND_PLACE_RULES),
@@ -142,16 +147,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="What every arm starts with. pick_place_easy: a soft bean bag (default). "
         "pick_place_basic: a rigid cube, harder to grasp. Students' agents can switch "
         "between the two with load_scene. sort_colors: three cubes and a bin of each "
-        "colour, on a different table; agents switch only between the sort scenes there, "
-        "unless --switch-games lets students switch game too.",
+        "colour, on a different table. Students switch between the two games unless "
+        "--no-switch-games.",
     )
     parser.add_argument(
         "--switch-games",
-        action="store_true",
-        help="Let each student switch game on their own arm from the page's Scene menu "
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Each student switches game on their own arm from the page's Scene menu "
         "(or an agent's load_scene): pick and place on the raised table, or sorting on the "
-        "desk. --no-coordinates and --names then set the sorting game; pick and place keeps "
-        "coordinates and the twin's own names. --scene is where every arm starts",
+        "desk. On by default, except with --scene stack. --no-coordinates and --names set "
+        "the sorting game; pick and place keeps coordinates and the twin's own names. "
+        "--scene is where every arm starts. --no-switch-games keeps every arm on one game",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Address to listen on")
     parser.add_argument("--port", type=int, default=8800)
@@ -377,6 +384,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.switch_games and args.scene == "stack":
         print("ERROR: --switch-games needs a table scene to start in, not stack.", flush=True)
         return 2
+    args.switch_games = switches_games(args)
 
     print(f"Building {args.seats} arms...", flush=True)
     hub = Hub(

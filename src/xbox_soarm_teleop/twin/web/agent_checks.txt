@@ -29,7 +29,7 @@ set_gripper opening_m = W.
     After a second, observe: pick_cube in_goal true.
 12. Take the cube out of the box and put it on the table at (0.34, -0.03), using only what
     the tools and events tell you. Report each attempt.
-13. load_scene "moon_base": expect ok false, reason invalid_request, both real scene names listed.
+13. load_scene "moon_base": expect ok false, reason invalid_request, every real scene name listed.
 14. set_gripper with no arguments: expect ok false, reason invalid_request.
 
 Finish with a table of the 14 checks and anything that surprised you.

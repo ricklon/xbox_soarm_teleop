@@ -26,9 +26,9 @@ TableScene("sort_bins", DESK, (RED_BIN, BLUE_BIN, GREEN_BIN), views=DESK_VIEWS)
 ```
 
 Each recipe compiles into its own MuJoCo model, and a twin runs one recipe
-at a time: a hub started with `--scene sort_colors` offers only the sort
-scenes. A hub started with `--switch-games` compiles one model with every
-recipe's furniture instead (`CLASSROOM`). Each recipe's table, bins and
+at a time: `soarm-twin --scene sort_colors` offers only the sort scenes.
+A hub (unless `--no-switch-games`) compiles one model with every recipe's
+furniture instead (`CLASSROOM`). Each recipe's table, bins and
 cameras ride on one mocap body, and each arm poses its own game's body at the
 origin and parks the others. Switching game is then a reset, and the arms
 still share one model. `tests/test_twin_games.py` checks that each game on

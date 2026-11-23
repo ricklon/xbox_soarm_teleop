@@ -152,8 +152,7 @@ def measure(
             "--port", str(port), "--no-log", "--no-open", "--no-find-tunnel", "--roster", str(roster_path),
             "--mesh-detail-mm", str(mesh_detail_mm), "--picture-rate", str(picture_rate),
         ]  # fmt: skip
-        if switch_games:
-            command.append("--switch-games")
+        command.append("--switch-games" if switch_games else "--no-switch-games")
         if scene:
             command += ["--scene", scene]
         hub = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -192,7 +191,8 @@ def main() -> int:
     parser.add_argument(
         "--switch-games",
         action="store_true",
-        help="A hub where students switch games, with every other arm switched to sorting",
+        help="Every other arm switched to sorting (a mixed class); without it every arm "
+        "stays on one game (--no-switch-games)",
     )
     parser.add_argument("--scene", default=None, help="What every arm starts with (soarm-hub --scene)")
     args = parser.parse_args()

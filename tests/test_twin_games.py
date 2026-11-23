@@ -378,17 +378,36 @@ def test_the_hub_refuses_a_game_change_while_the_rooms_agent_runs():
         hub.close()
 
 
-def test_the_sorting_preset_lets_students_switch_games():
-    from xbox_soarm_teleop.cli.hub import apply_preset, build_parser, game_rules
+def test_every_hub_lets_students_switch_games_unless_told_not_to():
+    from xbox_soarm_teleop.cli.hub import apply_preset, build_parser, game_rules, switches_games
 
-    args = apply_preset(build_parser().parse_args(["--preset", "sorting"]))
-    assert args.switch_games is True and args.scene == "sort_colors"
+    def parse(*argv):
+        return apply_preset(build_parser().parse_args(list(argv)))
+
+    # On by default, whichever game the arms start in.
+    assert switches_games(parse()) and switches_games(parse("--scene", "sort_colors"))
+    assert game_rules(parse()) == {
+        "pick_place_basic": {"hide_positions": False, "naming": "as_is"},
+        "sort_bins": {"hide_positions": False, "naming": "as_is"},
+    }
+    args = parse("--preset", "sorting")
+    assert switches_games(args) and args.scene == "sort_colors"
     assert game_rules(args) == {
         "pick_place_basic": {"hide_positions": False, "naming": "as_is"},
         "sort_bins": {"hide_positions": True, "naming": "truthful"},
     }
     # Options you give still win, for the sorting game.
-    mine = apply_preset(build_parser().parse_args(["--preset", "sorting", "--names", "neutral"]))
-    assert game_rules(mine)["sort_bins"]["naming"] == "neutral"
-    # Off unless asked for.
-    assert game_rules(build_parser().parse_args([])) is None
+    assert (
+        game_rules(parse("--preset", "sorting", "--names", "neutral"))["sort_bins"]["naming"]
+        == "neutral"
+    )
+    # Off when asked, and on the stack scene (there is no other game there).
+    assert game_rules(parse("--no-switch-games")) is None
+    assert game_rules(parse("--preset", "sorting", "--no-switch-games")) is None
+    assert not switches_games(parse("--scene", "stack"))
+
+
+def test_the_hub_refuses_switching_games_from_the_stack_scene():
+    from xbox_soarm_teleop.cli.hub import main
+
+    assert main(["--scene", "stack", "--switch-games", "--port", "0"]) == 2
