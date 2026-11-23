@@ -25,9 +25,15 @@ RED_BIN = _tray("red_bin", "red bin", 45.0, ...)    # 27 cm out, at +45 degrees
 TableScene("sort_bins", DESK, (RED_BIN, BLUE_BIN, GREEN_BIN), views=DESK_VIEWS)
 ```
 
-Each recipe compiles into its own MuJoCo model, and a twin (or a hub of
-twins) runs one recipe at a time: a hub started with `--scene sort_colors`
-offers only the sort scenes.
+Each recipe compiles into its own MuJoCo model, and a twin runs one recipe
+at a time: `soarm-twin --scene sort_colors` offers only the sort scenes.
+A hub (unless `--no-switch-games`) compiles one model with every recipe's
+furniture instead (`CLASSROOM`). Each recipe's table, bins and
+cameras ride on one mocap body, and each arm poses its own game's body at the
+origin and parks the others. Switching game is then a reset, and the arms
+still share one model. `tests/test_twin_games.py` checks that each game on
+that model matches its own model: what `observe` says, what the cameras show,
+and how low the arm may go.
 
 **Size the cell to the arm, not the arm to the table.** The SO-101 grasps
 from above in a ring around its base: steadily from about 17 to 36 cm out,

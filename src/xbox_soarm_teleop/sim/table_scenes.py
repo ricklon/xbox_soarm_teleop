@@ -113,6 +113,9 @@ class TableScene:
 
     ``boxes`` are movable boxes: free bodies, parked out of sight unless a
     layout puts them on the table, like the scene's other objects.
+
+    ``game`` is what students choose on a hub that lets them switch
+    (``pick_and_place``, ``sorting``).
     """
 
     name: str
@@ -122,6 +125,7 @@ class TableScene:
     stat_center: tuple[float, float, float] = (0.2245, 0.04, 0.0779)
     stat_extent: float = 0.6128
     boxes: tuple[Bin, ...] = ()
+    game: str = "pick_and_place"
 
 
 RAISED_TABLE = Table(TABLE_CENTER_XY_M, TABLE_HALF_XY_M, TABLE_HEIGHT_M)
@@ -184,6 +188,7 @@ TABLE_SCENES: dict[str, TableScene] = {
             stat_center=(0.17, 0.0, 0.1),
             stat_extent=0.7,
             boxes=(ORANGE_BOX,),
+            game="sorting",
         ),
     )
 }
@@ -192,3 +197,27 @@ TABLE_SCENES: dict[str, TableScene] = {
 def is_table_scene(scene: str) -> bool:
     """A scene with a table (and objects on it), as opposed to ``default`` or ``stack``."""
     return scene in TABLE_SCENES
+
+
+# A model with every table scene's furniture (``simulate_mujoco._add_classroom_scene``),
+# for a hub whose students each choose their own game. Each scene's table and
+# bins ride on one mocap body, a "cell": a room poses its own at the origin
+# and parks the rest out of sight, far above and away.
+CLASSROOM = "classroom"
+CELL_PARK_XYZ = (0.0, 40.0, 20.0)  # the first cell's parking spot; the rest 5 m apart
+
+
+def cell_body_name(scene: str) -> str:
+    """The mocap body carrying ``scene``'s furniture in the classroom model."""
+    return f"cell_{scene}"
+
+
+def cell_camera_name(view: str, scene: str) -> str:
+    """The classroom model's camera for a view of ``scene`` (``front``, ...)."""
+    return f"{view}_{scene}"
+
+
+def cell_park_xyz(index: int) -> tuple[float, float, float]:
+    """Where the ``index``-th cell waits while another is in use."""
+    x, y, z = CELL_PARK_XYZ
+    return (x + 5.0 * index, y, z)

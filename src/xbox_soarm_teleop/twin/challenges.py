@@ -470,7 +470,7 @@ def _hidden_objects(service, challenge: Challenge) -> list[str]:
     try:
         for view, least in (("front", 500), ("overhead", 200)):  # a 3 cm cube: about 900 and 350
             camera = mujoco.MjvCamera()
-            point_camera(camera, model, view)
+            point_camera(camera, model, view, scene=service.sim.scene)
             renderer.update_scene(data, camera=camera)
             seg = renderer.render()
             on_geom = seg[..., 1] == mujoco.mjtObj.mjOBJ_GEOM
