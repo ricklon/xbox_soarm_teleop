@@ -97,3 +97,6 @@ calibration/
 # soarm-twin session logs
 twin_logs/
 smoke.jpg
+
+# Real-camera frames from the home rig (photos of a home: never committed)
+captures/

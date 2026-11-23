@@ -56,6 +56,14 @@ shades, but keep the red cube clearly red and the bins clearly their colours.
   underneath, as a real tray should be. Nothing that matters changes: the inside
   is the same size and depth.
 
+## Camera calibration checkerboard
+
+`checkerboard_9x6_25mm.pdf` (and `.png`) is for calibrating the real arm's
+cameras: 10 x 7 squares of 25 mm, so 9 x 6 inner corners, on US Letter,
+landscape. Print it at 100 % (no "fit to page"), check that the bar under it
+measures 50 mm, and tape it flat to something stiff. `scripts/capture_frames.py`
+saves frames from one camera and says whether each shows the whole board.
+
 ## The bean bag
 
 The bean bag is soft, so it is not printed. Sew one: a fabric pouch
