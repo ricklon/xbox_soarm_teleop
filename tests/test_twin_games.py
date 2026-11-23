@@ -170,23 +170,65 @@ def test_switching_game_moves_the_furniture_and_the_floor(classroom_parts):
 
 
 def test_the_arm_cannot_go_into_the_raised_table_after_leaving_the_desk(classroom_parts):
+    """Driven down as a person drives it (the page's Down button), after a game
+    change: the swapped clipper stops the tool just over the raised table."""
+    from xbox_soarm_teleop.teleoperators.xbox import XboxState
+
+    # An arm that starts on the desk: its first limits are the desk's.
+    service = _twin(build_parts(scene="sort_colors", switch_games=True))
+    try:
+        _load(service, "pick_place_basic")
+        z_min = service.workspace_bounds["z"][0]
+        for _ in range(150):  # hold LB, right stick down for 3 s
+            service.tick(XboxState(left_bumper=True, right_stick_y=1.0))
+        assert z_min - 1e-3 <= service.tool_xyz()[2] <= z_min + 0.01
+        assert service.tool_xyz()[2] > 0.12
+    finally:
+        service.close()
+
+
+def test_the_cube_can_be_put_in_the_goal_box_after_switching(classroom_parts):
+    from xbox_soarm_teleop.twin import scenarios
+
     service = _twin(classroom_parts)
     try:
         _load(service, "sort_colors")
         _load(service, "pick_place_basic")
-        future = service.submit({"type": "move_ee_to", "params": {"xyz_m": [0.25, 0.0, 0.05]}})
-        service.tick()
-        try:
-            status = future.result(timeout=0)
-        except ActionRejected:
-            return  # refused outright: below the table
-        for _ in range(400):
-            service.tick()
-            if service.wait(status.id, 0).state.terminal:
-                break
-        assert service.observe()["ee"]["xyz_m"][2] >= 0.12
+        gx, gy, floor = service.observe()["scene"]["goal"]["center_xyz_m"]
+        assert scenarios.grasp_and_lift(service, "pick_cube", [gx, gy, floor + 0.12])
+        jaw = service.observe()["jaw_center_xyz_m"]
+        lower = {"type": "move_ee_by", "params": {"dxyz_m": [0, 0, floor + 0.035 - jaw[2]]}}
+        assert scenarios.run(service, lower)
+        assert scenarios.run(service, {"type": "set_gripper", "params": {"position": 0.0}})
+        assert scenarios.run(service, {"type": "move_ee_by", "params": {"dxyz_m": [0, 0, 0.05]}})
+        _settle(service, 50)
+        assert service.observe()["scene"]["objects"]["pick_cube"]["in_goal"] is True
     finally:
         service.close()
+
+
+@pytest.mark.parametrize("layout", ["pick_place_basic", "sort_colors"])
+@pytest.mark.parametrize("view", ["overhead", "front", "side", "wrist"])
+def test_locate_sees_through_the_same_cameras(classroom_parts, layout, view):
+    """``locate`` turns a picture point into a place with the camera's geometry."""
+    from xbox_soarm_teleop.twin.projection import camera_geometry
+
+    own = build_twin(scene=layout, with_controller=False)
+    shared = _twin(classroom_parts)
+    try:
+        _load(shared, "sort_colors" if layout != "sort_colors" else "pick_place_basic")
+        _load(shared, layout)
+        own.tick()
+        mine = camera_geometry(own.sim.model, own.sim.data, view, 640, 480)
+        theirs = camera_geometry(
+            shared.sim.model, shared.sim.data, view, 640, 480, scene=shared.sim.scene
+        )
+        for part in ("position", "forward", "up"):
+            np.testing.assert_allclose(getattr(theirs, part), getattr(mine, part), atol=1e-6)
+        assert theirs.fovy_deg == pytest.approx(mine.fovy_deg)
+    finally:
+        own.close()
+        shared.close()
 
 
 @pytest.mark.parametrize("task_name", sorted(TASKS))

@@ -1511,7 +1511,9 @@ class TwinService:
             self.layout_before = None
             self.naming_before = None
         self._apply_game_rules()
-        self._event(f"game: {TABLE_SCENES[scene].game.replace('_', ' ')}")
+        positions = "hidden" if self.hide_positions else "shown"
+        game = TABLE_SCENES[scene].game.replace("_", " ")
+        self._event(f"game: {game} (object positions {positions}, names {self.naming})")
 
     def _apply_game_rules(self) -> None:
         rules = {**self._base_rules, **self.game_rules.get(self.sim.scene, {})}

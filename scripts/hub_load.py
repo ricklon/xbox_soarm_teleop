@@ -136,7 +136,12 @@ async def _run(
 
 
 def measure(
-    seats: int, mesh_detail_mm: float, picture_rate: float, seconds: float, switch_games: bool = False
+    seats: int,
+    mesh_detail_mm: float,
+    picture_rate: float,
+    seconds: float,
+    switch_games: bool = False,
+    scene: str | None = None,
 ) -> dict:
     """Start a hub with these settings, load it, stop it, and return the figures."""
     port = _free_port()
@@ -149,6 +154,8 @@ def measure(
         ]  # fmt: skip
         if switch_games:
             command.append("--switch-games")
+        if scene:
+            command += ["--scene", scene]
         hub = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             base = f"http://127.0.0.1:{port}"
@@ -187,6 +194,7 @@ def main() -> int:
         action="store_true",
         help="A hub where students switch games, with every other arm switched to sorting",
     )
+    parser.add_argument("--scene", default=None, help="What every arm starts with (soarm-hub --scene)")
     args = parser.parse_args()
     print(
         "students  meshes  asked/s  got/s each  slowest  kB/picture  Mbit/s each  "
@@ -195,7 +203,7 @@ def main() -> int:
     for seats in args.seats or [10]:
         for detail in args.mesh_detail_mm or [2.0]:
             for rate in args.picture_rate or [10.0]:
-                r = measure(seats, detail, rate, args.seconds, args.switch_games)
+                r = measure(seats, detail, rate, args.seconds, args.switch_games, args.scene)
                 meshes = "full" if detail <= 0 else f"{detail:g} mm"
                 print(
                     f"{seats:8d}  {meshes:6s}  {rate:7.0f}  {r['per_student']:10.1f}  "

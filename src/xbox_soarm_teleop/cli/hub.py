@@ -142,7 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="What every arm starts with. pick_place_easy: a soft bean bag (default). "
         "pick_place_basic: a rigid cube, harder to grasp. Students' agents can switch "
         "between the two with load_scene. sort_colors: three cubes and a bin of each "
-        "colour, on a different table; agents switch only between the sort scenes there.",
+        "colour, on a different table; agents switch only between the sort scenes there, "
+        "unless --switch-games lets students switch game too.",
     )
     parser.add_argument(
         "--switch-games",
