@@ -47,8 +47,28 @@ PRESETS: dict[str, dict] = {
         "feedback_repo": "ricklon/xbox_soarm_teleop",
         # Students' own agents may design challenges for their arm (docs/students.md).
         "agent_designs": True,
+        # Students may also switch to pick and place, which brings its own rules.
+        "switch_games": True,
     },
 }
+
+# Pick and place as it always was, on a hub where students switch games: agents
+# are told where things are, under the twin's own names.
+PICK_AND_PLACE_RULES = {"hide_positions": False, "naming": "as_is"}
+
+
+def game_rules(args: argparse.Namespace) -> dict[str, dict] | None:
+    """What each game brings where students switch games, by table scene.
+
+    Sorting is played as the options say (--no-coordinates, --names: the
+    sorting preset's, or yours); pick and place keeps its own rules.
+    """
+    if not args.switch_games:
+        return None
+    return {
+        "pick_place_basic": dict(PICK_AND_PLACE_RULES),
+        "sort_bins": {"hide_positions": bool(args.no_coordinates), "naming": args.names},
+    }
 
 
 def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
@@ -123,6 +143,14 @@ def build_parser() -> argparse.ArgumentParser:
         "pick_place_basic: a rigid cube, harder to grasp. Students' agents can switch "
         "between the two with load_scene. sort_colors: three cubes and a bin of each "
         "colour, on a different table; agents switch only between the sort scenes there.",
+    )
+    parser.add_argument(
+        "--switch-games",
+        action="store_true",
+        help="Let each student switch game on their own arm from the page's Scene menu "
+        "(or an agent's load_scene): pick and place on the raised table, or sorting on the "
+        "desk. --no-coordinates and --names then set the sorting game; pick and place keeps "
+        "coordinates and the twin's own names. --scene is where every arm starts",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Address to listen on")
     parser.add_argument("--port", type=int, default=8800)
@@ -345,6 +373,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: --challenge: {exc}", flush=True)
             return 2
         args.scene = challenge.scene
+    if args.switch_games and args.scene == "stack":
+        print("ERROR: --switch-games needs a table scene to start in, not stack.", flush=True)
+        return 2
 
     print(f"Building {args.seats} arms...", flush=True)
     hub = Hub(
@@ -357,6 +388,8 @@ def main(argv: list[str] | None = None) -> int:
         pointer=args.pointer,
         judge=args.judge,
         naming=args.names,
+        switch_games=args.switch_games,
+        game_rules=game_rules(args),
     )
     app = build_hub_app(
         hub,

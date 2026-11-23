@@ -113,14 +113,24 @@ class CameraRig:
         return renderer
 
     def aim(
-        self, view: str, width: int, height: int, data: mujoco.MjData | None = None
+        self,
+        view: str,
+        width: int,
+        height: int,
+        data: mujoco.MjData | None = None,
+        *,
+        scene: str | None = None,
     ) -> mujoco.Renderer:
-        """Load a view of ``data`` into the renderer for this size (no OpenGL)."""
+        """Load a view of ``data`` into the renderer for this size (no OpenGL).
+
+        ``scene`` is the table scene ``data`` is in, for a model that holds
+        several (``sim.table_scenes.CLASSROOM``): its own cameras are used.
+        """
         if view not in VIEWS:
             raise ValueError(f"Unknown view '{view}'. Known: {', '.join(VIEWS)}")
         renderer = self.renderer(width, height)
         camera = mujoco.MjvCamera()
-        point_camera(camera, self.model, view)
+        point_camera(camera, self.model, view, scene=scene)
         renderer.update_scene(self._drawable(self.data if data is None else data), camera=camera)
         return renderer
 
@@ -143,7 +153,13 @@ class CameraRig:
         return renderer.render()
 
     def render(
-        self, view: str, width: int, height: int, data: mujoco.MjData | None = None
+        self,
+        view: str,
+        width: int,
+        height: int,
+        data: mujoco.MjData | None = None,
+        *,
+        scene: str | None = None,
     ) -> np.ndarray:
         """Return an RGB image (height x width x 3, uint8).
 
@@ -154,8 +170,9 @@ class CameraRig:
             data: State to draw; any ``MjData`` of this rig's model (or of its
                 ``state_model``), so one rig can serve several simulators
                 that share the model.
+            scene: The table scene ``data`` is in (see :meth:`aim`).
         """
-        return self.capture(self.aim(view, width, height, data))
+        return self.capture(self.aim(view, width, height, data, scene=scene))
 
     def close(self) -> None:
         for renderer in self._renderers.values():
@@ -163,10 +180,29 @@ class CameraRig:
         self._renderers.clear()
 
 
-def point_camera(camera: mujoco.MjvCamera, model: mujoco.MjModel, view: str) -> None:
+def view_camera_id(model: mujoco.MjModel, view: str, scene: str | None = None) -> int:
+    """The model's own camera for a view, or -1 when the view is a shared preset.
+
+    A model with several table scenes' furniture names each scene's cameras
+    ``{view}_{scene}`` (``sim.table_scenes.cell_camera_name``); a scene's own
+    model names them ``{view}``.
+    """
+    if scene is not None:
+        from xbox_soarm_teleop.sim.table_scenes import cell_camera_name
+
+        own = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, cell_camera_name(view, scene))
+        if own >= 0:
+            return own
+    return mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, view)
+
+
+def point_camera(
+    camera: mujoco.MjvCamera, model: mujoco.MjModel, view: str, *, scene: str | None = None
+) -> None:
     """Point a camera (offscreen or the viewer window's) at a named view.
 
     ``free`` hands the camera back to the mouse and leaves it where it is.
+    ``scene`` picks that table scene's own cameras in a model with several.
     """
     if view not in WINDOW_VIEWS:
         raise ValueError(f"Unknown view '{view}'. Known: {', '.join(WINDOW_VIEWS)}")
@@ -175,7 +211,7 @@ def point_camera(camera: mujoco.MjvCamera, model: mujoco.MjModel, view: str) -> 
         camera.fixedcamid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
         return
     if view != "free":
-        own = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, view)
+        own = view_camera_id(model, view, scene)
         if own >= 0:  # the scene's own camera for this view (sim/table_scenes.py)
             camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
             camera.fixedcamid = own

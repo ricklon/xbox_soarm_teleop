@@ -496,11 +496,12 @@
     return JSON.parse(reply.content[0].text);
   }
   const pick = $("scenePick");
+  const GAME_NAMES = { pick_and_place: "Pick and place", sorting: "Sorting" };
   let sceneShown = null;
   async function loadSceneList() {
     const listed = await pageTool("list_scenes").catch(() => null);
     if (!listed || !listed.scenes) { $("sceneNote").textContent = "Could not list the scenes."; return; }
-    pick.replaceChildren(...listed.scenes.map((sc) => {
+    const option = (sc) => {
       const o = document.createElement("option");
       o.value = sc.name;
       // "Easy: bean bag" reads better than the scene's name, which the tooltip keeps.
@@ -509,7 +510,15 @@
       o.textContent = level && things ? `${level}: ${things}` : sc.name;
       o.title = `${sc.name}. ${sc.description || ""}`;
       return o;
-    }));
+    };
+    // A hub where students switch games lists every game's scenes, grouped by game.
+    const games = [...new Set(listed.scenes.map((sc) => sc.game).filter(Boolean))];
+    pick.replaceChildren(...(games.length < 2 ? listed.scenes.map(option) : games.map((game) => {
+      const group = document.createElement("optgroup");
+      group.label = GAME_NAMES[game] || game.replace(/_/g, " ");
+      group.append(...listed.scenes.filter((sc) => sc.game === game).map(option));
+      return group;
+    })));
     const current = listed.scenes.find((sc) => sc.current);
     if (current) pick.value = current.name;
     pick.disabled = listed.scenes.length < 2;
@@ -522,9 +531,15 @@
     $("sceneNote").textContent = `Loading ${name}...`;
     const result = await pageTool("load_scene", { name }).catch((err) => ({ ok: false, detail: String(err) }));
     $("sceneNote").textContent = result.ok
-      ? `Loaded ${name}: the arm went home and the object changed.`
-      : `Not loaded: ${result.detail || result.reason || "refused"}`;
+      ? `Loaded ${name}: the arm went home and the objects changed.`
+      : result.reason === "stopped"
+        ? "Your arm is stopped: click Release stop, then choose the scene again."
+        : `Not loaded: ${result.detail || result.reason || "refused"}`;
     if (!result.ok && sceneShown) pick.value = sceneShown;
+    if (result.ok) {  // the prompts, and the names objects are shown by, follow the game
+      loadPrompts();
+      await loadSceneList();
+    }
     pick.disabled = false;
   });
   const showScene = (name) => {
@@ -532,6 +547,7 @@
     if (name !== sceneShown && document.activeElement !== pick) {
       if ([...pick.options].some((o) => o.value === name)) pick.value = name;
       if (sceneShown !== null && name !== loadedHere) $("sceneNote").textContent = `Now ${name}: switched by an agent.`;
+      if (sceneShown !== null) loadPrompts();  // the prompts follow the game
       sceneShown = name;
       loadedHere = null;
     }

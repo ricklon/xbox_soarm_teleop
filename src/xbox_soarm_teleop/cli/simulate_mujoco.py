@@ -70,9 +70,15 @@ from xbox_soarm_teleop.processors.xbox_to_ee import EEDelta, apply_axis_mapping
 from xbox_soarm_teleop.runtime import build_control_runtime, print_controls
 from xbox_soarm_teleop.sim.table_scenes import (
     BIN_FLOOR_M,
+    CLASSROOM,
     GOAL_BOX,
     TABLE_HEIGHT_M,
     TABLE_SCENES,
+    Bin,
+    TableScene,
+    cell_body_name,
+    cell_camera_name,
+    cell_park_xyz,
     is_table_scene,
 )
 from xbox_soarm_teleop.sim.world import DEFAULT_WORLD, WORLD_NAMES, apply_world
@@ -399,7 +405,22 @@ class MuJoCoSimulator:
         if scene == "stack":
             self._settle_stack_scene()
         elif is_table_scene(scene):
+            if is_classroom_model(self.model):
+                pose_classroom_cell(self.model, self.data, scene)
             self._bind_pick_place_scene()
+
+    @property
+    def switches_games(self) -> bool:
+        """The model holds every table scene's furniture: ``set_table_scene`` works."""
+        return is_classroom_model(self.model)
+
+    def set_table_scene(self, scene: str) -> None:
+        """Bring out another table scene's furniture (a classroom model only)."""
+        if not self.switches_games:
+            raise ValueError("this model has only its own scene's furniture")
+        pose_classroom_cell(self.model, self.data, scene)
+        self.scene = scene
+        self._bind_pick_place_scene()
 
     def go_home(self) -> None:
         """Reset to home position."""
@@ -785,17 +806,81 @@ def _add_pick_place_scene(
     """Add the table, its objects and the scene's bins (and a grey ground plane if
     the world has none). ``scene`` names the recipe in ``TABLE_SCENES``."""
     if add_floor:
-        floor = spec.worldbody.add_geom()
-        floor.name = "pick_place_floor"
-        floor.type = mujoco.mjtGeom.mjGEOM_PLANE
-        floor.size = [0.8, 0.8, 0.05]
-        floor.pos = [0.2, 0.0, 0.0]
-        floor.rgba = [0.45, 0.45, 0.45, 1.0]
-
+        _add_table_floor(spec)
     recipe = TABLE_SCENES[scene]
+    _add_table_geom(spec.worldbody, recipe, "pick_place_table")
+    spec.stat.center = list(recipe.stat_center)
+    spec.stat.extent = recipe.stat_extent
+    _add_table_objects(spec, recipe.boxes)
+    _add_bins(spec.worldbody, recipe)
+    for view, aim in (recipe.views or {}).items():
+        _add_view_camera(spec, view, aim)
+
+
+def _add_classroom_scene(spec: mujoco.MjSpec, *, add_floor: bool) -> None:
+    """Every table scene's furniture in one model, so a hub's rooms can each
+    use a different one (``sim.table_scenes.CLASSROOM``).
+
+    Each scene's table, bins and cameras ride on one mocap body (a "cell"),
+    drawn in that scene's own coordinates. A room poses its own cell at the
+    origin and parks the others far away (``pose_classroom_cell``); mocap
+    poses live in each room's ``MjData``, so switching is a reset, not a
+    recompile. The objects are the union of every scene's.
+    """
+    if add_floor:
+        _add_table_floor(spec)
+    boxes: dict[str, Bin] = {}
+    for index, recipe in enumerate(TABLE_SCENES.values()):
+        cell = spec.worldbody.add_body()
+        cell.name = cell_body_name(recipe.name)
+        cell.mocap = True
+        cell.pos = list(cell_park_xyz(index))
+        _add_table_geom(cell, recipe, f"{recipe.name}_table")
+        _add_bins(cell, recipe)
+        # A scene with cameras of its own brings them; the others use the
+        # shared presets, as on their own model (twin.cameras.point_camera).
+        for view, aim in (recipe.views or {}).items():
+            _add_view_camera(spec, cell_camera_name(view, recipe.name), aim, parent=cell)
+        for box in recipe.boxes:
+            boxes.setdefault(box.name, box)
+    # One clipping range for every cell: the widest scene's.
+    widest = max(TABLE_SCENES.values(), key=lambda recipe: recipe.stat_extent)
+    spec.stat.center = list(widest.stat_center)
+    spec.stat.extent = widest.stat_extent
+    _add_table_objects(spec, tuple(boxes.values()))
+
+
+def is_classroom_model(model: mujoco.MjModel) -> bool:
+    """The model holds every table scene's furniture (``_add_classroom_scene``)."""
+    first = next(iter(TABLE_SCENES))
+    return mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, cell_body_name(first)) >= 0
+
+
+def pose_classroom_cell(model: mujoco.MjModel, data: mujoco.MjData, scene: str) -> None:
+    """Put ``scene``'s furniture at the origin and park every other cell's."""
+    if scene not in TABLE_SCENES:
+        raise ValueError(f"Unknown table scene '{scene}'. Known: {', '.join(TABLE_SCENES)}")
+    for index, name in enumerate(TABLE_SCENES):
+        body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, cell_body_name(name))
+        mocap = int(model.body_mocapid[body])
+        data.mocap_pos[mocap] = (0.0, 0.0, 0.0) if name == scene else cell_park_xyz(index)
+        data.mocap_quat[mocap] = (1.0, 0.0, 0.0, 0.0)
+    mujoco.mj_forward(model, data)
+
+
+def _add_table_floor(spec: mujoco.MjSpec) -> None:
+    floor = spec.worldbody.add_geom()
+    floor.name = "pick_place_floor"
+    floor.type = mujoco.mjtGeom.mjGEOM_PLANE
+    floor.size = [0.8, 0.8, 0.05]
+    floor.pos = [0.2, 0.0, 0.0]
+    floor.rgba = [0.45, 0.45, 0.45, 1.0]
+
+
+def _add_table_geom(parent, recipe: "TableScene", name: str) -> None:
     top = recipe.table.top_z
-    table = spec.worldbody.add_geom()
-    table.name = "pick_place_table"
+    table = parent.add_geom()
+    table.name = name
     table.type = mujoco.mjtGeom.mjGEOM_BOX
     table.size = [*recipe.table.half_xy_m, top / 2.0]
     table.pos = [*recipe.table.center_xy_m, top / 2.0]
@@ -803,6 +888,24 @@ def _add_pick_place_scene(
     table.friction = [1.1, 0.02, 0.001]
     table.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
 
+
+def _add_bins(parent, recipe: "TableScene") -> None:
+    """The recipe's fixed bins, as geoms of ``parent`` (the world, or a cell)."""
+    top = recipe.table.top_z
+    for bin_ in recipe.bins:
+        for name, offset, size in bin_.parts():
+            geom = parent.add_geom()
+            geom.name = name
+            geom.type = mujoco.mjtGeom.mjGEOM_BOX
+            geom.pos = (np.array(bin_.base_center_m(top)) + np.array(offset, dtype=float)).tolist()
+            geom.size = list(size)
+            geom.rgba = list(bin_.rgba)
+            geom.contype = 1
+            geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
+
+
+def _add_table_objects(spec: mujoco.MjSpec, boxes: tuple[Bin, ...]) -> None:
+    """The free objects every table scene has, and these movable boxes."""
     cube_body = spec.worldbody.add_body()
     cube_body.name = "pick_cube"
     cube_body.pos = PICK_PLACE_CUBE_START.tolist()
@@ -837,8 +940,6 @@ def _add_pick_place_scene(
     bag_geom.group = HIDDEN_GEOM_GROUP  # cameras show the bag's look, below
     _add_bean_bag_look(spec, bag_body)
 
-    spec.stat.center = list(recipe.stat_center)
-    spec.stat.extent = recipe.stat_extent
     for index, (name, half, rgba, mass) in enumerate(DISTRACTOR_OBJECTS):
         body = spec.worldbody.add_body()
         body.name = name
@@ -852,20 +953,10 @@ def _add_pick_place_scene(
         geom.rgba = list(rgba)
         geom.friction = [1.1, 0.02, 0.001]
 
-    for bin_ in recipe.bins:
-        for name, offset, size in bin_.parts():
-            geom = spec.worldbody.add_geom()
-            geom.name = name
-            geom.type = mujoco.mjtGeom.mjGEOM_BOX
-            geom.pos = (np.array(bin_.base_center_m(top)) + np.array(offset, dtype=float)).tolist()
-            geom.size = list(size)
-            geom.rgba = list(bin_.rgba)
-            geom.contype = 1
-            geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
     # Movable boxes: free bodies (graspable objects to the twin), parked beyond
     # the distractors until a layout puts them out. The body's origin is the
     # middle of the floor plate.
-    for index, box in enumerate(recipe.boxes, start=len(DISTRACTOR_OBJECTS)):
+    for index, box in enumerate(boxes, start=len(DISTRACTOR_OBJECTS)):
         body = spec.worldbody.add_body()
         body.name = box.name
         body.pos = [DISTRACTOR_REST_XY[0] + 0.3 * index, DISTRACTOR_REST_XY[1], BIN_FLOOR_M + 0.0005]
@@ -882,8 +973,6 @@ def _add_pick_place_scene(
             geom.friction = [0.6, 0.02, 0.001]  # slides on the table when pushed
             geom.contype = 1
             geom.conaffinity = 1 | SOFT_OBJECT_COLLISION_BIT
-    for view, aim in (recipe.views or {}).items():
-        _add_view_camera(spec, view, aim)
 
 
 def _pillow_mesh(half: np.ndarray, rings: int = 10, sides: int = 24) -> tuple[list, list]:
@@ -960,14 +1049,15 @@ def _add_bean_bag_look(spec: mujoco.MjSpec, body) -> None:
     look.density = 0.0
 
 
-def _add_view_camera(spec: mujoco.MjSpec, name: str, aim: dict) -> None:
+def _add_view_camera(spec: mujoco.MjSpec, name: str, aim: dict, parent=None) -> None:
     """A fixed camera aimed like a free-camera preset (lookat, distance, azimuth,
-    elevation), with the model's global field of view: what the presets draw."""
+    elevation), with the model's global field of view: what the presets draw.
+    It hangs from ``parent`` (a body; the world when None)."""
     az, el = np.deg2rad(aim["azimuth"]), np.deg2rad(aim["elevation"])
     forward = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
     up = np.array([-np.sin(el) * np.cos(az), -np.sin(el) * np.sin(az), np.cos(el)])
     right = np.cross(forward, up)
-    camera = spec.worldbody.add_camera()
+    camera = (parent if parent is not None else spec.worldbody).add_camera()
     camera.name = name
     camera.pos = (np.asarray(aim["lookat"], dtype=float) - aim["distance"] * forward).tolist()
     camera.alt.type = mujoco.mjtOrientation.mjORIENTATION_XYAXES
@@ -1006,8 +1096,11 @@ def load_model_with_cameras(
     world_has_floor = apply_world(spec, world)
     if scene == "stack":
         _add_stack_scene(spec, add_floor=not world_has_floor)
-    elif is_table_scene(scene):
-        _add_pick_place_scene(spec, add_floor=not world_has_floor, scene=scene)
+    elif is_table_scene(scene) or scene == CLASSROOM:
+        if scene == CLASSROOM:
+            _add_classroom_scene(spec, add_floor=not world_has_floor)
+        else:
+            _add_pick_place_scene(spec, add_floor=not world_has_floor, scene=scene)
         for geom in spec.geoms:
             if geom.type == mujoco.mjtGeom.mjGEOM_PLANE:  # soft objects land on any floor
                 geom.conaffinity = int(geom.conaffinity) | SOFT_OBJECT_COLLISION_BIT

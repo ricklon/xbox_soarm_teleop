@@ -482,6 +482,18 @@ def build_hub_app(
     )
     hub.agent_desk = desk  # closed with the hub
 
+    def refuse_while_agent_runs(room: Room):
+        def refusal() -> str | None:
+            run = desk.runs.get(room.token)
+            if run is not None and not run.done:
+                return "your agent is running: stop it, then choose the game again"
+            return None
+
+        return refusal
+
+    for room in hub.rooms.values():  # a game change resets the desk under the agent
+        room.service.switch_refusal = refuse_while_agent_runs(room)
+
     @server.custom_route("/r/{token}/agent", methods=["GET"])
     async def agent_state(request: Request) -> Response:
         room = room_of(request)

@@ -78,18 +78,26 @@ def build_parts(
     world: str | None = None,
     controller_backend: str = "auto",
     deadzone: float = 0.15,
+    switch_games: bool = False,
 ) -> TwinParts:
     """Build the shareable pieces of a twin (see :class:`TwinParts`).
 
     ``scene`` may name a layout (``pick_place_easy``): the parts are then those
     of the scene it arranges, and twins built from them start in that layout.
+
+    With ``switch_games`` the model holds every table scene's furniture
+    (``sim.table_scenes.CLASSROOM``), so each twin built from the parts can
+    switch game (``load_scene``) on its own; ``scene`` is where they start.
     """
     from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
     from xbox_soarm_teleop.runtime import build_control_runtime
+    from xbox_soarm_teleop.sim.table_scenes import CLASSROOM, is_table_scene
     from xbox_soarm_teleop.twin.layouts import LAYOUTS, model_scene
 
     layout = LAYOUTS.get(scene)
     scene = model_scene(scene)
+    if switch_games and not is_table_scene(scene):
+        raise ValueError(f"Students can switch games only from a table scene, not '{scene}'")
 
     runtime = build_control_runtime(
         controller_type="xbox",
@@ -104,7 +112,9 @@ def build_parts(
         urdf_path=str(sim_cli.URDF_PATH),
     )
     world = world or sim_cli.DEFAULT_WORLD
-    model = sim_cli.load_model_with_cameras(str(sim_cli.URDF_PATH), scene=scene, world=world)
+    model = sim_cli.load_model_with_cameras(
+        str(sim_cli.URDF_PATH), scene=CLASSROOM if switch_games else scene, world=world
+    )
     return TwinParts(
         scene=scene,
         world=world,
@@ -133,6 +143,7 @@ def build_twin(
     pointer: Any = None,
     judge: Any = None,
     naming: str = "as_is",
+    game_rules: dict[str, dict] | None = None,
 ) -> TwinService:
     """Create a twin with the same kinematics, mapping and bounds as teleop.
 
@@ -156,6 +167,10 @@ def build_twin(
         pointer: Pointing model behind ``locate`` (``twin.pointing``).
         judge: Success judge behind ``check_success`` (``twin.judge``).
         naming: The names agents are shown for objects (``twin.naming``).
+        game_rules: For parts that switch games: settings that change with the
+            game, by table scene (``{"sort_bins": {"hide_positions": True,
+            "naming": "truthful"}}``). A game not listed uses ``hide_positions``
+            and ``naming``.
     """
     from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
     from xbox_soarm_teleop.control.safety import make_workspace_clipper
@@ -207,4 +222,5 @@ def build_twin(
         pointer=pointer,
         judge=judge,
         naming=naming,
+        game_rules=game_rules,
     )

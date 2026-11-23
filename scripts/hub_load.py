@@ -11,6 +11,7 @@ Use it before a workshop to see what your machine can carry:
     uv run python scripts/hub_load.py --seats 30
     uv run python scripts/hub_load.py --seats 30 --picture-rate 15
     uv run python scripts/hub_load.py --seats 30 --mesh-detail-mm 0   # original meshes
+    uv run python scripts/hub_load.py --seats 30 --switch-games  # half the class sorting
 
 It measures this computer only. A tunnel and the students' own connections
 come on top.
@@ -74,8 +75,33 @@ async def _student(client, base: str, token: str, view: str, seconds: float, out
     await asyncio.gather(controls(), pictures())
 
 
-async def _run(base: str, roster: dict, seconds: float, warmup: float) -> dict:
+async def _load_scene(base: str, token: str, name: str) -> None:
+    """Switch one arm's scene as a student's page does: the arm's own load_scene tool."""
+    from contextlib import AsyncExitStack
+
+    from mcp.client.session import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    async with AsyncExitStack() as stack:
+        client = await stack.enter_async_context(
+            httpx.AsyncClient(headers={"Authorization": f"Bearer {token}"}, timeout=60)
+        )
+        read, write, *_ = await stack.enter_async_context(
+            streamable_http_client(f"{base}/mcp", http_client=client)
+        )
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        reply = json.loads((await session.call_tool("load_scene", {"name": name})).content[0].text)
+        if not reply.get("ok", True):
+            raise RuntimeError(f"load_scene {name}: {reply}")
+
+
+async def _run(
+    base: str, roster: dict, seconds: float, warmup: float, switch_games: bool = False
+) -> dict:
     tokens = [room["token"] for room in roster["rooms"]]
+    if switch_games:  # every other student switches to sorting: a mixed class
+        await asyncio.gather(*(_load_scene(base, t, "sort_colors") for t in tokens[1::2]))
     limits = httpx.Limits(max_connections=None, max_keepalive_connections=None)
     async with httpx.AsyncClient(timeout=10, limits=limits) as client:
         warm = [{"pictures": 0, "bytes": 0, "busy": 0, "errors": 0, "waits": []} for _ in tokens]
@@ -109,7 +135,9 @@ async def _run(base: str, roster: dict, seconds: float, warmup: float) -> dict:
     }
 
 
-def measure(seats: int, mesh_detail_mm: float, picture_rate: float, seconds: float) -> dict:
+def measure(
+    seats: int, mesh_detail_mm: float, picture_rate: float, seconds: float, switch_games: bool = False
+) -> dict:
     """Start a hub with these settings, load it, stop it, and return the figures."""
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
@@ -119,6 +147,8 @@ def measure(seats: int, mesh_detail_mm: float, picture_rate: float, seconds: flo
             "--port", str(port), "--no-log", "--no-open", "--no-find-tunnel", "--roster", str(roster_path),
             "--mesh-detail-mm", str(mesh_detail_mm), "--picture-rate", str(picture_rate),
         ]  # fmt: skip
+        if switch_games:
+            command.append("--switch-games")
         hub = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             base = f"http://127.0.0.1:{port}"
@@ -135,7 +165,7 @@ def measure(seats: int, mesh_detail_mm: float, picture_rate: float, seconds: flo
             else:
                 raise RuntimeError("the hub did not start within 2 minutes")
             roster = json.loads(roster_path.read_text())
-            return asyncio.run(_run(base, roster, seconds, warmup=3.0))
+            return asyncio.run(_run(base, roster, seconds, warmup=3.0, switch_games=switch_games))
         finally:
             hub.terminate()
             try:
@@ -152,6 +182,11 @@ def main() -> int:
     )
     parser.add_argument("--picture-rate", type=float, action="append", help="Repeatable")
     parser.add_argument("--seconds", type=float, default=10.0, help="Measured time per row")
+    parser.add_argument(
+        "--switch-games",
+        action="store_true",
+        help="A hub where students switch games, with every other arm switched to sorting",
+    )
     args = parser.parse_args()
     print(
         "students  meshes  asked/s  got/s each  slowest  kB/picture  Mbit/s each  "
@@ -160,7 +195,7 @@ def main() -> int:
     for seats in args.seats or [10]:
         for detail in args.mesh_detail_mm or [2.0]:
             for rate in args.picture_rate or [10.0]:
-                r = measure(seats, detail, rate, args.seconds)
+                r = measure(seats, detail, rate, args.seconds, args.switch_games)
                 meshes = "full" if detail <= 0 else f"{detail:g} mm"
                 print(
                     f"{seats:8d}  {meshes:6s}  {rate:7.0f}  {r['per_student']:10.1f}  "

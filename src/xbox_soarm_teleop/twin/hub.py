@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from xbox_soarm_teleop.sim.table_scenes import CLASSROOM
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 from xbox_soarm_teleop.twin import TwinService, build_parts, build_twin
 from xbox_soarm_teleop.twin.cameras import CameraRig, encode
@@ -197,6 +198,13 @@ class Hub:
             (``twin.judge.make_judge``); None for no checks.
         naming: The names every arm's agents are shown for objects
             (``twin.naming``).
+        switch_games: Each student may switch game (pick and place, sorting)
+            on their own arm with ``load_scene``; ``scene`` is where every arm
+            starts. The rooms still share one model, with every game's
+            furniture in it (``sim.table_scenes.CLASSROOM``).
+        game_rules: Settings that change with a room's game, by table scene,
+            e.g. ``{"sort_bins": {"hide_positions": True, "naming": "truthful"}}``.
+            A game not listed uses ``hide_positions`` and ``naming``.
     """
 
     def __init__(
@@ -213,20 +221,23 @@ class Hub:
         pointer: str | None = None,
         judge: str | None = None,
         naming: str = "as_is",
+        switch_games: bool = False,
+        game_rules: dict[str, dict] | None = None,
     ) -> None:
         if seats < 1:
             raise ValueError("seats must be at least 1")
         if mesh_cell_mm < 0:
             raise ValueError("mesh_cell_mm must be 0 or more")
         self.scene = scene
-        self.parts = build_parts(scene=scene, world=world)
+        self.switch_games = switch_games
+        self.parts = build_parts(scene=scene, world=world, switch_games=switch_games)
         drawn = self.parts.model
         if mesh_cell_mm > 0:
             from xbox_soarm_teleop.cli import simulate_mujoco as sim_cli
 
             drawn = sim_cli.load_model_with_cameras(
                 str(sim_cli.URDF_PATH),
-                scene=self.parts.scene,
+                scene=CLASSROOM if switch_games else self.parts.scene,
                 world=self.parts.world,
                 mesh_cell_mm=mesh_cell_mm,
             )
@@ -251,6 +262,7 @@ class Hub:
                 pointer=make_pointer(pointer),
                 judge=make_judge(judge),
                 naming=naming,
+                game_rules=game_rules,
             )
             controller.gripper_feedback = lambda service=service: float(service.state.gripper_pos)
             service.stop_release_hint = "press Release stop on the arm's web page"
@@ -344,7 +356,8 @@ class Hub:
             self._paint_jobs.put(("make", size, request))
             return
         try:
-            renderer = self.cameras.aim(request.view, *size, room.service.sim.data)
+            sim = room.service.sim
+            renderer = self.cameras.aim(request.view, *size, sim.data, scene=sim.scene)
         except Exception as exc:  # noqa: BLE001 - delivered to the caller
             request.future.set_exception(exc)
             self._painter_idle.set()

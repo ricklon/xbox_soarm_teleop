@@ -55,6 +55,7 @@ from xbox_soarm_teleop.schemas.agent import (
     Observation,
     ReasonCode,
 )
+from xbox_soarm_teleop.sim.table_scenes import TABLE_SCENES
 from xbox_soarm_teleop.teleoperators.xbox import XboxState
 from xbox_soarm_teleop.twin.actions import (
     Action,
@@ -173,6 +174,7 @@ class TwinService:
         pointer: Pointer | None = None,
         judge: Any = None,
         naming: str = "as_is",
+        game_rules: dict[str, dict] | None = None,
     ) -> None:
         self.log = log
         self.naming = naming
@@ -211,6 +213,15 @@ class TwinService:
         self.layout = layout
         self._arrange_objects()
         self.state = make_cartesian_state(kinematics, np.zeros(4))
+        # Switching game (a model with every table scene's furniture): what
+        # changes with it, and who may refuse it.
+        self._base_rules = {"hide_positions": hide_positions, "naming": naming}
+        self.game_rules = dict(game_rules or {})
+        """Settings each game brings, by table scene (``twin.build_twin``)."""
+        self.switch_refusal: Callable[[], str | None] | None = None
+        """Asked before a change of game: a reason to refuse it, or None.
+        A hub refuses while the room's own agent is running."""
+        self._apply_game_rules()
 
         self.frame = 0
         self.homing = False
@@ -366,19 +377,50 @@ class TwinService:
     def _load_layout(self, layout, client_id: str) -> dict[str, Any]:
         if self.stop_latched_by is not None:
             raise ActionRejected(ReasonCode.STOPPED, f"latched by {self.stop_latched_by}")
-        if layout.model_scene != self.sim.scene:
+        if layout.model_scene != self.sim.scene and not self._switches_games:
             raise ActionRejected(
                 ReasonCode.INVALID_REQUEST,
                 f"that arrangement is for the {layout.model_scene} scene, this arm has {self.sim.scene}",
             )
+        self._check_game_switch(layout.model_scene)
         self._ensure_owner(client_id)
+        self._switch_game(layout.model_scene)
         self.layout = layout
         self._reset_scene()
         self._event("layout loaded")
         return {**self.layout.summary(), "current": True}
 
+    @property
+    def _switches_games(self) -> bool:
+        return bool(getattr(self.sim, "switches_games", False))
+
+    def _scene_choices(self, *, include_hidden: bool = False) -> list[Layout]:
+        """The layouts ``load_scene`` may load: this game's, or every game's when
+        the model has every table scene's furniture."""
+        if not self._switches_games:
+            return layouts_for(self.sim.scene, include_hidden=include_hidden)
+        return [
+            layout
+            for scene in TABLE_SCENES
+            for layout in layouts_for(scene, include_hidden=include_hidden)
+        ]
+
     def list_scenes(self) -> list[dict[str, Any]]:
-        """The scenes ``load_scene`` accepts, easiest first, marking the current one."""
+        """The scenes ``load_scene`` accepts, easiest first, marking the current one.
+
+        Where students may switch game, every game's scenes, each with its
+        ``game`` (``pick_and_place``, ``sorting``).
+        """
+        if self._switches_games:
+            current = self.layout.name if self.layout is not None else None
+            return [
+                {
+                    **layout.summary(),
+                    "game": TABLE_SCENES[layout.model_scene].game,
+                    "current": layout.name == current,
+                }
+                for layout in self._scene_choices()
+            ]
         layouts = layouts_for(self.sim.scene)
         if not layouts:
             return [
@@ -955,7 +997,7 @@ class TwinService:
                 if self._cameras is None:
                     self._cameras = CameraRig(self.sim.model, self.sim.data)
                 pixels = self._cameras.render(
-                    request.view, request.width, request.height, self.sim.data
+                    request.view, request.width, request.height, self.sim.data, scene=self.sim.scene
                 )
                 request.future.set_result(encode(pixels, request.fmt))
             except BaseException as exc:  # noqa: BLE001 - delivered to the caller
@@ -1286,11 +1328,13 @@ class TwinService:
     def _load_scene(self, name: str, client_id: str) -> dict[str, Any]:
         if self.stop_latched_by is not None:
             raise ActionRejected(ReasonCode.STOPPED, f"latched by {self.stop_latched_by}")
-        layouts = {layout.name: layout for layout in layouts_for(self.sim.scene, include_hidden=True)}
+        layouts = {layout.name: layout for layout in self._scene_choices(include_hidden=True)}
         if name not in layouts:
             known = ", ".join(scene["name"] for scene in self.list_scenes())
             raise ActionRejected(ReasonCode.INVALID_REQUEST, f"Unknown scene '{name}'. Known: {known}")
+        self._check_game_switch(layouts[name].model_scene)
         self._ensure_owner(client_id)
+        self._switch_game(layouts[name].model_scene)
         self.layout = layouts[name]
         self._reset_scene()
         self._event(f"scene loaded: {name}")
@@ -1380,7 +1424,9 @@ class TwinService:
         plane_z = float(rest_z_m) + float(self.grasp.half_extents_world(name)[2])
         mujoco.mj_kinematics(self.sim.model, self.sim.data)
         mujoco.mj_camlight(self.sim.model, self.sim.data)
-        geometry = camera_geometry(self.sim.model, self.sim.data, view, width, height)
+        geometry = camera_geometry(
+            self.sim.model, self.sim.data, view, width, height, scene=self.sim.scene
+        )
         return {
             "description": description or object_description(name, self.layout),
             "plane_z_m": plane_z,
@@ -1410,7 +1456,9 @@ class TwinService:
         plane_z = float(rest_z_m) + float(np.median(halves))
         mujoco.mj_kinematics(self.sim.model, self.sim.data)
         mujoco.mj_camlight(self.sim.model, self.sim.data)
-        geometry = camera_geometry(self.sim.model, self.sim.data, view, width, height)
+        geometry = camera_geometry(
+            self.sim.model, self.sim.data, view, width, height, scene=self.sim.scene
+        )
         return {
             "description": description.strip(),
             "plane_z_m": plane_z,
@@ -1430,6 +1478,46 @@ class TwinService:
             self.grasp.place(name, np.asarray(pose[:3], dtype=float), yaw)
         self.grasp.park(name for name in self.grasp.objects if name not in self.layout.objects)
         mujoco.mj_forward(self.sim.model, self.sim.data)
+
+    def _check_game_switch(self, scene: str) -> None:
+        """Refuse a change of game the host does not allow now."""
+        if scene == self.sim.scene or self.switch_refusal is None:
+            return
+        reason = self.switch_refusal()
+        if reason:
+            raise ActionRejected(ReasonCode.INVALID_REQUEST, reason)
+
+    def _switch_game(self, scene: str) -> None:
+        """Bring out another game's furniture, with its floor, bounds and rules.
+
+        The arm may not go below a table top, so the bounds change with the
+        table: 12 cm up for pick and place, at the base for the sorting desk.
+        A challenge is for the desk it was set up on, so it ends here.
+        """
+        if scene == self.sim.scene:
+            return
+        from xbox_soarm_teleop.control.safety import make_workspace_clipper
+        from xbox_soarm_teleop.twin import scene_workspace, table_top_z
+
+        self.sim.set_table_scene(scene)
+        bounds = scene_workspace(scene)
+        self.workspace_bounds = bounds
+        self.table_top_z = table_top_z(scene)
+        self.step_config = replace(
+            self.step_config, clip_position=make_workspace_clipper(bounds), workspace_bounds=bounds
+        )
+        if self.challenge is not None:
+            self.challenge = None
+            self.layout_before = None
+            self.naming_before = None
+        self._apply_game_rules()
+        self._event(f"game: {TABLE_SCENES[scene].game.replace('_', ' ')}")
+
+    def _apply_game_rules(self) -> None:
+        rules = {**self._base_rules, **self.game_rules.get(self.sim.scene, {})}
+        self.hide_positions = bool(rules["hide_positions"])
+        self.naming = rules["naming"]
+        self._shown = None
 
     def _reset_scene(self) -> None:
         self._end_action(ActionState.CANCELLED, ReasonCode.CANCELLED, "scene reset")

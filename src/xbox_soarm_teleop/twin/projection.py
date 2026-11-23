@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
-from xbox_soarm_teleop.twin.cameras import FIXED_VIEWS, VIEWS
+from xbox_soarm_teleop.twin.cameras import FIXED_VIEWS, VIEWS, view_camera_id
 
 
 @dataclass(frozen=True)
@@ -89,16 +89,23 @@ class CameraGeometry:
 
 
 def camera_geometry(
-    model: mujoco.MjModel, data: mujoco.MjData, view: str, width: int, height: int
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    view: str,
+    width: int,
+    height: int,
+    *,
+    scene: str | None = None,
 ) -> CameraGeometry:
     """The geometry of a named view (``twin.cameras``) as it is drawn now.
 
     ``data`` must have current kinematics (``mj_kinematics`` or a step ran)
-    for the views that move with the arm.
+    for the views that move with the arm. ``scene`` is the table scene
+    ``data`` is in, for a model with several (``twin.cameras.view_camera_id``).
     """
     if view not in VIEWS:
         raise ValueError(f"Unknown view '{view}'. Known: {', '.join(VIEWS)}")
-    own = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, view)
+    own = view_camera_id(model, view, scene)
     if view in FIXED_VIEWS and own < 0:  # a shared preset, not the scene's own camera
         preset = FIXED_VIEWS[view]
         az = math.radians(preset["azimuth"])
@@ -108,7 +115,7 @@ def camera_geometry(
         position = np.asarray(preset["lookat"], dtype=float) - preset["distance"] * forward
         fovy = float(model.vis.global_.fovy)
     else:
-        cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, view)
+        cam = own
         frame = data.cam_xmat[cam].reshape(3, 3)
         position = data.cam_xpos[cam].copy()
         up = frame[:, 1].copy()
