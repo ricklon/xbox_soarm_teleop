@@ -1,0 +1,45 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Headless MuJoCo rendering (the twin camera tests use mujoco.Renderer).
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      # pygame is a dependency; keep it from looking for a display or sound card.
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install EGL for headless rendering
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgles2 libegl-mesa0 libgl1-mesa-dri
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python and dependencies
+        run: |
+          uv python install 3.12
+          uv sync --locked --extra dev
+
+      - name: Run pytest
+        run: uv run pytest
