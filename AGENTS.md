@@ -1,443 +1,138 @@
 # AGENTS.md
 
-This file provides guidance to AI coding agents (Claude Code, Codex, and others) working in this repository.
+Guidance for AI coding agents (Claude Code, Codex, and others) working in this repository.
+`CLAUDE.md` imports this file; edit this one.
 
-## Project Overview
+## What this project is
 
-Xbox controller teleoperation for the SO-ARM100/101 robotic arm using inverse kinematics. The operator controls the end effector in Cartesian space while IK computes joint angles in real-time. Built as an extension to the HuggingFace LeRobot framework.
+Teleoperation for the SO-ARM100/101 6-DOF arm (Feetech STS3215 servos), built on HuggingFace
+LeRobot. A person drives the arm with an Xbox controller, Joy-Con(s) or keyboard, in simulation
+(MuJoCo), on the real arm, or both at once (digital twin). It is also a workshop platform:
+a simulated arm that students and AI agents (over MCP) share, and a hub that hosts one arm per
+student in the browser, with pick-and-place and sorting challenges.
 
-## Tech Stack
+Start with `README.md` for features and quick start, and `docs/` for the detailed guides.
 
-- **Framework**: LeRobot (HuggingFace) with `kinematics` extra
-- **IK Solver**: Placo (wrapper around Pinocchio), integrated via LeRobot
-- **Robot**: SO-ARM101, 6-DOF, Feetech STS3215 servos (30 kg·cm @ 12V)
-- **Controller Input**: `inputs` library or `pygame` for Xbox gamepad
-- **Package Manager**: uv
-- **Build Backend**: hatchling
-- **Linting/Formatting**: ruff
-- **Testing**: pytest
-- **Python Version**: 3.12 (LeRobot 0.7 requires >=3.12; MuJoCo 4.0 requires >=3.11)
+## Tech stack
 
-## Project Structure
+- Python 3.12 only (`>=3.12,<3.13`), managed with **uv**, built with hatchling
+- LeRobot `>=0.7,<0.8` with `kinematics,feetech,dataset` extras; IK via Placo
+- MuJoCo `>=4,<5` for simulation and camera rendering
+- `mcp` for the agent server; `pygame`/`inputs` for gamepads
+- ruff (lint + format, line length 104), pytest, pre-commit
+- Robot model: `assets/so101.urdf` (SO-ARM100 and 101 share kinematics)
 
-```
-xbox_soarm_teleop/
-├── pyproject.toml
-├── CLAUDE.md
-├── README.md
-├── .gitignore
-├── .pre-commit-config.yaml
-├── src/
-│   └── xbox_soarm_teleop/
-│       ├── __init__.py
-│       ├── teleoperators/
-│       │   ├── __init__.py
-│       │   └── xbox.py              # XboxController class, handles input reading
-│       ├── processors/
-│       │   ├── __init__.py
-│       │   └── xbox_to_ee.py        # MapXboxToEEDelta processor
-│       └── config/
-│           ├── __init__.py
-│           ├── xbox_config.py       # Controller configuration dataclass
-│           └── workspace_limits.yaml # Safety bounds
-├── examples/
-│   └── teleoperate.py               # Main control loop example
-└── tests/
-    ├── __init__.py
-    ├── conftest.py
-    ├── test_xbox_input.py           # Standalone controller test
-    └── test_ik_roundtrip.py         # FK/IK verification
-```
-
-## Architecture
+## Layout
 
 ```
-XboxController (Teleoperator)
-    │
-    ▼
-MapXboxToEEDelta (Processor)
-    │
-    ▼
-EEReferenceAndDelta (LeRobot processor - latches reference, accumulates deltas)
-    │
-    ▼
-EEBoundsAndSafety (LeRobot processor - workspace limits, rate limiting)
-    │
-    ▼
-InverseKinematicsEEToJoints (LeRobot processor - Placo IK)
-    │
-    ▼
-SOFollower (Robot)
+src/xbox_soarm_teleop/
+  cli/            Entry points for the console scripts in pyproject.toml
+  teleoperators/  Input devices: xbox.py, joycon.py, joycon_imu.py, keyboard.py
+  processors/     Input state -> commands, one per mode: xbox_to_ee (cartesian), crane,
+                  joint_direct, puppet; factory.py picks one
+  control/        Cartesian stepping, safety clipping, home, routines, unit conversion
+  kinematics/     Constrained / cylindrical IK helpers, Jacobian
+  lerobot_steps/  `soarm_cartesian_ik` LeRobot processor step (see docs/lerobot_pipeline.md)
+  config/         Controller configs, ControlMode enum, joints, workspace_limits.yaml
+  sim/            MuJoCo world, table scenes, printable props
+  twin/           Workshop twin: MCP server, hub, cameras, challenges, judge, web UI
+  runtime/        Session plumbing and on-screen control help
+  recording/      LeRobot dataset features
+  diagnostics/    Benchmarks, joint diagnostics, rerun logging
+  schemas/        Agent-facing schemas
+examples/         Runnable scripts; diagnostics/ has hardware probes (see examples/README.md)
+scripts/          Benchmarks, agent trials, notebook builders, home-rig tools
+tests/            pytest suite (runs headless; see CI below)
+notebooks/        Workshop notebooks
+spikes/           Experiments, not part of the package
+twin_logs/, captures/  Run output; don't edit or commit casually
 ```
 
-## Control Mapping
+## Control modes
 
-| Input | Function |
-|-------|----------|
-| Left Stick | Horizontal plane movement (X/Y) |
-| Right Stick Y | Vertical movement (Z) |
-| Right Stick X | Wrist roll rotation |
-| D-pad Up/Down | Pitch (tilt gripper up/down) |
-| D-pad Left/Right | Yaw (rotate gripper heading) |
-| Right Trigger | Gripper position (0=open, 1=closed) |
-| Left Bumper | Deadman switch (hold to enable) |
-| A Button | Return to home position |
-| Y Button | Toggle coordinate frame (world/tool) |
+`ControlMode` in `config/modes.py`: `cartesian` (default; end-effector deltas through IK),
+`joint` (per-joint velocity, no IK), `crane` (cylindrical, decoupled), `puppet` (crane plus
+Joy-Con IMU wrist). Select with `--mode` and the device with `--controller`.
 
-## Development Commands
+Xbox mapping in cartesian mode: left stick X = Y axis, left stick Y = Z axis, right stick Y = X
+axis, right stick X = wrist roll, D-pad = pitch/yaw, right trigger = gripper, LB = deadman,
+A = home. `docs/driving_guide.md` is the source of truth for every mode and device; update it
+when you change a mapping.
+
+## Commands
 
 ```bash
-# Environment setup
-uv venv --python 3.12
-source .venv/bin/activate
-uv pip install -e ".[dev]"
-
-# Install LeRobot with kinematics
-uv pip install "lerobot[kinematics,feetech,dataset]>=0.7.0,<0.8"
-
-# Run the application
-uv run python examples/teleoperate.py
-
-# Code quality
-uv run ruff check .
+uv sync --extra dev                 # install (CI uses: uv sync --locked --extra dev)
+uv run pytest                       # full suite
+uv run pytest tests/test_x.py -v    # one file
 uv run ruff check . --fix
-uv run ruff format .
+uv run ruff format <changed files>  # not the whole tree; see below
+pre-commit run --files <changed files>
 
-# Testing
-uv run pytest                              # Run all tests
-uv run pytest tests/test_xbox_input.py -v  # Test controller input
-uv run pytest tests/test_ik_roundtrip.py -v # Test FK/IK verification
-
-# Pre-commit
-pre-commit install
-pre-commit run --all-files
+uv run simulate-mujoco [--mode crane --controller keyboard]   # sim, no robot
+uv run teleoperate-real --port /dev/ttyUSB0                    # real arm
+uv run teleoperate-dual --port /dev/ttyUSB0                    # real + sim
+uv run soarm-twin                                              # workshop twin + MCP on :8765
+uv run soarm-hub --seats 2                                     # one browser arm per student
+uv run python scripts/twin_smoke.py                            # end-to-end twin check over MCP
 ```
 
-## Key LeRobot Integration Points
+Other entry points (`ik-smoke`, `mujoco-ik-check`, `soarm-challenge`, `record-xbox`,
+`diagnose-robot`, ...) are listed under `[project.scripts]` in `pyproject.toml`.
 
-```python
-# Kinematics solver from URDF
-from lerobot.model.kinematics import RobotKinematics
+## Safety (non-negotiable)
 
-# Robot interface
-from lerobot.robots.so_follower import SOFollower
-```
+- Every motion path is gated by a deadman (Xbox LB, single Joy-Con SL, dual Joy-Con ZL).
+  Releasing it stops the arm. Don't add a motion path that bypasses it.
+- Workspace bounds and safety clipping apply **before** IK; velocity caps apply after.
+- Analog deadzone is 0.1.
+- Gripper is position-controlled (0 = open, 1 = closed), not velocity.
+- Units: m/s linear, rad/s angular; IK seeds from the current joints.
+- Test in simulation first. Never run code against the real arm without the user's go-ahead,
+  and assume a person must be at the e-stop.
+- In the twin, the person holding the controller can always take over or stop an agent.
 
-### XboxController Pattern (Teleoperator)
+## Conventions
 
-```python
-# src/xbox_soarm_teleop/teleoperators/xbox.py
-from dataclasses import dataclass
-import inputs  # or pygame
+- Write or update tests with every change (TDD preferred). Tests must pass headless
+  (CI sets `MUJOCO_GL=egl`, `SDL_VIDEODRIVER=dummy`) and must not need a controller or robot.
+- Run `ruff format` only on files you changed; formatting the whole tree rewrites ~30
+  unrelated files.
+- Type hints on public functions, Google-style docstrings, dataclasses for state.
+- Conventional commits (`feat:`, `fix:`, `docs:`, `ci:`, ...). Work on a branch; `main` is
+  merged through PRs, and CI (`.github/workflows/tests.yml`) runs pytest on every PR.
+- Never print, log, screenshot or commit student keys, API keys or tokens. Hub output is
+  designed to be safe to share on screen; keep it that way.
+- New fields in twin session logs need a test on a twin that keeps a session log (past
+  crashes came from field names colliding with the logger's own).
 
-@dataclass
-class XboxState:
-    left_stick_x: float = 0.0
-    left_stick_y: float = 0.0
-    right_stick_x: float = 0.0
-    right_stick_y: float = 0.0
-    right_trigger: float = 0.0
-    left_bumper: bool = False
-    a_button: bool = False
-    y_button: bool = False
+## Working on agents and challenges
 
-class XboxController:
-    """Xbox controller teleoperator for SO-ARM teleoperation."""
-    
-    DEADZONE = 0.1
-    
-    def __init__(self, config: "XboxConfig"):
-        self.config = config
-        self._state = XboxState()
-    
-    def read(self) -> XboxState:
-        """Read and normalize controller state."""
-        # Apply deadzone to analog inputs
-        # Return normalized state
-        pass
-    
-    def _apply_deadzone(self, value: float) -> float:
-        if abs(value) < self.DEADZONE:
-            return 0.0
-        return value
-```
+Read `docs/lessons_learned.md` before changing the twin, perception or challenges. Key habits:
+measure in layers (perception, grasp, understanding) before end-to-end trials; prove a
+challenge is solvable with agent-like aim error before giving it to an agent; look at the
+camera images, not just the numbers; replay an agent's actions before theorizing; count runs
+that died on quota or service errors as invalid, not as agent failures.
 
-### MapXboxToEEDelta Pattern (Processor)
+## Docs map
 
-```python
-# src/xbox_soarm_teleop/processors/xbox_to_ee.py
-import numpy as np
-from dataclasses import dataclass
-
-@dataclass
-class EEDelta:
-    """End effector delta in Cartesian space."""
-    dx: float = 0.0  # m/s
-    dy: float = 0.0  # m/s
-    dz: float = 0.0  # m/s
-    droll: float = 0.0  # rad/s
-    gripper: float = 0.0  # 0-1 position
-
-class MapXboxToEEDelta:
-    """Maps Xbox controller state to end effector velocity commands."""
-    
-    def __init__(
-        self,
-        linear_scale: float = 0.1,  # m/s at full stick
-        angular_scale: float = 0.5,  # rad/s at full stick
-    ):
-        self.linear_scale = linear_scale
-        self.angular_scale = angular_scale
-    
-    def __call__(self, state: "XboxState") -> EEDelta:
-        # Deadman switch check
-        if not state.left_bumper:
-            return EEDelta(gripper=state.right_trigger)
-        
-        return EEDelta(
-            dx=state.left_stick_y * self.linear_scale,
-            dy=state.left_stick_x * self.linear_scale,
-            dz=state.right_stick_y * self.linear_scale,
-            droll=state.right_stick_x * self.angular_scale,
-            gripper=state.right_trigger,
-        )
-```
-
-### Control Loop Pattern
-
-```python
-# examples/teleoperate.py
-from xbox_soarm_teleop.teleoperators.xbox import XboxController
-from xbox_soarm_teleop.processors.xbox_to_ee import MapXboxToEEDelta
-from xbox_soarm_teleop.config.xbox_config import XboxConfig
-from lerobot.robots.so_follower import SOFollower
-
-def main():
-    # Initialize components
-    controller = XboxController(XboxConfig())
-    mapper = MapXboxToEEDelta()
-    robot = SOFollower()
-    
-    # Control loop
-    try:
-        while True:
-            state = controller.read()
-            ee_delta = mapper(state)
-            
-            # Handle special buttons
-            if state.a_button:
-                robot.go_home()
-                continue
-            
-            # Send to LeRobot processor pipeline
-            # ...
-            
-    except KeyboardInterrupt:
-        print("Shutting down...")
-    finally:
-        robot.disconnect()
-
-if __name__ == "__main__":
-    main()
-```
-
-## Constraints and Conventions
-
-### Safety Requirements
-- **Deadman switch (LB)**: All movement gated — if not held, arm does not move
-- **Workspace bounds**: Enforced before IK to prevent unreachable targets
-- **Controller deadzone**: 0.1 on all analog inputs
-
-### Control Conventions
-- Gripper is **position-controlled** (trigger maps directly to 0-100%), not velocity
-- IK uses `initial_guess_current_joints=True` for closed-loop control
-- Velocity units: **m/s** for linear, **rad/s** for angular
-- SO-ARM100 and SO-ARM101 share identical kinematics (same URDF), differ only in servo torque/calibration
-
-### Code Conventions
-- Follow LeRobot processor pattern for pipeline compatibility
-- Use dataclasses for state objects
-- Type hints on all public methods
-- Docstrings following Google style
-
-## Development Phases
-
-1. **Xbox input layer** — read and normalize controller state
-2. **Standalone IK test** — verify FK/IK roundtrip with LeRobot's kinematics
-3. **Processor integration** — MapXboxToEEDelta wired into LeRobot pipeline
-4. **Control loop** — full teleoperation with safety limits
-5. **Extras** — home button, frame toggle, calibration routine
-
-## pyproject.toml
-
-```toml
-[project]
-name = "xbox-soarm-teleop"
-version = "0.1.0"
-description = "Xbox controller teleoperation for SO-ARM100/101 using LeRobot IK"
-readme = "README.md"
-requires-python = ">=3.12,<3.13"
-license = {text = "MIT"}
-authors = [
-    {name = "Rick Anderson", email = "rick.rickanderson@gmail.com"},
-]
-dependencies = [
-    "lerobot[kinematics,feetech,dataset]>=0.7.0,<0.8",
-    "mujoco>=4.0.0,<5",
-    "inputs>=0.5",
-    "numpy>=1.24.0",
-    "pyyaml>=6.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov",
-    "ruff>=0.4.0",
-    "pre-commit",
-]
-pygame = [
-    "pygame>=2.5.0",
-]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/xbox_soarm_teleop"]
-
-[tool.ruff]
-line-length = 104
-target-version = "py312"
-exclude = [".git", ".venv", "__pycache__", "dist", "build"]
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "W"]
-ignore = ["E501"]
-fixable = ["ALL"]
-
-[tool.ruff.lint.isort]
-known-first-party = ["xbox_soarm_teleop"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-addopts = "-v --tb=short"
-```
-
-## Reference Resources
-
-- **LeRobot phone teleoperation**: `examples/phone_so100_*.py` in LeRobot repo
-- **LeRobot kinematics docs**: https://huggingface.co/docs/lerobot/en/phone_teleop
-- **SO-ARM100 URDF/STEP files**: https://github.com/TheRobotStudio/SO-ARM100
-- **Community kinematics package**: https://github.com/box2ai-robotics/lerobot-kinematics
-- **Placo IK documentation**: https://github.com/Rhoban/placo
-
-## Testing Patterns
-
-### Controller Input Test
-
-```python
-# tests/test_xbox_input.py
-import pytest
-from xbox_soarm_teleop.teleoperators.xbox import XboxController, XboxState
-from xbox_soarm_teleop.config.xbox_config import XboxConfig
-
-def test_deadzone_filters_small_values():
-    controller = XboxController(XboxConfig())
-    assert controller._apply_deadzone(0.05) == 0.0
-    assert controller._apply_deadzone(0.15) == 0.15
-
-def test_state_initialization():
-    state = XboxState()
-    assert state.left_bumper == False
-    assert state.right_trigger == 0.0
-```
-
-### IK Roundtrip Test
-
-```python
-# tests/test_ik_roundtrip.py
-import pytest
-import numpy as np
-from lerobot.model.kinematics import RobotKinematics
-
-@pytest.fixture
-def kinematics():
-    # Load SO-ARM101 URDF
-    return RobotKinematics.from_urdf("path/to/so_arm101.urdf")
-
-def test_fk_ik_roundtrip(kinematics):
-    """FK then IK should return to original joint positions."""
-    original_joints = np.array([0.0, 0.5, -0.5, 0.0, 0.0, 0.0])
-    
-    # Forward kinematics
-    ee_pose = kinematics.forward(original_joints)
-    
-    # Inverse kinematics
-    recovered_joints = kinematics.inverse(
-        ee_pose,
-        initial_guess=original_joints
-    )
-    
-    np.testing.assert_allclose(original_joints, recovered_joints, atol=1e-3)
-```
+| Topic | File |
+|-------|------|
+| Controls per mode/device | `docs/driving_guide.md` |
+| Per-mode verification | `docs/mode_verification_guide.md` |
+| Calibration | `docs/CALIBRATION.md` |
+| Cartesian IK processor step | `docs/lerobot_pipeline.md` |
+| Dataset layout | `docs/dataset_schema.md`, `docs/schemas.md` |
+| MCP interface for agents | `docs/mcp_control_interface.md` |
+| Workshop / hosting / students | `docs/workshop_guide.md`, `docs/workshop_hosting.md`, `docs/students.md` |
+| Sorting and challenges | `docs/try_sorting.md`, `docs/challenges.md`, `docs/building_scenes.md` |
+| Preflight checklist | `docs/operator_checklist.md` |
 
 ## Troubleshooting
 
-### Controller not detected
-
-```bash
-# List input devices
-python -c "import inputs; print(inputs.devices.gamepads)"
-
-# Check permissions (Linux)
-sudo usermod -aG input $USER
-# Logout and login again
-```
-
-### LeRobot kinematics import error
-
-```bash
-# Ensure kinematics extra is installed
-uv pip install "lerobot[kinematics,feetech,dataset]>=0.7.0,<0.8"
-
-# Verify Placo installation
-uv run python -c "from lerobot.model.kinematics import RobotKinematics; print('OK')"
-```
-
-### IK fails to converge
-
-- Check that target pose is within workspace bounds
-- Verify `initial_guess_current_joints=True` is set
-- Reduce step size (linear_scale, angular_scale)
-- Check URDF joint limits match physical robot
-
-### Robot connection issues
-
-```bash
-# Find USB port
-ls /dev/ttyUSB* /dev/ttyACM*
-
-# Check permissions
-sudo chmod 666 /dev/ttyUSB0
-```
-
-## Important Notes
-
-### Development Workflow
-- **Always write tests** before implementing new features (TDD)
-- **Run pre-commit** before pushing: `pre-commit run --all-files`
-- **Use conventional commits** for clear history
-- **Test with robot disconnected first** using mock/simulation
-
-### Safety First
-- Always test new code with robot powered off or in simulation
-- Deadman switch must be working before any live testing
-- Keep workspace bounds conservative initially
-- Have physical e-stop accessible during testing
+- Controller not found: `uv run python examples/debug_controller.py`; on Linux add the user to
+  the `input` group. Joy-Con udev rules: `scripts/70-joycon.rules`, `scripts/setup_joycon.sh`.
+- Robot port: `ls /dev/ttyUSB* /dev/ttyACM*` (Linux) or `/dev/tty.usbmodem*` (macOS).
+- IK not converging: check the target is inside `config/workspace_limits.yaml`, reduce
+  speed scales, and confirm URDF joint limits match the calibrated arm.
+- Headless rendering errors: set `MUJOCO_GL=egl` (Linux) as CI does.
