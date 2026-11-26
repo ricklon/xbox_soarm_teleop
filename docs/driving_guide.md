@@ -156,9 +156,9 @@ A to go home and start over.
 | Input | Action |
 |-------|--------|
 | Hold LB | Deadman |
+| Left stick Y | Move forward / back (X axis) |
 | Left stick X | Move left / right (Y axis) |
-| Left stick Y | Move up / down (Z axis) |
-| Right stick Y | Move forward / back (X axis) |
+| Right stick Y | Move up / down (Z axis) |
 | Right stick X | Wrist roll |
 | D-pad up / down | Pitch — tilt gripper up / down |
 | D-pad left / right | Yaw — rotate gripper heading |
