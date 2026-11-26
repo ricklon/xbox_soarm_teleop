@@ -54,10 +54,12 @@ twin_logs/, captures/  Run output; don't edit or commit casually
 `joint` (per-joint velocity, no IK), `crane` (cylindrical, decoupled), `puppet` (crane plus
 Joy-Con IMU wrist). Select with `--mode` and the device with `--controller`.
 
-Xbox mapping in cartesian mode: left stick X = Y axis, left stick Y = Z axis, right stick Y = X
-axis, right stick X = wrist roll, D-pad = pitch/yaw, right trigger = gripper, LB = deadman,
-A = home. `docs/driving_guide.md` is the source of truth for every mode and device; update it
-when you change a mapping.
+Xbox mapping in cartesian mode, as coded in `MapXboxToEEDelta` (`processors/xbox_to_ee.py`):
+left stick Y = forward/back (X), left stick X = left/right (Y), right stick Y = up/down (Z),
+right stick X = wrist roll, D-pad = pitch/yaw, right trigger = gripper, LB = deadman,
+A = home. The code is the source of truth. `docs/driving_guide.md` and `README.md` list the
+mappings for every mode and device; update them when you change a mapping. (As of 2026-11-25
+they swap left stick Y and right stick Y for cartesian mode; that needs checking.)
 
 ## Commands
 
