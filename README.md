@@ -25,9 +25,9 @@ Built as an extension to the [HuggingFace LeRobot](https://github.com/huggingfac
 
 | Input | Function |
 |-------|----------|
+| Left Stick Y | Forward/back movement (X axis) |
 | Left Stick X | Left/right movement (Y axis) |
-| Left Stick Y | Up/down movement (Z axis) |
-| Right Stick Y | Forward/back movement (X axis) |
+| Right Stick Y | Up/down movement (Z axis) |
 | Right Stick X | Wrist roll rotation |
 | D-pad Up/Down | Pitch (tilt gripper up/down) |
 | D-pad Left/Right | Yaw (rotate gripper heading) |

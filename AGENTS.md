@@ -58,8 +58,8 @@ Xbox mapping in cartesian mode, as coded in `MapXboxToEEDelta` (`processors/xbox
 left stick Y = forward/back (X), left stick X = left/right (Y), right stick Y = up/down (Z),
 right stick X = wrist roll, D-pad = pitch/yaw, right trigger = gripper, LB = deadman,
 A = home. The code is the source of truth. `docs/driving_guide.md` and `README.md` list the
-mappings for every mode and device; update them when you change a mapping. (As of 2026-11-25
-they swap left stick Y and right stick Y for cartesian mode; that needs checking.)
+mappings for every mode and device, as does the on-screen help in `runtime/control_help.py`;
+update all three when you change a mapping.
 
 ## Commands
 
